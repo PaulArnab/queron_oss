@@ -10,7 +10,7 @@ RAW_COMPOUND_RELATION_PATTERN = re.compile(
 )
 
 
-def extract_refs(sql: str) -> list[str]:
+def extract_refs(sql: str) -> list[str]: 
     return [match.group("name").strip() for match in REF_PATTERN.finditer(str(sql or ""))]
 
 
