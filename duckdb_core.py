@@ -40,6 +40,7 @@ try:
     from .queron.runtime_models import (
         ColumnMappingRecord,
         NodeRunRecord,
+        NodeStateRecord,
         NodeWarningEvent,
         PipelineRunRecord,
         TableLineageRecord,
@@ -51,6 +52,7 @@ except ImportError:
     from queron.runtime_models import (
         ColumnMappingRecord,
         NodeRunRecord,
+        NodeStateRecord,
         NodeWarningEvent,
         PipelineRunRecord,
         TableLineageRecord,
@@ -907,11 +909,22 @@ def _qualified_name(schema: str, name: str) -> str:
 
 
 _RUN_STATUS_VALUES = ("pending", "running", "success", "success_with_warnings", "failed", "skipped")
+_NODE_STATUS_VALUES = ("ready", "running", "complete", "failed", "skipped")
 
 
 def _run_status_check_sql() -> str:
     values = ", ".join(f"'{item}'" for item in _RUN_STATUS_VALUES)
     return f"CHECK (status IN ({values}))"
+
+
+def _node_status_check_sql() -> str:
+    values = ", ".join(f"'{item}'" for item in _NODE_STATUS_VALUES)
+    return f"CHECK (status IN ({values}))"
+
+
+def _node_state_check_sql() -> str:
+    values = ", ".join(f"'{item}'" for item in _NODE_STATUS_VALUES)
+    return f"CHECK (state IN ({values}))"
 
 
 def _pipeline_runs_create_sql(*, table_name: str) -> str:
@@ -933,20 +946,37 @@ def _pipeline_runs_create_sql(*, table_name: str) -> str:
 def _node_runs_create_sql(*, table_name: str) -> str:
     return f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
+            node_run_id VARCHAR PRIMARY KEY,
             run_id VARCHAR,
             node_name VARCHAR,
             node_kind VARCHAR,
             artifact_name VARCHAR,
             started_at VARCHAR,
             finished_at VARCHAR,
-            status VARCHAR {_run_status_check_sql()},
+            status VARCHAR {_node_status_check_sql()},
             row_count_in BIGINT,
             row_count_out BIGINT,
             artifact_size_bytes BIGINT,
             error_message VARCHAR,
             warnings_json VARCHAR,
             details_json VARCHAR,
-            PRIMARY KEY (run_id, node_name)
+            active_node_state_id VARCHAR
+        )
+        """
+
+
+def _node_states_create_sql(*, table_name: str) -> str:
+    return f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            node_state_id VARCHAR PRIMARY KEY,
+            run_id VARCHAR,
+            node_run_id VARCHAR,
+            node_name VARCHAR,
+            state VARCHAR {_node_state_check_sql()},
+            is_active BOOLEAN,
+            created_at VARCHAR,
+            trigger VARCHAR,
+            details_json VARCHAR
         )
         """
 
@@ -1012,8 +1042,10 @@ def _ensure_queron_meta_tables(conn) -> None:
     conn.execute(f"CREATE SCHEMA IF NOT EXISTS {meta_schema}")
     pipeline_runs_name = f"{meta_schema}.{_quote_identifier('pipeline_runs')}"
     node_runs_name = f"{meta_schema}.{_quote_identifier('node_runs')}"
+    node_states_name = f"{meta_schema}.{_quote_identifier('node_states')}"
     conn.execute(_pipeline_runs_create_sql(table_name=pipeline_runs_name))
     conn.execute(_node_runs_create_sql(table_name=node_runs_name))
+    conn.execute(_node_states_create_sql(table_name=node_states_name))
     try:
         conn.execute(f"ALTER TABLE {node_runs_name} ADD COLUMN IF NOT EXISTS details_json VARCHAR")
     except Exception:
@@ -1047,27 +1079,56 @@ def _ensure_queron_meta_tables(conn) -> None:
         ],
         required_column_names=["pipeline_id", "pipeline_name"],
     )
-    _migrate_table_if_needed(
-        conn,
-        schema_name="_queron_meta",
-        table_name="node_runs",
-        create_sql=_node_runs_create_sql(table_name=node_runs_name),
-        column_names=[
-            "run_id",
-            "node_name",
-            "node_kind",
-            "artifact_name",
-            "started_at",
-            "finished_at",
-            "status",
-            "row_count_in",
-            "row_count_out",
-            "artifact_size_bytes",
-            "error_message",
-            "warnings_json",
-            "details_json",
-        ],
-    )
+    node_runs_sql = str(_table_create_sql(conn, schema_name="_queron_meta", table_name="node_runs") or "").lower()
+    if "node_run_id" not in node_runs_sql or "active_node_state_id" not in node_runs_sql:
+        temp_name = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('node_runs__v2')}"
+        conn.execute(f"DROP TABLE IF EXISTS {temp_name}")
+        conn.execute(_node_runs_create_sql(table_name=temp_name))
+        conn.execute(
+            f"""
+            INSERT INTO {temp_name} (
+                node_run_id,
+                run_id,
+                node_name,
+                node_kind,
+                artifact_name,
+                started_at,
+                finished_at,
+                status,
+                row_count_in,
+                row_count_out,
+                artifact_size_bytes,
+                error_message,
+                warnings_json,
+                details_json,
+                active_node_state_id
+            )
+            SELECT
+                run_id || ':' || node_name,
+                run_id,
+                node_name,
+                node_kind,
+                artifact_name,
+                started_at,
+                finished_at,
+                CASE LOWER(status)
+                    WHEN 'pending' THEN 'ready'
+                    WHEN 'success' THEN 'complete'
+                    WHEN 'success_with_warnings' THEN 'complete'
+                    ELSE LOWER(status)
+                END,
+                row_count_in,
+                row_count_out,
+                artifact_size_bytes,
+                error_message,
+                warnings_json,
+                COALESCE(details_json, '{{}}'),
+                NULL
+            FROM {node_runs_name}
+            """
+        )
+        conn.execute(f"DROP TABLE {node_runs_name}")
+        conn.execute(f"ALTER TABLE {temp_name} RENAME TO {_quote_identifier('node_runs')}")
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {meta_schema}.{_quote_identifier('column_mapping')} (
@@ -1126,6 +1187,12 @@ def _normalize_node_run_record(record: NodeRunRecord | dict[str, Any]) -> NodeRu
     if isinstance(record, NodeRunRecord):
         return record
     return NodeRunRecord.model_validate(record)
+
+
+def _normalize_node_state_record(record: NodeStateRecord | dict[str, Any]) -> NodeStateRecord:
+    if isinstance(record, NodeStateRecord):
+        return record
+    return NodeStateRecord.model_validate(record)
 
 
 def _serialize_warning_events_json(
@@ -1193,15 +1260,16 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
 def _persist_node_runs(conn, *, records: list[NodeRunRecord | dict[str, Any]]) -> None:
     if not records:
         return
-    normalized_by_key: dict[tuple[str, str], NodeRunRecord] = {}
+    normalized_by_key: dict[str, NodeRunRecord] = {}
     for item in records:
         normalized_item = _normalize_node_run_record(item)
-        normalized_by_key[(normalized_item.run_id, normalized_item.node_name)] = normalized_item
+        normalized_by_key[normalized_item.node_run_id] = normalized_item
     normalized = list(normalized_by_key.values())
     _ensure_queron_meta_tables(conn)
     meta_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('node_runs')}"
     rows = [
         (
+            item.node_run_id,
             item.run_id,
             item.node_name,
             item.node_kind,
@@ -1215,12 +1283,14 @@ def _persist_node_runs(conn, *, records: list[NodeRunRecord | dict[str, Any]]) -
             item.error_message,
             _serialize_warning_events_json(item.warnings_json),
             _serialize_details_json(item.details_json),
+            item.active_node_state_id,
         )
         for item in normalized
     ]
     conn.executemany(
         f"""
         INSERT OR REPLACE INTO {meta_table} (
+            node_run_id,
             run_id,
             node_name,
             node_kind,
@@ -1233,11 +1303,56 @@ def _persist_node_runs(conn, *, records: list[NodeRunRecord | dict[str, Any]]) -
             artifact_size_bytes,
             error_message,
             warnings_json,
-            details_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            details_json,
+            active_node_state_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
+
+
+def _persist_node_states(conn, *, records: list[NodeStateRecord | dict[str, Any]]) -> None:
+    if not records:
+        return
+    normalized = [_normalize_node_state_record(item) for item in records]
+    _ensure_queron_meta_tables(conn)
+    meta_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('node_states')}"
+    for item in normalized:
+        if item.is_active:
+            conn.execute(
+                f"""
+                UPDATE {meta_table}
+                SET is_active = FALSE
+                WHERE run_id = ? AND node_run_id = ? AND is_active = TRUE
+                """,
+                (item.run_id, item.node_run_id),
+            )
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO {meta_table} (
+                node_state_id,
+                run_id,
+                node_run_id,
+                node_name,
+                state,
+                is_active,
+                created_at,
+                trigger,
+                details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item.node_state_id,
+                item.run_id,
+                item.node_run_id,
+                item.node_name,
+                item.state,
+                bool(item.is_active),
+                item.created_at,
+                item.trigger,
+                _serialize_details_json(item.details_json),
+            ),
+        )
 
 
 def _persist_column_mappings(conn, *, target_table: str, column_mappings: list[ColumnMappingRecord | dict[str, Any]]) -> None:
@@ -1414,6 +1529,26 @@ def record_node_runs(
     conn = _duckdb_connection(database)
     try:
         _persist_node_runs(conn, records=records)
+    finally:
+        conn.close()
+
+
+def record_node_states(
+    *,
+    connection_id: str,
+    records: list[NodeStateRecord | dict[str, Any]],
+) -> None:
+    if not records:
+        return
+
+    cfg_dict = _connections.get(connection_id)
+    if cfg_dict is None:
+        raise LookupError("DuckDB connection not found. Please connect first.")
+
+    database = _resolve_database_path(DuckDbConnectRequest(**cfg_dict))
+    conn = _duckdb_connection(database)
+    try:
+        _persist_node_states(conn, records=records)
     finally:
         conn.close()
 
@@ -1980,6 +2115,7 @@ def get_node_runs_for_run(
             rows = conn.execute(
                 f"""
                 SELECT
+                    node_run_id,
                     run_id,
                     node_name,
                     node_kind,
@@ -1992,7 +2128,8 @@ def get_node_runs_for_run(
                     artifact_size_bytes,
                     error_message,
                     warnings_json,
-                    details_json
+                    details_json,
+                    active_node_state_id
                 FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('node_runs')}
                 WHERE run_id = ?
                 ORDER BY node_name
@@ -2007,31 +2144,93 @@ def get_node_runs_for_run(
     out: list[dict[str, Any]] = []
     for row in rows:
         try:
-            warnings_json = json.loads(str(row[11] or "[]"))
+            warnings_json = json.loads(str(row[12] or "[]"))
             if not isinstance(warnings_json, list):
                 warnings_json = []
         except Exception:
             warnings_json = []
         try:
-            details_json = json.loads(str(row[12] or "{}"))
+            details_json = json.loads(str(row[13] or "{}"))
             if not isinstance(details_json, dict):
                 details_json = {}
         except Exception:
             details_json = {}
         out.append(
             {
-                "run_id": row[0],
-                "node_name": row[1],
-                "node_kind": row[2],
-                "artifact_name": row[3],
-                "started_at": row[4],
-                "finished_at": row[5],
-                "status": row[6],
-                "row_count_in": row[7],
-                "row_count_out": row[8],
-                "artifact_size_bytes": row[9],
-                "error_message": row[10],
+                "node_run_id": row[0],
+                "run_id": row[1],
+                "node_name": row[2],
+                "node_kind": row[3],
+                "artifact_name": row[4],
+                "started_at": row[5],
+                "finished_at": row[6],
+                "status": row[7],
+                "row_count_in": row[8],
+                "row_count_out": row[9],
+                "artifact_size_bytes": row[10],
+                "error_message": row[11],
                 "warnings_json": warnings_json,
+                "details_json": details_json,
+                "active_node_state_id": row[14],
+            }
+        )
+    return out
+
+
+def get_active_node_states_for_run(
+    *,
+    connection_id: str,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    cfg_dict = _connections.get(connection_id)
+    if cfg_dict is None:
+        raise LookupError("DuckDB connection not found. Please connect first.")
+
+    database = _resolve_database_path(DuckDbConnectRequest(**cfg_dict))
+    conn = _duckdb_connection(database)
+    try:
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    node_state_id,
+                    run_id,
+                    node_run_id,
+                    node_name,
+                    state,
+                    is_active,
+                    created_at,
+                    trigger,
+                    details_json
+                FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('node_states')}
+                WHERE run_id = ? AND is_active = TRUE
+                ORDER BY node_name
+                """,
+                (run_id,),
+            ).fetchall()
+        except Exception:
+            return []
+    finally:
+        conn.close()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            details_json = json.loads(str(row[8] or "{}"))
+            if not isinstance(details_json, dict):
+                details_json = {}
+        except Exception:
+            details_json = {}
+        out.append(
+            {
+                "node_state_id": row[0],
+                "run_id": row[1],
+                "node_run_id": row[2],
+                "node_name": row[3],
+                "state": row[4],
+                "is_active": bool(row[5]),
+                "created_at": row[6],
+                "trigger": row[7],
                 "details_json": details_json,
             }
         )

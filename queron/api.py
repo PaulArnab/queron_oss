@@ -137,20 +137,24 @@ def resume_compiled_pipeline(
     if compiled.spec is None:
         raise RuntimeError("Compiled pipeline is missing a spec.")
     active_on_log = on_log or getattr(runtime, "_on_log", None)
-    failed_node = _latest_failed_resume_node(runtime, compiled.spec)
-    selected_nodes = _select_downstream_nodes(compiled.spec, failed_node)
+    latest_run, node_runs, active_states = _current_failed_run_context(runtime)
+    runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+    runtime._pipeline_started_at = str(latest_run.get("started_at") or "").strip() or None
+    selected_nodes = _resume_selected_nodes(compiled.spec, node_runs=node_runs, active_states=active_states)
+    if not selected_nodes:
+        raise RuntimeError("The current failed run does not have any nodes ready to resume.")
     _emit_log_event(
         active_on_log,
         code=LogCode.PIPELINE_TARGET_SELECTED,
-        message=f"Resuming from failed node '{failed_node}'.",
-        details={"target_node": failed_node, "selected_nodes": sorted(selected_nodes)},
+        message=f"Resuming run '{runtime.run_id}' from {len(selected_nodes)} node(s).",
+        details={"run_id": runtime.run_id, "selected_nodes": sorted(selected_nodes)},
     )
     runtime.clear_selected_outputs(selected_nodes)
     _emit_log_event(
         active_on_log,
         code=LogCode.PIPELINE_EXECUTION_STARTED,
         message="Executing resumed pipeline segment.",
-        details={"target_node": failed_node, "selected_nodes": sorted(selected_nodes)},
+        details={"run_id": runtime.run_id, "selected_nodes": sorted(selected_nodes)},
     )
     try:
         executed = execute_compiled_pipeline(compiled, runtime=runtime, selected_node_names=selected_nodes)
@@ -191,6 +195,8 @@ def reset_compiled_node(
     if node_name not in nodes:
         raise RuntimeError(f"Node '{node_name}' was not found in the compiled pipeline.")
     reset_tables = runtime.clear_selected_outputs({node_name})
+    if getattr(runtime, "_node_run_ids", None):
+        runtime.reset_selected_node_states({node_name}, trigger="reset_node")
     return ResetPipelineResult(
         compiled=compiled,
         artifact_path=str(getattr(runtime, "duckdb_path", "")),
@@ -212,6 +218,8 @@ def reset_compiled_downstream(
         raise RuntimeError(f"Node '{node_name}' was not found in the compiled pipeline.")
     selected_nodes = _select_downstream_nodes(compiled.spec, node_name)
     reset_tables = runtime.clear_selected_outputs(selected_nodes)
+    if getattr(runtime, "_node_run_ids", None):
+        runtime.reset_selected_node_states(selected_nodes, trigger="reset_downstream")
     return ResetPipelineResult(
         compiled=compiled,
         artifact_path=str(getattr(runtime, "duckdb_path", "")),
@@ -233,6 +241,8 @@ def reset_compiled_upstream(
         raise RuntimeError(f"Node '{node_name}' was not found in the compiled pipeline.")
     selected_nodes = _select_upstream_nodes(compiled.spec, node_name)
     reset_tables = runtime.clear_selected_outputs(selected_nodes)
+    if getattr(runtime, "_node_run_ids", None):
+        runtime.reset_selected_node_states(selected_nodes, trigger="reset_upstream")
     return ResetPipelineResult(
         compiled=compiled,
         artifact_path=str(getattr(runtime, "duckdb_path", "")),
@@ -250,6 +260,8 @@ def reset_compiled_all(
         raise RuntimeError("Compiled pipeline is missing a spec.")
     selected_nodes = {node.name for node in compiled.spec.nodes}
     reset_tables = runtime.clear_selected_outputs(selected_nodes)
+    if getattr(runtime, "_node_run_ids", None):
+        runtime.reset_selected_node_states(selected_nodes, trigger="reset_all")
     return ResetPipelineResult(
         compiled=compiled,
         artifact_path=str(getattr(runtime, "duckdb_path", "")),
@@ -332,17 +344,19 @@ def _target_tables_for_nodes(spec: PipelineSpec, node_names: set[str]) -> list[s
     return target_tables
 
 
-def _latest_failed_resume_node(runtime: PipelineRuntime, spec: PipelineSpec) -> str:
+def _current_failed_run_context(runtime: PipelineRuntime) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     import duckdb_core
 
-    latest_failed_run = duckdb_core.get_latest_pipeline_run(
+    latest_run = duckdb_core.get_latest_pipeline_run(
         connection_id=runtime._ensure_duckdb_connection_id(),
-        status="failed",
+        status=None,
     )
-    if not latest_failed_run:
-        raise RuntimeError("No failed pipeline run was found to resume from.")
+    if not latest_run:
+        raise RuntimeError("No pipeline run was found to resume or reset.")
+    if str(latest_run.get("status") or "").strip().lower() != "failed":
+        raise RuntimeError("The latest pipeline run is not failed, so there is nothing to resume or reset.")
 
-    run_id = str(latest_failed_run.get("run_id") or "").strip()
+    run_id = str(latest_run.get("run_id") or "").strip()
     if not run_id:
         raise RuntimeError("Latest failed pipeline run is missing a run_id.")
 
@@ -350,18 +364,41 @@ def _latest_failed_resume_node(runtime: PipelineRuntime, spec: PipelineSpec) -> 
         connection_id=runtime._ensure_duckdb_connection_id(),
         run_id=run_id,
     )
-    failed_names = {
-        str(item.get("node_name") or "").strip()
-        for item in node_runs
-        if str(item.get("status") or "").strip().lower() == "failed"
-    }
-    if not failed_names:
-        raise RuntimeError("The latest failed pipeline run does not contain a failed node to resume from.")
+    active_states = duckdb_core.get_active_node_states_for_run(
+        connection_id=runtime._ensure_duckdb_connection_id(),
+        run_id=run_id,
+    )
+    return latest_run, node_runs, active_states
 
-    for node_name in [node.name for node in spec.nodes]:
-        if node_name in failed_names:
-            return node_name
-    raise RuntimeError("The failed node from the latest run is not present in the current compiled pipeline.")
+
+def _resume_selected_nodes(
+    spec: PipelineSpec,
+    *,
+    node_runs: list[dict[str, Any]],
+    active_states: list[dict[str, Any]],
+) -> set[str]:
+    active_state_by_name = {
+        str(item.get("node_name") or "").strip(): str(item.get("state") or "").strip().lower()
+        for item in active_states
+        if str(item.get("node_name") or "").strip()
+    }
+    if active_state_by_name:
+        return {
+            node.name
+            for node in spec.nodes
+            if active_state_by_name.get(node.name, "ready") in {"ready", "running", "failed"}
+        }
+
+    fallback_status_by_name = {
+        str(item.get("node_name") or "").strip(): str(item.get("status") or "").strip().lower()
+        for item in node_runs
+        if str(item.get("node_name") or "").strip()
+    }
+    return {
+        node.name
+        for node in spec.nodes
+        if fallback_status_by_name.get(node.name, "ready") in {"ready", "pending", "running", "failed", "skipped"}
+    }
 
 
 def run_pipeline_file(
@@ -556,6 +593,11 @@ def reset_node_file(
         connections_path=None,
         on_log=None,
     )
+    try:
+        latest_run, node_runs, _active_states = _current_failed_run_context(runtime)
+        runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+    except Exception:
+        pass
     result = reset_compiled_node(compiled, runtime=runtime, node_name=node_name)
     return ResetPipelineResult(
         compiled=result.compiled,
@@ -588,6 +630,11 @@ def reset_downstream_file(
         connections_path=None,
         on_log=None,
     )
+    try:
+        latest_run, node_runs, _active_states = _current_failed_run_context(runtime)
+        runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+    except Exception:
+        pass
     result = reset_compiled_downstream(compiled, runtime=runtime, node_name=node_name)
     return ResetPipelineResult(
         compiled=result.compiled,
@@ -620,6 +667,11 @@ def reset_upstream_file(
         connections_path=None,
         on_log=None,
     )
+    try:
+        latest_run, node_runs, _active_states = _current_failed_run_context(runtime)
+        runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+    except Exception:
+        pass
     result = reset_compiled_upstream(compiled, runtime=runtime, node_name=node_name)
     return ResetPipelineResult(
         compiled=result.compiled,
@@ -651,6 +703,11 @@ def reset_all_file(
         connections_path=None,
         on_log=None,
     )
+    try:
+        latest_run, node_runs, _active_states = _current_failed_run_context(runtime)
+        runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+    except Exception:
+        pass
     result = reset_compiled_all(compiled, runtime=runtime)
     return ResetPipelineResult(
         compiled=result.compiled,

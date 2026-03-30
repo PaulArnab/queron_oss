@@ -11,6 +11,7 @@ from .api import (
     has_compile_errors,
     list_existing_outputs_for_file,
     reset_all_file,
+    reset_downstream_file,
     reset_upstream_file,
     reset_node_file,
     resume_pipeline_file,
@@ -88,6 +89,16 @@ def _build_parser() -> argparse.ArgumentParser:
     reset_node_parser.add_argument("node_name", help="Pipeline node name to reset.")
     reset_node_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     reset_node_parser.set_defaults(handler=_handle_reset_node)
+
+    reset_downstream_parser = subparsers.add_parser(
+        "reset-downstream",
+        help="Drop the output tables for a node and all downstream dependents.",
+    )
+    _add_common_compile_flags(reset_downstream_parser)
+    _add_common_reset_flags(reset_downstream_parser)
+    reset_downstream_parser.add_argument("node_name", help="Pipeline node name to reset downstream from.")
+    reset_downstream_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
+    reset_downstream_parser.set_defaults(handler=_handle_reset_downstream)
 
     reset_upstream_parser = subparsers.add_parser(
         "reset-upstream",
@@ -392,6 +403,23 @@ def _handle_reset_node(args: argparse.Namespace) -> int:
         print(f"Reset-node failed: {exc}", file=sys.stderr)
         return 1
     return _emit_reset_result(args, "Reset-node", result)
+
+
+def _handle_reset_downstream(args: argparse.Namespace) -> int:
+    try:
+        result = reset_downstream_file(
+            args.pipeline,
+            node_name=args.node_name,
+            config_path=args.config_path,
+            target=args.target,
+            artifact_path=args.artifact_path,
+        )
+    except Exception as exc:
+        if args.json_output:
+            return _emit_json({"ok": False, "error": str(exc)})
+        print(f"Reset-downstream failed: {exc}", file=sys.stderr)
+        return 1
+    return _emit_reset_result(args, "Reset-downstream", result)
 
 
 def _handle_reset_upstream(args: argparse.Namespace) -> int:

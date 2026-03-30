@@ -9,6 +9,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 WarningSeverity = Literal["info", "warning", "error"]
 WarningSource = Literal["queron", "connector", "driver"]
 RunStatus = Literal["pending", "running", "success", "success_with_warnings", "failed", "skipped"]
+NodeStatus = Literal["ready", "running", "complete", "failed", "skipped"]
 OnExceptionPolicy = Literal["stop"]
 OnWarningPolicy = Literal["continue"]
 DownstreamHardFailurePolicy = Literal["skip"]
@@ -318,18 +319,32 @@ class PipelineRunRecord(BaseModel):
 
 
 class NodeRunRecord(BaseModel):
+    node_run_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     node_name: str = Field(min_length=1)
     node_kind: str = Field(min_length=1)
     artifact_name: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
-    status: RunStatus
+    status: NodeStatus
     row_count_in: int | None = None
     row_count_out: int | None = None
     artifact_size_bytes: int | None = None
     error_message: str | None = None
     warnings_json: list[NodeWarningEvent] = Field(default_factory=list)
+    details_json: dict[str, Any] = Field(default_factory=dict)
+    active_node_state_id: str | None = None
+
+
+class NodeStateRecord(BaseModel):
+    node_state_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    node_run_id: str = Field(min_length=1)
+    node_name: str = Field(min_length=1)
+    state: NodeStatus
+    is_active: bool = True
+    created_at: str | None = None
+    trigger: str | None = None
     details_json: dict[str, Any] = Field(default_factory=dict)
 
 

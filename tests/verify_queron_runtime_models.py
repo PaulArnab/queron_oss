@@ -11,6 +11,7 @@ from queron.runtime_models import (
     LogCode,
     NodeExecutionResult,
     NodeWarningEvent,
+    NodeStateRecord,
     PipelineLogEvent,
     RunPolicy,
     WarningCode,
@@ -112,6 +113,25 @@ class VerifyQueronRuntimeModelsTests(unittest.TestCase):
         self.assertEqual(result.row_count_out, 1)
         self.assertEqual(len(result.warnings), 1)
         self.assertEqual(result.warnings[0].message, "Seed node completed with a warning.")
+
+    def test_node_state_record_tracks_active_state_for_node_run(self):
+        record = NodeStateRecord(
+            node_state_id="state-1",
+            run_id="run-1",
+            node_run_id="run-1:seed",
+            node_name="seed",
+            state="ready",
+            is_active=True,
+            trigger="run_initialized",
+            details_json={"reason": "fresh run"},
+        )
+
+        self.assertEqual(record.run_id, "run-1")
+        self.assertEqual(record.node_run_id, "run-1:seed")
+        self.assertEqual(record.node_name, "seed")
+        self.assertEqual(record.state, "ready")
+        self.assertTrue(record.is_active)
+        self.assertEqual(record.trigger, "run_initialized")
 
     def test_build_and_normalize_log_event_create_structured_logs(self):
         event = build_log_event(

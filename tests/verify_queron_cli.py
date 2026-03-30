@@ -196,6 +196,16 @@ def broken():
                 failed_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
             self.assertEqual(failed_exit, 1)
             self.assertIn("Run failed:", stderr.getvalue())
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                failed_run = conn.execute(
+                    'SELECT run_id, status FROM "_queron_meta"."pipeline_runs"'
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(failed_run)
+            failed_run_id = failed_run[0]
+            self.assertEqual(failed_run[1], "failed")
 
             pipeline_path.write_text(
                 """import queron
@@ -234,9 +244,23 @@ def broken():
             conn = load_duckdb().connect(str(artifact_path))
             try:
                 rows = conn.execute('SELECT id FROM "main"."broken"').fetchall()
+                pipeline_runs = conn.execute(
+                    'SELECT run_id, status FROM "_queron_meta"."pipeline_runs"'
+                ).fetchall()
+                active_states = conn.execute(
+                    """
+                    SELECT node_name, state
+                    FROM "_queron_meta"."node_states"
+                    WHERE run_id = ? AND is_active = TRUE
+                    ORDER BY node_name
+                    """,
+                    (failed_run_id,),
+                ).fetchall()
             finally:
                 conn.close()
             self.assertEqual(rows, [(2,)])
+            self.assertEqual(pipeline_runs, [(failed_run_id, "success")])
+            self.assertEqual(active_states, [("broken", "complete"), ("seed", "complete")])
 
     def test_reset_commands_drop_expected_tables(self):
         with tempfile.TemporaryDirectory() as tmpdir:
