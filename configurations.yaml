@@ -1,0 +1,53 @@
+target: dev
+
+sources:
+  pg_policy:
+    dev:
+      schema: public
+      table: policy
+
+  pg_coverage:
+    dev:
+      schema: public
+      table: coverage
+
+  pg_claim:
+    dev:
+      schema: public
+      table: claim
+
+  db2_policy:
+    dev:
+      schema: DB2INST1
+      table: POLICY
+
+  db2_person:
+    dev:
+      schema: DB2INST1
+      table: PERSON
+
+  db2_address:
+    dev:
+      schema: DB2INST1
+      table: ADDRESS
+
+  db2_phone:
+    dev:
+      schema: DB2INST1
+      table: PHONE
+
+  db2_email:
+    dev:
+      schema: DB2INST1
+      table: EMAIL
+
+egress:
+  policy_servicing_enriched_load:
+    dev:
+      schema: DB2INST1
+      table: policy_servicing_enriched_load
+
+  policy_servicing_enriched_load_postgres:
+    dev:
+      schema: public
+      table: policy_servicing_enriched_load

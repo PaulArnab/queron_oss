@@ -1,0 +1,7 @@
+.venv/
+.queron/
+exports/
+__pycache__/
+queron/__pycache__/
+tests/__pycache__/
+*.pyc

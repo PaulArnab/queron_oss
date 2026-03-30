@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+psycopg[binary]
+pyarrow
+ibm-db
+duckdb
+adbc-driver-postgresql
+pytz
+keyring
+python-multipart
+streamlit

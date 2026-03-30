@@ -1,0 +1,3 @@
+customer_number,vip_flag,vip_reason
+CUST-1001,true,High lifetime value
+CUST-1002,false,
