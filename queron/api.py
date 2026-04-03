@@ -386,7 +386,7 @@ def _resume_selected_nodes(
         return {
             node.name
             for node in spec.nodes
-            if active_state_by_name.get(node.name, "ready") in {"ready", "running", "failed"}
+            if active_state_by_name.get(node.name, "ready") in {"ready", "running", "failed", "cleared"}
         }
 
     fallback_status_by_name = {

@@ -133,6 +133,22 @@ class VerifyQueronRuntimeModelsTests(unittest.TestCase):
         self.assertTrue(record.is_active)
         self.assertEqual(record.trigger, "run_initialized")
 
+    def test_node_state_record_accepts_cleared_state(self):
+        record = NodeStateRecord(
+            node_state_id="state-2",
+            run_id="run-1",
+            node_run_id="run-1:seed",
+            node_name="seed",
+            state="cleared",
+            is_active=False,
+            trigger="reset_all",
+            details_json={"phase": "cleared"},
+        )
+
+        self.assertEqual(record.state, "cleared")
+        self.assertFalse(record.is_active)
+        self.assertEqual(record.trigger, "reset_all")
+
     def test_build_and_normalize_log_event_create_structured_logs(self):
         event = build_log_event(
             code=LogCode.NODE_EXECUTION_STARTED,

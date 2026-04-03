@@ -373,17 +373,6 @@ class PipelineRuntime:
         for node in self._selected_nodes():
             node_run_id = self._ensure_node_run_id(node.name)
             node_state_id = uuid.uuid4().hex
-            node_run_records.append(
-                NodeRunRecord(
-                    node_run_id=node_run_id,
-                    run_id=self.run_id,
-                    node_name=node.name,
-                    node_kind=node.kind,
-                    artifact_name=self._node_artifact_name(node),
-                    status="ready",
-                    active_node_state_id=node_state_id,
-                )
-            )
             self._node_active_state_ids[node.name] = node_state_id
             node_state_records.append(
                 NodeStateRecord(
@@ -398,8 +387,19 @@ class PipelineRuntime:
                     details_json={},
                 )
             )
-        self._record_node_runs(node_run_records)
+            node_run_records.append(
+                NodeRunRecord(
+                    node_run_id=node_run_id,
+                    run_id=self.run_id,
+                    node_name=node.name,
+                    node_kind=node.kind,
+                    artifact_name=self._node_artifact_name(node),
+                    status="ready",
+                    active_node_state_id=node_state_id,
+                )
+            )
         self._record_node_states(node_state_records)
+        self._record_node_runs(node_run_records)
 
     def mark_node_running(self, node: NodeSpec) -> None:
         started_at = utc_now_timestamp()
@@ -605,8 +605,16 @@ class PipelineRuntime:
                 severity="warning",
                 node=node,
             )
-        self._record_node_runs(
-            [
+        skipped_at = utc_now_timestamp()
+        run_records: list[NodeRunRecord] = []
+        for node in nodes:
+            node_state_id = self._append_node_state(
+                node_name=node.name,
+                state="skipped",
+                trigger="node_skipped",
+                details={"reason": reason, "node_kind": node.kind},
+            )
+            run_records.append(
                 NodeRunRecord(
                     node_run_id=self._ensure_node_run_id(node.name),
                     run_id=self.run_id,
@@ -614,14 +622,13 @@ class PipelineRuntime:
                     node_kind=node.kind,
                     artifact_name=self._node_artifact_name(node),
                     started_at=self._node_started_at.get(node.name),
-                    finished_at=utc_now_timestamp(),
+                    finished_at=skipped_at,
                     status="skipped",
                     warnings_json=[warning],
-                    active_node_state_id=self._node_active_state_ids.get(node.name),
+                    active_node_state_id=node_state_id,
                 )
-                for node in nodes
-            ]
-        )
+            )
+        self._record_node_runs(run_records)
 
     def mark_run_success(self) -> None:
         status = (
@@ -670,7 +677,35 @@ class PipelineRuntime:
         timestamp = utc_now_timestamp()
         for node in selected:
             node_run_id = self._ensure_node_run_id(node.name)
-            node_state_id = uuid.uuid4().hex
+            cleared_state_id = uuid.uuid4().hex
+            ready_state_id = uuid.uuid4().hex
+            state_records.append(
+                NodeStateRecord(
+                    node_state_id=cleared_state_id,
+                    run_id=self.run_id,
+                    node_run_id=node_run_id,
+                    node_name=node.name,
+                    state="cleared",
+                    is_active=True,
+                    created_at=timestamp,
+                    trigger=trigger,
+                    details_json={"phase": "cleared"},
+                )
+            )
+            state_records.append(
+                NodeStateRecord(
+                    node_state_id=ready_state_id,
+                    run_id=self.run_id,
+                    node_run_id=node_run_id,
+                    node_name=node.name,
+                    state="ready",
+                    is_active=True,
+                    created_at=timestamp,
+                    trigger=trigger,
+                    details_json={"phase": "ready"},
+                )
+            )
+            self._node_active_state_ids[node.name] = ready_state_id
             records.append(
                 NodeRunRecord(
                     node_run_id=node_run_id,
@@ -687,25 +722,11 @@ class PipelineRuntime:
                     error_message=None,
                     warnings_json=[],
                     details_json={"trigger": trigger},
-                    active_node_state_id=node_state_id,
+                    active_node_state_id=ready_state_id,
                 )
             )
-            self._node_active_state_ids[node.name] = node_state_id
-            state_records.append(
-                NodeStateRecord(
-                    node_state_id=node_state_id,
-                    run_id=self.run_id,
-                    node_run_id=node_run_id,
-                    node_name=node.name,
-                    state="ready",
-                    is_active=True,
-                    created_at=timestamp,
-                    trigger=trigger,
-                    details_json={},
-                )
-            )
-        self._record_node_runs(records)
         self._record_node_states(state_records)
+        self._record_node_runs(records)
 
     def existing_output_tables(self, node_names: set[str] | None = None) -> list[str]:
         import duckdb_core

@@ -262,6 +262,76 @@ def broken():
             self.assertEqual(pipeline_runs, [(failed_run_id, "success")])
             self.assertEqual(active_states, [("broken", "complete"), ("seed", "complete")])
 
+    def test_failed_run_persists_skipped_node_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='broken',
+    out='broken',
+    query=\"\"\"
+SELECT CAST('bad' AS INTEGER) AS id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def broken():
+    pass
+
+@queron.model.sql(
+    name='leaf',
+    out='leaf',
+    query=\"\"\"
+SELECT id + 1 AS id
+FROM {{ queron.ref("broken") }}
+\"\"\",
+)
+def leaf():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                failed_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+            self.assertEqual(failed_exit, 1)
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                active_states = conn.execute(
+                    """
+                    SELECT node_name, state
+                    FROM "_queron_meta"."node_states"
+                    WHERE is_active = TRUE
+                    ORDER BY node_name
+                    """
+                ).fetchall()
+                node_runs = conn.execute(
+                    """
+                    SELECT node_name, status
+                    FROM "_queron_meta"."node_runs"
+                    ORDER BY node_name
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertEqual(active_states, [("broken", "failed"), ("leaf", "skipped"), ("seed", "complete")])
+            self.assertEqual(node_runs, [("broken", "failed"), ("leaf", "skipped"), ("seed", "complete")])
+
     def test_reset_commands_drop_expected_tables(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)
@@ -375,6 +445,91 @@ def leaf():
             finally:
                 conn.close()
             self.assertEqual(existing, set())
+
+    def test_reset_history_appends_cleared_then_ready_for_selected_nodes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='broken',
+    out='broken',
+    query=\"\"\"
+SELECT CAST('bad' AS INTEGER) AS id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def broken():
+    pass
+
+@queron.model.sql(
+    name='leaf',
+    out='leaf',
+    query=\"\"\"
+SELECT id + 1 AS id
+FROM {{ queron.ref("broken") }}
+\"\"\",
+)
+def leaf():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                failed_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+            self.assertEqual(failed_exit, 1)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                reset_upstream_exit = queron.cli.main(
+                    ["reset-upstream", str(pipeline_path), "broken", "--artifact-path", str(artifact_path)]
+                )
+            self.assertEqual(reset_upstream_exit, 0)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                reset_all_exit = queron.cli.main(
+                    ["reset-all", str(pipeline_path), "--artifact-path", str(artifact_path)]
+                )
+            self.assertEqual(reset_all_exit, 0)
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                active_states = conn.execute(
+                    """
+                    SELECT node_name, state
+                    FROM "_queron_meta"."node_states"
+                    WHERE is_active = TRUE
+                    ORDER BY node_name
+                    """
+                ).fetchall()
+                state_counts = conn.execute(
+                    """
+                    SELECT node_name, state, COUNT(*) AS count
+                    FROM "_queron_meta"."node_states"
+                    GROUP BY node_name, state
+                    ORDER BY node_name, state
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertEqual(active_states, [("broken", "ready"), ("leaf", "ready"), ("seed", "ready")])
+            self.assertIn(("seed", "cleared", 2), state_counts)
+            self.assertIn(("broken", "cleared", 2), state_counts)
+            self.assertIn(("leaf", "cleared", 1), state_counts)
 
     def test_run_json_returns_confirmation_payload_without_failure(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -909,7 +909,7 @@ def _qualified_name(schema: str, name: str) -> str:
 
 
 _RUN_STATUS_VALUES = ("pending", "running", "success", "success_with_warnings", "failed", "skipped")
-_NODE_STATUS_VALUES = ("ready", "running", "complete", "failed", "skipped")
+_NODE_STATUS_VALUES = ("ready", "running", "complete", "failed", "skipped", "cleared")
 
 
 def _run_status_check_sql() -> str:
@@ -1129,6 +1129,39 @@ def _ensure_queron_meta_tables(conn) -> None:
         )
         conn.execute(f"DROP TABLE {node_runs_name}")
         conn.execute(f"ALTER TABLE {temp_name} RENAME TO {_quote_identifier('node_runs')}")
+    node_states_sql = str(_table_create_sql(conn, schema_name="_queron_meta", table_name="node_states") or "").lower()
+    if "cleared" not in node_states_sql:
+        temp_name = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('node_states__v2')}"
+        conn.execute(f"DROP TABLE IF EXISTS {temp_name}")
+        conn.execute(_node_states_create_sql(table_name=temp_name))
+        conn.execute(
+            f"""
+            INSERT INTO {temp_name} (
+                node_state_id,
+                run_id,
+                node_run_id,
+                node_name,
+                state,
+                is_active,
+                created_at,
+                trigger,
+                details_json
+            )
+            SELECT
+                node_state_id,
+                run_id,
+                node_run_id,
+                node_name,
+                LOWER(state),
+                is_active,
+                created_at,
+                trigger,
+                details_json
+            FROM {node_states_name}
+            """
+        )
+        conn.execute(f"DROP TABLE {node_states_name}")
+        conn.execute(f"ALTER TABLE {temp_name} RENAME TO {_quote_identifier('node_states')}")
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {meta_schema}.{_quote_identifier('column_mapping')} (

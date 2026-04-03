@@ -9,7 +9,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 WarningSeverity = Literal["info", "warning", "error"]
 WarningSource = Literal["queron", "connector", "driver"]
 RunStatus = Literal["pending", "running", "success", "success_with_warnings", "failed", "skipped"]
-NodeStatus = Literal["ready", "running", "complete", "failed", "skipped"]
+NodeStatus = Literal["ready", "running", "complete", "failed", "skipped", "cleared"]
 OnExceptionPolicy = Literal["stop"]
 OnWarningPolicy = Literal["continue"]
 DownstreamHardFailurePolicy = Literal["skip"]

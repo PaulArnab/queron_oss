@@ -1,21 +1,26 @@
 # Next Implementation Steps
 
 1. Implement `cleared` state.
-   - `cleared` means the node had an existing run result/artifact that was explicitly reset.
-   - Use transitions like:
-     - `complete -> cleared -> ready`
-     - `failed -> cleared -> ready`
-   - Do not force `cleared` for nodes that were only `ready` or `skipped` with nothing to clear.
+   - `cleared` is a reset-history marker for a node inside the current `run_id`.
+   - It acts as a separator between run activity and reset activity on the same run.
+   - Any node selected by a reset operation should append:
+     - `cleared`
+     - then immediately `ready`
+   - This applies regardless of the node's current state.
    - Example:
      - if `a -> b -> c`
-     - after failure:
+     - current state is:
        - `a = complete`
        - `b = failed`
-       - `c = skipped`
-     - reset upstream on `b` should become:
+       - `c = ready`
+     - `reset-all` should become:
        - `a: complete -> cleared -> ready`
        - `b: failed -> cleared -> ready`
-       - `c: skipped -> ready`
+       - `c: ready -> cleared -> ready`
+     - `reset-upstream` on `b` should become:
+       - `a: complete -> cleared -> ready`
+       - `b: failed -> cleared -> ready`
+       - `c: ready`
 
 2. Separate compile and run.
    - Compile must become durable state, not just in-memory validation.
