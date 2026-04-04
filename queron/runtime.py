@@ -121,6 +121,7 @@ class PipelineRuntime:
         self,
         *,
         pipeline_id: str,
+        compile_id: str | None = None,
         duckdb_path: str,
         working_dir: str | None = None,
         spec: PipelineSpec,
@@ -133,6 +134,7 @@ class PipelineRuntime:
         on_log: Callable[[PipelineLogEvent], None] | None = None,
     ) -> None:
         self.pipeline_id = pipeline_id
+        self.compile_id = str(compile_id).strip() or None if compile_id is not None else None
         self.duckdb_path = str(Path(duckdb_path).resolve())
         self.working_dir = str(Path(working_dir or Path(self.duckdb_path).parent).resolve())
         self.spec = spec
@@ -357,6 +359,7 @@ class PipelineRuntime:
         self._record_pipeline_run(
             PipelineRunRecord(
                 run_id=self.run_id,
+                compile_id=self.compile_id,
                 pipeline_id=self.pipeline_id,
                 pipeline_name=self.spec.pipeline_name,
                 target=self.spec.target,
@@ -639,6 +642,7 @@ class PipelineRuntime:
         self._record_pipeline_run(
             PipelineRunRecord(
                 run_id=self.run_id,
+                compile_id=self.compile_id,
                 pipeline_id=self.pipeline_id,
                 pipeline_name=self.spec.pipeline_name,
                 target=self.spec.target,
@@ -653,6 +657,7 @@ class PipelineRuntime:
         self._record_pipeline_run(
             PipelineRunRecord(
                 run_id=self.run_id,
+                compile_id=self.compile_id,
                 pipeline_id=self.pipeline_id,
                 pipeline_name=self.spec.pipeline_name,
                 target=self.spec.target,

@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import site
+import sys
+import sysconfig
 from typing import Any
 
 from .config import load_config, resolve_source_relation, resolve_target, try_resolve_egress_relation
+from .runtime_models import CompiledContractRecord
 from .specs import NodeSpec, PipelineSpec
 from .templates import extract_refs, extract_sources, find_raw_compound_relations, has_raw_reference_to_name, render_sql
 
@@ -20,6 +29,352 @@ class CompiledPipeline:
     spec: PipelineSpec | None
     diagnostics: list[dict[str, Any]]
     module_globals: dict[str, Any]
+    contract: CompiledContractRecord | None = None
+
+
+_PROJECT_DIR_EXCLUDES = {".git", ".venv", ".queron", "__pycache__"}
+
+
+def _has_error_diagnostics(diagnostics: list[dict[str, Any]]) -> bool:
+    return any(str(item.get("level") or "").strip().lower() == "error" for item in diagnostics)
+
+
+def _normalize_for_hash(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _normalize_for_hash(val) for key, val in sorted(value.items(), key=lambda item: str(item[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_for_hash(item) for item in value]
+    if isinstance(value, set):
+        return [_normalize_for_hash(item) for item in sorted(value, key=lambda item: json.dumps(_normalize_for_hash(item), sort_keys=True))]
+    return value
+
+
+def _hash_json(value: Any) -> str:
+    normalized = _normalize_for_hash(value)
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _hash_file(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _resolve_path(value: str | Path | None) -> Path | None:
+    if value is None:
+        return None
+    try:
+        return Path(value).expanduser().resolve()
+    except Exception:
+        return None
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _display_path(path: Path, *, project_root: Path | None) -> str:
+    if project_root is not None and _is_relative_to(path, project_root):
+        return path.relative_to(project_root).as_posix()
+    return str(path)
+
+
+def _iter_project_python_files(project_root: Path) -> list[Path]:
+    files: list[Path] = []
+    for path in sorted(project_root.rglob("*.py")):
+        if any(part in _PROJECT_DIR_EXCLUDES for part in path.parts):
+            continue
+        if not path.is_file():
+            continue
+        files.append(path.resolve())
+    return files
+
+
+def _module_name_for_project_file(project_root: Path, file_path: Path) -> str:
+    relative = file_path.relative_to(project_root).with_suffix("")
+    parts = list(relative.parts)
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _resolve_import_module_name(*, current_module: str, module_name: str | None, level: int) -> str | None:
+    if level <= 0:
+        return str(module_name or "").strip() or None
+
+    current_parts = [part for part in str(current_module or "").split(".") if part]
+    package_parts = current_parts[:-1]
+    if level > 1:
+        if level - 1 > len(package_parts):
+            return None
+        package_parts = package_parts[: len(package_parts) - (level - 1)]
+    base = ".".join(package_parts)
+    suffix = str(module_name or "").strip()
+    if base and suffix:
+        return f"{base}.{suffix}"
+    if base:
+        return base
+    return suffix or None
+
+
+def _collect_import_module_names(project_root: Path, file_path: Path) -> list[str]:
+    try:
+        tree = ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path))
+    except Exception:
+        return []
+
+    current_module = _module_name_for_project_file(project_root, file_path)
+    module_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = str(alias.name or "").strip()
+                if name:
+                    module_names.add(name)
+        elif isinstance(node, ast.ImportFrom):
+            resolved_name = _resolve_import_module_name(
+                current_module=current_module,
+                module_name=node.module,
+                level=int(node.level or 0),
+            )
+            if resolved_name:
+                module_names.add(resolved_name)
+    return sorted(module_names)
+
+
+def _library_roots() -> list[Path]:
+    roots: list[Path] = []
+    for key in ("stdlib", "platstdlib", "purelib", "platlib"):
+        resolved = _resolve_path(sysconfig.get_paths().get(key))
+        if resolved is not None:
+            roots.append(resolved)
+    try:
+        for item in site.getsitepackages():
+            resolved = _resolve_path(item)
+            if resolved is not None:
+                roots.append(resolved)
+    except Exception:
+        pass
+    try:
+        user_site = site.getusersitepackages()
+        resolved = _resolve_path(user_site)
+        if resolved is not None:
+            roots.append(resolved)
+    except Exception:
+        pass
+    roots.append(Path(__file__).resolve().parents[1])
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(root)
+    return deduped
+
+
+def _resolve_module_origin(module_name: str, *, project_root: Path) -> str | None:
+    original_sys_path = list(sys.path)
+    try:
+        project_root_text = str(project_root)
+        if project_root_text not in sys.path:
+            sys.path.insert(0, project_root_text)
+        spec = importlib.util.find_spec(module_name)
+    except Exception:
+        spec = None
+    finally:
+        sys.path[:] = original_sys_path
+    if spec is None:
+        return None
+    origin = getattr(spec, "origin", None)
+    if origin in {"built-in", "frozen"}:
+        return str(origin)
+    if origin is None:
+        return None
+    return str(origin)
+
+
+def _validate_project_imports(project_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    diagnostics: list[dict[str, Any]] = []
+    external_dependencies: list[dict[str, Any]] = []
+    seen_dependencies: set[tuple[str, str, str]] = set()
+    library_roots = _library_roots()
+
+    for file_path in _iter_project_python_files(project_root):
+        for module_name in _collect_import_module_names(project_root, file_path):
+            origin = _resolve_module_origin(module_name, project_root=project_root)
+            if origin in {"built-in", "frozen"}:
+                key = (module_name, str(origin), "library")
+                if key not in seen_dependencies:
+                    seen_dependencies.add(key)
+                    external_dependencies.append({"module": module_name, "path": str(origin), "kind": "library"})
+                continue
+            resolved_origin = _resolve_path(origin)
+            if resolved_origin is None:
+                continue
+            if _is_relative_to(resolved_origin, project_root):
+                continue
+            if any(_is_relative_to(resolved_origin, root) for root in library_roots):
+                key = (module_name, str(resolved_origin), "library")
+                if key not in seen_dependencies:
+                    seen_dependencies.add(key)
+                    external_dependencies.append(
+                        {"module": module_name, "path": str(resolved_origin), "kind": "library"}
+                    )
+                continue
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "code": "external_python_import_not_allowed",
+                    "message": (
+                        f"Project file '{_display_path(file_path, project_root=project_root)}' imports local Python "
+                        f"module '{module_name}' from '{resolved_origin}', which is outside the pipeline project root."
+                    ),
+                }
+            )
+    return external_dependencies, diagnostics
+
+
+def _tracked_config_entry(
+    *,
+    config_path: Path | None,
+    config_text: str | None,
+    project_root: Path,
+) -> tuple[str, list[dict[str, Any]]]:
+    exists = config_path is not None and config_path.exists()
+    tracked_files: list[dict[str, Any]] = []
+    if config_path is not None:
+        tracked_files.append(
+            {
+                "path": _display_path(config_path, project_root=project_root),
+                "kind": "config",
+                "hash": _hash_json({"exists": exists, "content": config_text or ""}),
+            }
+        )
+    return _hash_json({"exists": exists, "content": config_text or ""}), tracked_files
+
+
+def _normalized_node_payload(node: NodeSpec) -> dict[str, Any]:
+    return {
+        "name": node.name,
+        "function_name": node.function_name,
+        "kind": node.kind,
+        "sql": node.sql,
+        "resolved_sql": node.resolved_sql,
+        "input_path": node.input_path,
+        "file_format": node.file_format,
+        "operator": node.operator,
+        "value": node.value,
+        "config": node.config,
+        "out": node.out,
+        "materialized": node.materialized,
+        "target_relation": node.target_relation,
+        "output_path": node.output_path,
+        "mode": node.mode,
+        "overwrite": node.overwrite,
+        "compression": node.compression,
+        "delimiter": node.delimiter,
+        "quote": node.quote,
+        "escape": node.escape,
+        "skip_rows": node.skip_rows,
+        "columns": dict(sorted((node.columns or {}).items())),
+        "header": node.header,
+        "connection_type": node.connection_type,
+        "target_table": node.target_table,
+        "dependencies": sorted(node.dependencies),
+        "refs": sorted(node.refs),
+        "sources": sorted(node.sources),
+        "resolved_sources": dict(sorted((node.resolved_sources or {}).items())),
+    }
+
+
+def _build_compile_contract(
+    *,
+    spec: PipelineSpec,
+    diagnostics: list[dict[str, Any]],
+    pipeline_path: Path,
+    artifact_path: Path,
+    config_path: Path | None,
+    config_text: str | None,
+) -> tuple[CompiledContractRecord | None, list[dict[str, Any]]]:
+    project_root = pipeline_path.parent.resolve()
+    external_dependencies, import_diagnostics = _validate_project_imports(project_root)
+    if _has_error_diagnostics(import_diagnostics):
+        return None, import_diagnostics
+
+    tracked_python_files: list[dict[str, Any]] = []
+    for file_path in _iter_project_python_files(project_root):
+        tracked_python_files.append(
+            {
+                "path": _display_path(file_path, project_root=project_root),
+                "kind": "project_python",
+                "hash": _hash_file(file_path),
+            }
+        )
+    project_python_hash = _hash_json(tracked_python_files)
+    config_hash, tracked_config_files = _tracked_config_entry(
+        config_path=config_path,
+        config_text=config_text,
+        project_root=project_root,
+    )
+    tracked_files = [*tracked_python_files, *tracked_config_files]
+    node_hashes_json: list[dict[str, Any]] = []
+    normalized_nodes: list[dict[str, Any]] = []
+    for node in sorted(spec.nodes, key=lambda item: item.name):
+        payload = _normalized_node_payload(node)
+        normalized_nodes.append(payload)
+        node_hashes_json.append(
+            {
+                "node_name": node.name,
+                "node_kind": node.kind,
+                "hash": _hash_json(payload),
+            }
+        )
+
+    edges_json = sorted([[dependency, node.name] for node in spec.nodes for dependency in node.dependencies])
+    edge_hash = _hash_json(edges_json)
+    spec_json = {
+        "pipeline_id": spec.pipeline_id,
+        "pipeline_name": spec.pipeline_name,
+        "target": spec.target,
+        "nodes": normalized_nodes,
+    }
+    contract_hash = _hash_json(
+        {
+            "pipeline_id": spec.pipeline_id,
+            "pipeline_name": spec.pipeline_name,
+            "target": spec.target,
+            "node_hashes": node_hashes_json,
+            "edge_hash": edge_hash,
+            "config_hash": config_hash,
+            "project_python_hash": project_python_hash,
+        }
+    )
+    contract = CompiledContractRecord(
+        pipeline_id=str(spec.pipeline_id or pipeline_path.stem),
+        pipeline_name=spec.pipeline_name,
+        pipeline_path=str(pipeline_path),
+        project_root=str(project_root),
+        artifact_path=str(artifact_path),
+        config_path=str(config_path) if config_path is not None else None,
+        target=spec.target,
+        is_active=True,
+        contract_hash=contract_hash,
+        edge_hash=edge_hash,
+        config_hash=config_hash,
+        project_python_hash=project_python_hash,
+        node_hashes_json=node_hashes_json,
+        edges_json=edges_json,
+        tracked_files_json=tracked_files,
+        external_dependencies_json=external_dependencies,
+        spec_json=spec_json,
+        diagnostics_json=list(diagnostics),
+    )
+    return contract, import_diagnostics
 
 
 def _sanitize_artifact_name(value: str | None, fallback: str) -> str:
@@ -66,11 +421,21 @@ def _file_format_for_kind(kind: str, *, value: str | None = None, path: str | No
     return _normalize_file_format(value, path=path)
 
 
-def _load_module_from_code(code: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _load_module_from_code(
+    code: str,
+    *,
+    source_path: str | Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     diagnostics: list[dict[str, Any]] = []
-    module_globals: dict[str, Any] = {"__name__": "__queron_generated__"}
+    resolved_source_path = _resolve_path(source_path)
+    module_globals: dict[str, Any] = {"__name__": "__queron_generated__", "__file__": str(resolved_source_path or "<queron_generated_pipeline>")}
+    original_sys_path = list(sys.path)
     try:
-        compiled = compile(code, "<queron_generated_pipeline>", "exec")
+        if resolved_source_path is not None:
+            project_root_text = str(resolved_source_path.parent)
+            if project_root_text not in sys.path:
+                sys.path.insert(0, project_root_text)
+        compiled = compile(code, str(resolved_source_path or "<queron_generated_pipeline>"), "exec")
         exec(compiled, module_globals, module_globals)
     except SyntaxError as exc:
         diagnostics.append(
@@ -91,6 +456,8 @@ def _load_module_from_code(code: str) -> tuple[dict[str, Any], list[dict[str, An
                 "message": str(exc),
             }
         )
+    finally:
+        sys.path[:] = original_sys_path
     return module_globals, diagnostics
 
 
@@ -148,8 +515,16 @@ def _collect_nodes(module_globals: dict[str, Any]) -> tuple[list[NodeSpec], dict
     return nodes, native
 
 
-def compile_pipeline_code(code: str, *, yaml_text: str | None = None, target: str | None = None) -> CompiledPipeline:
-    module_globals, diagnostics = _load_module_from_code(code)
+def compile_pipeline_code(
+    code: str,
+    *,
+    yaml_text: str | None = None,
+    target: str | None = None,
+    source_path: str | Path | None = None,
+    artifact_path: str | Path | None = None,
+    config_path: str | Path | None = None,
+) -> CompiledPipeline:
+    module_globals, diagnostics = _load_module_from_code(code, source_path=source_path)
     if diagnostics:
         return CompiledPipeline(spec=None, diagnostics=diagnostics, module_globals=module_globals)
 
@@ -168,7 +543,20 @@ def compile_pipeline_code(code: str, *, yaml_text: str | None = None, target: st
         native_metadata=native_metadata,
     )
     diagnostics.extend(_validate_and_enrich_spec(spec, config))
-    return CompiledPipeline(spec=spec, diagnostics=diagnostics, module_globals=module_globals)
+    contract: CompiledContractRecord | None = None
+    if not _has_error_diagnostics(diagnostics) and source_path is not None and artifact_path is not None:
+        built_contract, contract_diagnostics = _build_compile_contract(
+            spec=spec,
+            diagnostics=diagnostics,
+            pipeline_path=Path(source_path).expanduser().resolve(),
+            artifact_path=Path(artifact_path).expanduser().resolve(),
+            config_path=_resolve_path(config_path),
+            config_text=yaml_text,
+        )
+        diagnostics.extend(contract_diagnostics)
+        if not _has_error_diagnostics(contract_diagnostics):
+            contract = built_contract
+    return CompiledPipeline(spec=spec, diagnostics=diagnostics, module_globals=module_globals, contract=contract)
 
 
 def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> list[dict[str, Any]]:

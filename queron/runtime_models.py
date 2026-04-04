@@ -300,6 +300,7 @@ class PipelineRunRecord(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     run_id: str = Field(min_length=1)
+    compile_id: str | None = None
     pipeline_id: str = Field(min_length=1, validation_alias=AliasChoices("pipeline_id", "notebook_id"))
     pipeline_name: str | None = Field(default=None, validation_alias=AliasChoices("pipeline_name", "notebook_name"))
     target: str | None = None
@@ -346,6 +347,29 @@ class NodeStateRecord(BaseModel):
     created_at: str | None = None
     trigger: str | None = None
     details_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class CompiledContractRecord(BaseModel):
+    compile_id: str | None = None
+    pipeline_id: str = Field(min_length=1)
+    pipeline_name: str | None = None
+    pipeline_path: str = Field(min_length=1)
+    project_root: str = Field(min_length=1)
+    artifact_path: str = Field(min_length=1)
+    config_path: str | None = None
+    target: str | None = None
+    compiled_at: str | None = None
+    is_active: bool = True
+    contract_hash: str = Field(min_length=1)
+    edge_hash: str = Field(min_length=1)
+    config_hash: str = Field(min_length=1)
+    project_python_hash: str = Field(min_length=1)
+    node_hashes_json: list[dict[str, Any]] = Field(default_factory=list)
+    edges_json: list[list[str]] = Field(default_factory=list)
+    tracked_files_json: list[dict[str, Any]] = Field(default_factory=list)
+    external_dependencies_json: list[dict[str, Any]] = Field(default_factory=list)
+    spec_json: dict[str, Any] = Field(default_factory=dict)
+    diagnostics_json: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def utc_now_timestamp() -> str:

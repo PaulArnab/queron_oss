@@ -16,10 +16,64 @@ from duckdb_driver import load_duckdb
 
 
 class VerifyQueronCliTests(unittest.TestCase):
+    def _compile_pipeline(
+        self,
+        pipeline_path: pathlib.Path,
+        *,
+        artifact_path: pathlib.Path | None = None,
+        config_path: pathlib.Path | None = None,
+    ) -> None:
+        args = ["compile", str(pipeline_path)]
+        if artifact_path is not None:
+            args.extend(["--artifact-path", str(artifact_path)])
+        if config_path is not None:
+            args.extend(["--config", str(config_path)])
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            exit_code = queron.cli.main(args)
+        self.assertEqual(exit_code, 0)
+
+    def test_init_command_creates_starter_scaffold(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_path = pathlib.Path(tmpdir) / "starter_project"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(["init", str(project_path)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Init succeeded.", stdout.getvalue())
+            self.assertTrue((project_path / "pipeline.py").exists())
+            self.assertTrue((project_path / "configurations.yaml").exists())
+            self.assertTrue((project_path / ".gitignore").exists())
+            self.assertTrue((project_path / "local_files").is_dir())
+            self.assertTrue((project_path / "exports").is_dir())
+
+            pipeline_text = (project_path / "pipeline.py").read_text(encoding="utf-8")
+            self.assertIn("queron init . --sample --force", pipeline_text)
+
+    def test_init_command_creates_sample_scaffold(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_path = pathlib.Path(tmpdir) / "sample_project"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(["init", str(project_path), "--sample"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Init succeeded.", stdout.getvalue())
+
+            pipeline_text = (project_path / "pipeline.py").read_text(encoding="utf-8")
+            self.assertIn('@queron.model.sql(', pipeline_text)
+            self.assertIn('@queron.csv.egress(', pipeline_text)
+            self.assertIn('exports/enriched_numbers.csv', pipeline_text)
+
     def test_compile_command_succeeds_for_valid_pipeline(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)
             pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
             pipeline_path.write_text(
                 """import queron
 
@@ -38,11 +92,94 @@ def seed():
             stdout = io.StringIO()
             stderr = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
-                exit_code = queron.cli.main(["compile", str(pipeline_path)])
+                exit_code = queron.cli.main(["compile", str(pipeline_path), "--artifact-path", str(artifact_path)])
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                compile_rows = conn.execute(
+                    'SELECT compile_id, is_active FROM "_queron_meta"."compiled_contracts"'
+                ).fetchall()
+            finally:
+                conn.close()
 
         self.assertEqual(exit_code, 0)
         self.assertIn("Compile succeeded.", stdout.getvalue())
         self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(len(compile_rows), 1)
+        self.assertTrue(bool(compile_rows[0][1]))
+
+    def test_run_command_requires_compile_first(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("compile_required", stderr.getvalue())
+
+    def test_run_command_requires_recompile_after_pipeline_change(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 2 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("recompile_required", stderr.getvalue())
 
     def test_run_command_executes_with_connections_yaml(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -79,6 +216,7 @@ connections:
 """,
                 encoding="utf-8",
             )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
             stdout = io.StringIO()
             stderr = io.StringIO()
             with patch("postgres_core.connect") as connect_mock, patch(
@@ -140,6 +278,7 @@ def enriched():
                 encoding="utf-8",
             )
 
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 first_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
             stdout = io.StringIO()
@@ -164,32 +303,22 @@ def enriched():
             root = pathlib.Path(tmpdir)
             pipeline_path = root / "pipeline.py"
             artifact_path = root / "artifacts.duckdb"
+            local_files_dir = root / "local_files"
+            local_files_dir.mkdir(parents=True, exist_ok=True)
             pipeline_path.write_text(
                 """import queron
 
-@queron.model.sql(
+@queron.csv.ingress(
     name='seed',
     out='seed',
-    query=\"\"\"
-SELECT 1 AS id
-\"\"\",
+    path='local_files/input.csv',
 )
 def seed():
-    pass
-
-@queron.model.sql(
-    name='broken',
-    out='broken',
-    query=\"\"\"
-SELECT CAST('bad' AS INTEGER) AS id
-FROM {{ queron.ref("seed") }}
-\"\"\",
-)
-def broken():
     pass
 """,
                 encoding="utf-8",
             )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
 
             stderr = io.StringIO()
             with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
@@ -207,32 +336,7 @@ def broken():
             failed_run_id = failed_run[0]
             self.assertEqual(failed_run[1], "failed")
 
-            pipeline_path.write_text(
-                """import queron
-
-@queron.model.sql(
-    name='seed',
-    out='seed',
-    query=\"\"\"
-SELECT 1 AS id
-\"\"\",
-)
-def seed():
-    pass
-
-@queron.model.sql(
-    name='broken',
-    out='broken',
-    query=\"\"\"
-SELECT id + 1 AS id
-FROM {{ queron.ref("seed") }}
-\"\"\",
-)
-def broken():
-    pass
-""",
-                encoding="utf-8",
-            )
+            (local_files_dir / "input.csv").write_text("id\n1\n", encoding="utf-8")
 
             stdout = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
@@ -243,7 +347,7 @@ def broken():
 
             conn = load_duckdb().connect(str(artifact_path))
             try:
-                rows = conn.execute('SELECT id FROM "main"."broken"').fetchall()
+                rows = conn.execute('SELECT id FROM "main"."seed"').fetchall()
                 pipeline_runs = conn.execute(
                     'SELECT run_id, status FROM "_queron_meta"."pipeline_runs"'
                 ).fetchall()
@@ -258,9 +362,9 @@ def broken():
                 ).fetchall()
             finally:
                 conn.close()
-            self.assertEqual(rows, [(2,)])
+            self.assertEqual(rows, [(1,)])
             self.assertEqual(pipeline_runs, [(failed_run_id, "success")])
-            self.assertEqual(active_states, [("broken", "complete"), ("seed", "complete")])
+            self.assertEqual(active_states, [("seed", "complete")])
 
     def test_failed_run_persists_skipped_node_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -304,6 +408,7 @@ def leaf():
 """,
                 encoding="utf-8",
             )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
 
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 failed_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
@@ -374,6 +479,7 @@ def leaf():
 """,
                 encoding="utf-8",
             )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
 
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 initial_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
@@ -488,6 +594,7 @@ def leaf():
 """,
                 encoding="utf-8",
             )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
 
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 failed_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
@@ -551,6 +658,7 @@ def seed():
 """,
                 encoding="utf-8",
             )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
 
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 first_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])

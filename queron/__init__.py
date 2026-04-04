@@ -402,12 +402,14 @@ from .bindings import Db2Binding, PostGresBinding, PostgresBinding, RuntimeBindi
 from .config import load_connections_config, resolve_connection_binding  # noqa: E402
 from .executor import execute_pipeline  # noqa: E402
 from .api import (  # noqa: E402
+    InitPipelineProjectResult,
     ResetPipelineResult,
     RunPipelineResult,
     compile_pipeline_text,
     compile_pipeline_file,
     execute_compiled_pipeline,
     has_compile_errors,
+    init_pipeline_project,
     reset_compiled_all,
     reset_compiled_downstream,
     reset_compiled_upstream,
@@ -447,6 +449,7 @@ __all__ = [
     "ColumnMappingRecord",
     "CompiledPipeline",
     "Db2Binding",
+    "InitPipelineProjectResult",
     "LogCode",
     "NodeExecutionResult",
     "NodeRunRecord",
@@ -477,6 +480,7 @@ __all__ = [
     "execute_pipeline",
     "file",
     "has_compile_errors",
+    "init_pipeline_project",
     "load_connections_config",
     "format_log_event",
     "jsonl",

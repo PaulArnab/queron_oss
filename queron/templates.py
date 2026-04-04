@@ -50,3 +50,87 @@ def has_raw_reference_to_name(sql: str, name: str) -> bool:
     pattern = re.compile(rf"\b(?:from|join)\s+(?!\()(?P<relation>{token})\b", re.IGNORECASE)
     text = SOURCE_PATTERN.sub("__queron_source__", REF_PATTERN.sub("__queron_ref__", str(sql or "")))
     return bool(pattern.search(text))
+
+
+def build_init_pipeline_text(*, sample: bool = False) -> str:
+    if sample:
+        return """import queron
+
+
+@queron.model.sql(
+    name="seed_numbers",
+    out="seed_numbers",
+    query=\"\"\"
+SELECT 1 AS id
+UNION ALL
+SELECT 2 AS id
+UNION ALL
+SELECT 3 AS id
+\"\"\",
+)
+def seed_numbers():
+    pass
+
+
+@queron.model.sql(
+    name="enriched_numbers",
+    out="enriched_numbers",
+    query=f\"\"\"
+SELECT
+  id,
+  id * 10 AS scaled_value
+FROM {queron.ref("seed_numbers")}
+\"\"\",
+)
+def enriched_numbers():
+    pass
+
+
+@queron.csv.egress(
+    name="export_enriched_numbers",
+    path="exports/enriched_numbers.csv",
+    sql=f\"\"\"
+SELECT *
+FROM {queron.ref("enriched_numbers")}
+\"\"\",
+    overwrite=True,
+)
+def export_enriched_numbers():
+    pass
+"""
+
+    return '''"""Starter Queron pipeline project."""
+
+import queron
+
+# Add pipeline nodes here.
+# To replace this starter with the built-in sample scaffold, run:
+#   queron init . --sample --force
+
+# Example:
+#
+# @queron.model.sql(
+#     name="seed",
+#     out="seed",
+#     query="""
+# SELECT 1 AS id
+# """,
+# )
+# def seed():
+#     pass
+'''
+
+
+def build_init_config_text() -> str:
+    return """target: dev
+
+sources: {}
+"""
+
+
+def build_init_gitignore_text() -> str:
+    return """.queron/
+__pycache__/
+*.pyc
+.venv/
+"""

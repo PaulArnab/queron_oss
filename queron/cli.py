@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .api import (
+    init_pipeline_project,
     compile_pipeline_file,
     has_compile_errors,
     list_existing_outputs_for_file,
@@ -24,12 +25,25 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="queron", description="Compile and run Queron OSS pipelines.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    compile_parser = subparsers.add_parser("compile", help="Compile a Queron pipeline and validate its DAG.")
+    init_parser = subparsers.add_parser("init", help="Create a new Queron pipeline project scaffold.")
+    init_parser.add_argument("path", help="Directory where the pipeline project scaffold should be created.")
+    init_parser.add_argument("--sample", action="store_true", help="Create a runnable sample pipeline scaffold.")
+    init_parser.add_argument("--force", action="store_true", help="Overwrite scaffold files when the directory exists.")
+    init_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
+    init_parser.set_defaults(handler=_handle_init)
+
+    compile_parser = subparsers.add_parser("compile", help="Compile a Queron pipeline and persist its execution contract.")
     _add_common_compile_flags(compile_parser)
+    compile_parser.add_argument(
+        "--artifact-path",
+        dest="artifact_path",
+        default=None,
+        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
+    )
     compile_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     compile_parser.set_defaults(handler=_handle_compile)
 
-    run_parser = subparsers.add_parser("run", help="Compile and execute a Queron pipeline.")
+    run_parser = subparsers.add_parser("run", help="Validate the active compile contract and execute a Queron pipeline.")
     _add_common_compile_flags(run_parser)
     run_parser.add_argument(
         "--connections",
@@ -65,7 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     resume_parser = subparsers.add_parser(
         "resume",
-        help="Resume the pipeline from the failed node in the latest failed run.",
+        help="Validate the active compile contract and resume the latest failed run.",
     )
     _add_common_compile_flags(resume_parser)
     resume_parser.add_argument(
@@ -221,13 +235,66 @@ def _prompt_for_purge_confirmation(warning_message: str, purge_targets: list[str
     return response in {"y", "yes"}
 
 
+def _handle_init(args: argparse.Namespace) -> int:
+    try:
+        result = init_pipeline_project(
+            args.path,
+            sample=bool(args.sample),
+            force=bool(args.force),
+        )
+    except Exception as exc:
+        if args.json_output:
+            return _emit_json({"ok": False, "error": str(exc)})
+        print(f"Init failed: {exc}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "project_path": result.project_path,
+        "sample": result.sample,
+        "written_files": result.written_files,
+        "created_directories": result.created_directories,
+    }
+    if args.json_output:
+        return _emit_json(payload)
+
+    print(f"Project: {result.project_path}")
+    print(f"Scaffold: {'sample' if result.sample else 'starter'}")
+    if result.written_files:
+        print(f"Written files: {', '.join(result.written_files)}")
+    if result.created_directories:
+        print(f"Created directories: {', '.join(result.created_directories)}")
+    print("Init succeeded.")
+    return 0
+
+
 def _handle_compile(args: argparse.Namespace) -> int:
-    compiled = compile_pipeline_file(args.pipeline, config_path=args.config_path, target=args.target)
+    try:
+        compiled = compile_pipeline_file(
+            args.pipeline,
+            config_path=args.config_path,
+            target=args.target,
+            artifact_path=args.artifact_path,
+        )
+    except Exception as exc:
+        if args.json_output:
+            return _emit_json({"ok": False, "error": str(exc)})
+        print(f"Compile failed: {exc}", file=sys.stderr)
+        return 1
     payload = _pipeline_summary(compiled)
+    payload["artifact_path"] = str(
+        Path(args.artifact_path).expanduser().resolve()
+        if args.artifact_path is not None
+        else (Path(args.pipeline).expanduser().resolve().parent / ".queron" / f"{Path(args.pipeline).stem}.duckdb").resolve()
+    )
+    payload["compile_id"] = compiled.contract.compile_id if compiled.contract is not None else None
     if args.json_output:
         return _emit_json(payload)
 
     print(f"Pipeline: {Path(args.pipeline).expanduser().resolve()}")
+    print(f"Artifact DB: {payload['artifact_path']}")
+    if payload["compile_id"]:
+        print(f"Compile ID: {payload['compile_id']}")
     print(f"Nodes: {payload['node_count']}")
     if payload["target"]:
         print(f"Target: {payload['target']}")

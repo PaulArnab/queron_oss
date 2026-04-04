@@ -9,6 +9,7 @@ from .executor import _select_downstream_nodes, _select_upstream_nodes, execute_
 from .runtime import PipelineRuntime
 from .runtime_models import LogCode, PipelineLogEvent, build_log_event
 from .specs import PipelineSpec
+from .templates import build_init_config_text, build_init_gitignore_text, build_init_pipeline_text
 
 @dataclass
 class RunPipelineResult:
@@ -24,6 +25,14 @@ class ResetPipelineResult:
     artifact_path: str
     reset_nodes: list[str]
     reset_tables: list[str]
+
+
+@dataclass
+class InitPipelineProjectResult:
+    project_path: str
+    written_files: list[str]
+    created_directories: list[str]
+    sample: bool = False
 
 
 def _emit_log_event(
@@ -71,6 +80,72 @@ def _read_text_file(path: str | Path | None, *, label: str, required: bool = Fal
     return resolved.read_text(encoding="utf-8")
 
 
+def _resolve_config_input(
+    pipeline_path: Path,
+    config_path: str | Path | None,
+) -> tuple[Path | None, str | None]:
+    if config_path is not None:
+        resolved = Path(config_path).expanduser().resolve()
+        return resolved, _read_text_file(resolved, label="Configuration file", required=True)
+    default_config = pipeline_path.parent / "configurations.yaml"
+    if default_config.exists() and default_config.is_file():
+        return default_config.resolve(), _read_text_file(default_config, label="Configuration file")
+    return None, None
+
+
+def init_pipeline_project(
+    project_path: str | Path,
+    *,
+    sample: bool = False,
+    force: bool = False,
+) -> InitPipelineProjectResult:
+    resolved_project_path = Path(project_path).expanduser().resolve()
+    if resolved_project_path.exists() and not resolved_project_path.is_dir():
+        raise RuntimeError(f"Project path '{resolved_project_path}' is not a directory.")
+
+    existing_entries = list(resolved_project_path.iterdir()) if resolved_project_path.exists() else []
+    if existing_entries and not force:
+        raise RuntimeError(
+            f"Project directory '{resolved_project_path}' is not empty. Re-run with force=True to overwrite scaffold files."
+        )
+
+    resolved_project_path.mkdir(parents=True, exist_ok=True)
+
+    created_directories: list[str] = []
+    for directory in (
+        resolved_project_path / "local_files",
+        resolved_project_path / "exports",
+    ):
+        if not directory.exists():
+            directory.mkdir(parents=True, exist_ok=True)
+            created_directories.append(str(directory))
+        elif not directory.is_dir():
+            raise RuntimeError(f"Required scaffold directory '{directory}' already exists and is not a directory.")
+
+    written_files: list[str] = []
+    scaffold_files = {
+        resolved_project_path / "pipeline.py": build_init_pipeline_text(sample=sample),
+        resolved_project_path / "configurations.yaml": build_init_config_text(),
+        resolved_project_path / ".gitignore": build_init_gitignore_text(),
+    }
+    for file_path, contents in scaffold_files.items():
+        if file_path.exists() and file_path.is_dir():
+            raise RuntimeError(f"Required scaffold file '{file_path}' already exists as a directory.")
+        if file_path.exists() and not force and existing_entries:
+            raise RuntimeError(
+                f"Scaffold file '{file_path}' already exists. Re-run with force=True to overwrite scaffold files."
+            )
+        file_path.write_text(contents, encoding="utf-8")
+        written_files.append(str(file_path))
+
+    return InitPipelineProjectResult(
+        project_path=str(resolved_project_path),
+        written_files=written_files,
+        created_directories=created_directories,
+        sample=bool(sample),
+    )
+
+
 def _default_pipeline_id(pipeline_path: Path) -> str:
     return pipeline_path.stem
 
@@ -91,12 +166,28 @@ def compile_pipeline_file(
     *,
     config_path: str | Path | None = None,
     target: str | None = None,
+    artifact_path: str | Path | None = None,
 ) -> CompiledPipeline:
     resolved_pipeline_path, code = load_pipeline_code_from_file(pipeline_path)
-    yaml_text = _read_text_file(config_path, label="Configuration file") if config_path else None
-    if yaml_text is None and config_path is None:
-        yaml_text = _read_text_file(resolved_pipeline_path.parent / "configurations.yaml", label="Configuration file")
-    return compile_pipeline_text(code, yaml_text=yaml_text, target=target)
+    resolved_config_path, yaml_text = _resolve_config_input(resolved_pipeline_path, config_path)
+    resolved_artifact_path = _resolve_artifact_path(resolved_pipeline_path, artifact_path)
+    compiled = compile_pipeline_code(
+        code,
+        yaml_text=yaml_text,
+        target=target,
+        source_path=resolved_pipeline_path,
+        artifact_path=resolved_artifact_path,
+        config_path=resolved_config_path,
+    )
+    if has_compile_errors(compiled) or compiled.spec is None or compiled.contract is None:
+        return compiled
+    import duckdb_core
+
+    compiled.contract = duckdb_core.save_compiled_contract(
+        database_path=str(resolved_artifact_path),
+        record=compiled.contract,
+    )
+    return compiled
 
 
 def compile_pipeline_text(
@@ -106,6 +197,73 @@ def compile_pipeline_text(
     target: str | None = None,
 ) -> CompiledPipeline:
     return compile_pipeline_code(code, yaml_text=yaml_text, target=target)
+
+
+def _compiled_with_runtime_diagnostic(
+    compiled: CompiledPipeline,
+    *,
+    code: str,
+    message: str,
+) -> CompiledPipeline:
+    return CompiledPipeline(
+        spec=compiled.spec,
+        diagnostics=[
+            *compiled.diagnostics,
+            {
+                "level": "error",
+                "code": code,
+                "message": message,
+            },
+        ],
+        module_globals=compiled.module_globals,
+        contract=compiled.contract,
+    )
+
+
+def _validated_compiled_pipeline_for_file(
+    pipeline_path: str | Path,
+    *,
+    config_path: str | Path | None = None,
+    target: str | None = None,
+    artifact_path: str | Path | None = None,
+) -> tuple[CompiledPipeline, Path]:
+    resolved_pipeline_path, code = load_pipeline_code_from_file(pipeline_path)
+    resolved_config_path, yaml_text = _resolve_config_input(resolved_pipeline_path, config_path)
+    resolved_artifact_path = _resolve_artifact_path(resolved_pipeline_path, artifact_path)
+    compiled = compile_pipeline_code(
+        code,
+        yaml_text=yaml_text,
+        target=target,
+        source_path=resolved_pipeline_path,
+        artifact_path=resolved_artifact_path,
+        config_path=resolved_config_path,
+    )
+    if has_compile_errors(compiled) or compiled.spec is None or compiled.contract is None:
+        return compiled, resolved_artifact_path
+
+    import duckdb_core
+
+    stored_contract = duckdb_core.load_active_compiled_contract(database_path=str(resolved_artifact_path))
+    if stored_contract is None:
+        return (
+            _compiled_with_runtime_diagnostic(
+                compiled,
+                code="compile_required",
+                message="No compiled pipeline contract was found. Run queron compile first.",
+            ),
+            resolved_artifact_path,
+        )
+    if stored_contract.contract_hash != compiled.contract.contract_hash:
+        return (
+            _compiled_with_runtime_diagnostic(
+                compiled,
+                code="recompile_required",
+                message="Pipeline project files, DAG, or configuration changed since the last compile. Re-run queron compile.",
+            ),
+            resolved_artifact_path,
+        )
+    compiled.contract = stored_contract
+    return compiled, resolved_artifact_path
 
 
 def has_compile_errors(compiled: CompiledPipeline) -> bool:
@@ -137,7 +295,10 @@ def resume_compiled_pipeline(
     if compiled.spec is None:
         raise RuntimeError("Compiled pipeline is missing a spec.")
     active_on_log = on_log or getattr(runtime, "_on_log", None)
-    latest_run, node_runs, active_states = _current_failed_run_context(runtime)
+    latest_run, node_runs, active_states = _current_failed_run_context(
+        runtime,
+        expected_compile_id=getattr(runtime, "compile_id", None),
+    )
     runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
     runtime._pipeline_started_at = str(latest_run.get("started_at") or "").strip() or None
     selected_nodes = _resume_selected_nodes(compiled.spec, node_runs=node_runs, active_states=active_states)
@@ -308,6 +469,7 @@ def _build_runtime_for_pipeline(
     compiled: CompiledPipeline,
     artifact_path: str | Path | None,
     pipeline_id: str | None,
+    compile_id: str | None,
     runtime_bindings: dict[str, Any] | None,
     connections_path: str | Path | None,
     on_log: Callable[[PipelineLogEvent], None] | None,
@@ -317,6 +479,7 @@ def _build_runtime_for_pipeline(
     resolved_artifact_path = _resolve_artifact_path(pipeline_path, artifact_path)
     runtime = PipelineRuntime(
         pipeline_id=str(pipeline_id or _default_pipeline_id(pipeline_path)),
+        compile_id=compile_id,
         duckdb_path=str(resolved_artifact_path),
         working_dir=str(pipeline_path.parent.resolve()),
         spec=compiled.spec,
@@ -344,7 +507,11 @@ def _target_tables_for_nodes(spec: PipelineSpec, node_names: set[str]) -> list[s
     return target_tables
 
 
-def _current_failed_run_context(runtime: PipelineRuntime) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+def _current_failed_run_context(
+    runtime: PipelineRuntime,
+    *,
+    expected_compile_id: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     import duckdb_core
 
     latest_run = duckdb_core.get_latest_pipeline_run(
@@ -355,6 +522,12 @@ def _current_failed_run_context(runtime: PipelineRuntime) -> tuple[dict[str, Any
         raise RuntimeError("No pipeline run was found to resume or reset.")
     if str(latest_run.get("status") or "").strip().lower() != "failed":
         raise RuntimeError("The latest pipeline run is not failed, so there is nothing to resume or reset.")
+    if expected_compile_id is not None:
+        latest_compile_id = str(latest_run.get("compile_id") or "").strip() or None
+        if latest_compile_id is not None and latest_compile_id != expected_compile_id:
+            raise RuntimeError(
+                "The latest failed pipeline run belongs to an older compile contract. Re-run compile before using resume or reset."
+            )
 
     run_id = str(latest_run.get("run_id") or "").strip()
     if not run_id:
@@ -424,31 +597,32 @@ def run_pipeline_file(
     _emit_log_event(
         on_log,
         code=LogCode.PIPELINE_COMPILE_STARTED,
-        message="Compiling pipeline file...",
+        message="Validating compiled pipeline contract...",
     )
-    compiled = compile_pipeline_file(resolved_pipeline_path, config_path=config_path, target=target)
+    compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
+        resolved_pipeline_path,
+        config_path=config_path,
+        target=target,
+        artifact_path=artifact_path,
+    )
     if has_compile_errors(compiled) or compiled.spec is None:
         _emit_log_event(
             on_log,
             code=LogCode.PIPELINE_COMPILE_FAILED,
-            message="Pipeline compile failed.",
+            message="Pipeline compile contract validation failed.",
             severity="error",
             details={"diagnostic_count": len(compiled.diagnostics)},
         )
         return RunPipelineResult(
             compiled=compiled,
             executed_nodes=[],
-            artifact_path=str(
-                Path(artifact_path).expanduser().resolve()
-                if artifact_path is not None
-                else _default_artifact_path(resolved_pipeline_path)
-            ),
+            artifact_path=str(resolved_artifact_path),
             run_id=None,
         )
     _emit_log_event(
         on_log,
         code=LogCode.PIPELINE_COMPILE_SUCCEEDED,
-        message=f"Compile succeeded with {len(compiled.spec.nodes)} node(s).",
+        message=f"Compiled contract validated with {len(compiled.spec.nodes)} node(s).",
         details={"node_count": len(compiled.spec.nodes)},
     )
     runtime, resolved_artifact_path = _build_runtime_for_pipeline(
@@ -456,6 +630,7 @@ def run_pipeline_file(
         compiled=compiled,
         artifact_path=artifact_path,
         pipeline_id=pipeline_id,
+        compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
         connections_path=connections_path,
         on_log=on_log,
@@ -528,27 +703,32 @@ def resume_pipeline_file(
     _emit_log_event(
         on_log,
         code=LogCode.PIPELINE_COMPILE_STARTED,
-        message="Compiling pipeline file...",
+        message="Validating compiled pipeline contract...",
     )
-    compiled = compile_pipeline_file(resolved_pipeline_path, config_path=config_path, target=target)
+    compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
+        resolved_pipeline_path,
+        config_path=config_path,
+        target=target,
+        artifact_path=artifact_path,
+    )
     if has_compile_errors(compiled) or compiled.spec is None:
         _emit_log_event(
             on_log,
             code=LogCode.PIPELINE_COMPILE_FAILED,
-            message="Pipeline compile failed.",
+            message="Pipeline compile contract validation failed.",
             severity="error",
             details={"diagnostic_count": len(compiled.diagnostics)},
         )
         return RunPipelineResult(
             compiled=compiled,
             executed_nodes=[],
-            artifact_path=str(_resolve_artifact_path(resolved_pipeline_path, artifact_path)),
+            artifact_path=str(resolved_artifact_path),
             run_id=None,
         )
     _emit_log_event(
         on_log,
         code=LogCode.PIPELINE_COMPILE_SUCCEEDED,
-        message=f"Compile succeeded with {len(compiled.spec.nodes)} node(s).",
+        message=f"Compiled contract validated with {len(compiled.spec.nodes)} node(s).",
         details={"node_count": len(compiled.spec.nodes)},
     )
 
@@ -557,6 +737,7 @@ def resume_pipeline_file(
         compiled=compiled,
         artifact_path=artifact_path,
         pipeline_id=pipeline_id,
+        compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
         connections_path=connections_path,
         on_log=on_log,
@@ -579,8 +760,12 @@ def reset_node_file(
     artifact_path: str | Path | None = None,
 ) -> ResetPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
-    compiled = compile_pipeline_file(resolved_pipeline_path, config_path=config_path, target=target)
-    resolved_artifact_path = _resolve_artifact_path(resolved_pipeline_path, artifact_path)
+    compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
+        resolved_pipeline_path,
+        config_path=config_path,
+        target=target,
+        artifact_path=artifact_path,
+    )
     if has_compile_errors(compiled) or compiled.spec is None:
         return ResetPipelineResult(compiled=compiled, artifact_path=str(resolved_artifact_path), reset_nodes=[], reset_tables=[])
 
@@ -589,15 +774,20 @@ def reset_node_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=None,
+        compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
         on_log=None,
     )
     try:
-        latest_run, node_runs, _active_states = _current_failed_run_context(runtime)
+        latest_run, node_runs, _active_states = _current_failed_run_context(
+            runtime,
+            expected_compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
+        )
         runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
-    except Exception:
-        pass
+    except Exception as exc:
+        if "older compile contract" in str(exc):
+            raise
     result = reset_compiled_node(compiled, runtime=runtime, node_name=node_name)
     return ResetPipelineResult(
         compiled=result.compiled,
@@ -616,8 +806,12 @@ def reset_downstream_file(
     artifact_path: str | Path | None = None,
 ) -> ResetPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
-    compiled = compile_pipeline_file(resolved_pipeline_path, config_path=config_path, target=target)
-    resolved_artifact_path = _resolve_artifact_path(resolved_pipeline_path, artifact_path)
+    compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
+        resolved_pipeline_path,
+        config_path=config_path,
+        target=target,
+        artifact_path=artifact_path,
+    )
     if has_compile_errors(compiled) or compiled.spec is None:
         return ResetPipelineResult(compiled=compiled, artifact_path=str(resolved_artifact_path), reset_nodes=[], reset_tables=[])
 
@@ -626,15 +820,20 @@ def reset_downstream_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=None,
+        compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
         on_log=None,
     )
     try:
-        latest_run, node_runs, _active_states = _current_failed_run_context(runtime)
+        latest_run, node_runs, _active_states = _current_failed_run_context(
+            runtime,
+            expected_compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
+        )
         runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
-    except Exception:
-        pass
+    except Exception as exc:
+        if "older compile contract" in str(exc):
+            raise
     result = reset_compiled_downstream(compiled, runtime=runtime, node_name=node_name)
     return ResetPipelineResult(
         compiled=result.compiled,
@@ -653,8 +852,12 @@ def reset_upstream_file(
     artifact_path: str | Path | None = None,
 ) -> ResetPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
-    compiled = compile_pipeline_file(resolved_pipeline_path, config_path=config_path, target=target)
-    resolved_artifact_path = _resolve_artifact_path(resolved_pipeline_path, artifact_path)
+    compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
+        resolved_pipeline_path,
+        config_path=config_path,
+        target=target,
+        artifact_path=artifact_path,
+    )
     if has_compile_errors(compiled) or compiled.spec is None:
         return ResetPipelineResult(compiled=compiled, artifact_path=str(resolved_artifact_path), reset_nodes=[], reset_tables=[])
 
@@ -663,15 +866,20 @@ def reset_upstream_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=None,
+        compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
         on_log=None,
     )
     try:
-        latest_run, node_runs, _active_states = _current_failed_run_context(runtime)
+        latest_run, node_runs, _active_states = _current_failed_run_context(
+            runtime,
+            expected_compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
+        )
         runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
-    except Exception:
-        pass
+    except Exception as exc:
+        if "older compile contract" in str(exc):
+            raise
     result = reset_compiled_upstream(compiled, runtime=runtime, node_name=node_name)
     return ResetPipelineResult(
         compiled=result.compiled,
@@ -689,8 +897,12 @@ def reset_all_file(
     artifact_path: str | Path | None = None,
 ) -> ResetPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
-    compiled = compile_pipeline_file(resolved_pipeline_path, config_path=config_path, target=target)
-    resolved_artifact_path = _resolve_artifact_path(resolved_pipeline_path, artifact_path)
+    compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
+        resolved_pipeline_path,
+        config_path=config_path,
+        target=target,
+        artifact_path=artifact_path,
+    )
     if has_compile_errors(compiled) or compiled.spec is None:
         return ResetPipelineResult(compiled=compiled, artifact_path=str(resolved_artifact_path), reset_nodes=[], reset_tables=[])
 
@@ -699,15 +911,20 @@ def reset_all_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=None,
+        compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
         on_log=None,
     )
     try:
-        latest_run, node_runs, _active_states = _current_failed_run_context(runtime)
+        latest_run, node_runs, _active_states = _current_failed_run_context(
+            runtime,
+            expected_compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
+        )
         runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
-    except Exception:
-        pass
+    except Exception as exc:
+        if "older compile contract" in str(exc):
+            raise
     result = reset_compiled_all(compiled, runtime=runtime)
     return ResetPipelineResult(
         compiled=result.compiled,
@@ -728,8 +945,12 @@ def list_existing_outputs_for_file(
     pipeline_id: str | None = None,
 ) -> tuple[CompiledPipeline, list[str], str]:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
-    compiled = compile_pipeline_file(resolved_pipeline_path, config_path=config_path, target=target)
-    resolved_artifact_path = _resolve_artifact_path(resolved_pipeline_path, artifact_path)
+    compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
+        resolved_pipeline_path,
+        config_path=config_path,
+        target=target,
+        artifact_path=artifact_path,
+    )
     if has_compile_errors(compiled) or compiled.spec is None:
         return compiled, [], str(resolved_artifact_path)
 
@@ -738,6 +959,7 @@ def list_existing_outputs_for_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=pipeline_id,
+        compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
         connections_path=connections_path,
         on_log=None,

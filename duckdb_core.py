@@ -39,6 +39,7 @@ try:
     from .duckdb_driver import connect_duckdb, load_duckdb
     from .queron.runtime_models import (
         ColumnMappingRecord,
+        CompiledContractRecord,
         NodeRunRecord,
         NodeStateRecord,
         NodeWarningEvent,
@@ -51,6 +52,7 @@ except ImportError:
     from duckdb_driver import connect_duckdb, load_duckdb
     from queron.runtime_models import (
         ColumnMappingRecord,
+        CompiledContractRecord,
         NodeRunRecord,
         NodeStateRecord,
         NodeWarningEvent,
@@ -931,6 +933,7 @@ def _pipeline_runs_create_sql(*, table_name: str) -> str:
     return f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             run_id VARCHAR PRIMARY KEY,
+            compile_id VARCHAR,
             pipeline_id VARCHAR,
             pipeline_name VARCHAR,
             target VARCHAR,
@@ -961,6 +964,33 @@ def _node_runs_create_sql(*, table_name: str) -> str:
             warnings_json VARCHAR,
             details_json VARCHAR,
             active_node_state_id VARCHAR
+        )
+        """
+
+
+def _compiled_contracts_create_sql(*, table_name: str) -> str:
+    return f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            compile_id VARCHAR PRIMARY KEY,
+            pipeline_id VARCHAR,
+            pipeline_name VARCHAR,
+            pipeline_path VARCHAR,
+            project_root VARCHAR,
+            artifact_path VARCHAR,
+            config_path VARCHAR,
+            target VARCHAR,
+            compiled_at VARCHAR,
+            is_active BOOLEAN,
+            contract_hash VARCHAR,
+            edge_hash VARCHAR,
+            config_hash VARCHAR,
+            project_python_hash VARCHAR,
+            node_hashes_json VARCHAR,
+            edges_json VARCHAR,
+            tracked_files_json VARCHAR,
+            external_dependencies_json VARCHAR,
+            spec_json VARCHAR,
+            diagnostics_json VARCHAR
         )
         """
 
@@ -1041,11 +1071,17 @@ def _ensure_queron_meta_tables(conn) -> None:
     meta_schema = _quote_identifier("_queron_meta")
     conn.execute(f"CREATE SCHEMA IF NOT EXISTS {meta_schema}")
     pipeline_runs_name = f"{meta_schema}.{_quote_identifier('pipeline_runs')}"
+    compiled_contracts_name = f"{meta_schema}.{_quote_identifier('compiled_contracts')}"
     node_runs_name = f"{meta_schema}.{_quote_identifier('node_runs')}"
     node_states_name = f"{meta_schema}.{_quote_identifier('node_states')}"
     conn.execute(_pipeline_runs_create_sql(table_name=pipeline_runs_name))
+    conn.execute(_compiled_contracts_create_sql(table_name=compiled_contracts_name))
     conn.execute(_node_runs_create_sql(table_name=node_runs_name))
     conn.execute(_node_states_create_sql(table_name=node_states_name))
+    try:
+        conn.execute(f"ALTER TABLE {pipeline_runs_name} ADD COLUMN IF NOT EXISTS compile_id VARCHAR")
+    except Exception:
+        pass
     try:
         conn.execute(f"ALTER TABLE {node_runs_name} ADD COLUMN IF NOT EXISTS details_json VARCHAR")
     except Exception:
@@ -1216,6 +1252,14 @@ def _normalize_pipeline_run_record(record: PipelineRunRecord | dict[str, Any]) -
     return PipelineRunRecord.model_validate(record)
 
 
+def _normalize_compiled_contract_record(
+    record: CompiledContractRecord | dict[str, Any]
+) -> CompiledContractRecord:
+    if isinstance(record, CompiledContractRecord):
+        return record
+    return CompiledContractRecord.model_validate(record)
+
+
 def _normalize_node_run_record(record: NodeRunRecord | dict[str, Any]) -> NodeRunRecord:
     if isinstance(record, NodeRunRecord):
         return record
@@ -1245,6 +1289,7 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
     meta_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}"
     values = (
         item.run_id,
+        item.compile_id,
         item.pipeline_id,
         item.pipeline_name,
         item.target,
@@ -1259,6 +1304,7 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
             f"""
             INSERT OR REPLACE INTO {meta_table} (
                 run_id,
+                compile_id,
                 pipeline_id,
                 pipeline_name,
                 target,
@@ -1267,7 +1313,7 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 finished_at,
                 status,
                 error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1286,8 +1332,70 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 error_message
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            values,
+            values[0:1] + values[2:],
         )
+
+
+def _persist_compiled_contract(
+    conn,
+    *,
+    record: CompiledContractRecord | dict[str, Any],
+) -> CompiledContractRecord:
+    item = _normalize_compiled_contract_record(record)
+    _ensure_queron_meta_tables(conn)
+    meta_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('compiled_contracts')}"
+    compile_id = str(item.compile_id or uuid.uuid4().hex)
+    compiled_at = str(item.compiled_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    conn.execute(f"UPDATE {meta_table} SET is_active = FALSE")
+    conn.execute(
+        f"""
+        INSERT OR REPLACE INTO {meta_table} (
+            compile_id,
+            pipeline_id,
+            pipeline_name,
+            pipeline_path,
+            project_root,
+            artifact_path,
+            config_path,
+            target,
+            compiled_at,
+            is_active,
+            contract_hash,
+            edge_hash,
+            config_hash,
+            project_python_hash,
+            node_hashes_json,
+            edges_json,
+            tracked_files_json,
+            external_dependencies_json,
+            spec_json,
+            diagnostics_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            compile_id,
+            item.pipeline_id,
+            item.pipeline_name,
+            item.pipeline_path,
+            item.project_root,
+            item.artifact_path,
+            item.config_path,
+            item.target,
+            compiled_at,
+            True,
+            item.contract_hash,
+            item.edge_hash,
+            item.config_hash,
+            item.project_python_hash,
+            json.dumps(item.node_hashes_json),
+            json.dumps(item.edges_json),
+            json.dumps(item.tracked_files_json),
+            json.dumps(item.external_dependencies_json),
+            json.dumps(item.spec_json),
+            json.dumps(item.diagnostics_json),
+        ),
+    )
+    return item.model_copy(update={"compile_id": compile_id, "compiled_at": compiled_at, "is_active": True})
 
 
 def _persist_node_runs(conn, *, records: list[NodeRunRecord | dict[str, Any]]) -> None:
@@ -1584,6 +1692,98 @@ def record_node_states(
         _persist_node_states(conn, records=records)
     finally:
         conn.close()
+
+
+def save_compiled_contract(
+    *,
+    database_path: str,
+    record: CompiledContractRecord | dict[str, Any],
+) -> CompiledContractRecord:
+    conn = _duckdb_connection(str(Path(database_path).expanduser().resolve()))
+    try:
+        return _persist_compiled_contract(conn, record=record)
+    finally:
+        conn.close()
+
+
+def load_active_compiled_contract(
+    *,
+    database_path: str,
+) -> CompiledContractRecord | None:
+    resolved_database_path = str(Path(database_path).expanduser().resolve())
+    conn = _duckdb_connection(resolved_database_path)
+    try:
+        _ensure_queron_meta_tables(conn)
+        row = conn.execute(
+            f"""
+            SELECT
+                compile_id,
+                pipeline_id,
+                pipeline_name,
+                pipeline_path,
+                project_root,
+                artifact_path,
+                config_path,
+                target,
+                compiled_at,
+                is_active,
+                contract_hash,
+                edge_hash,
+                config_hash,
+                project_python_hash,
+                node_hashes_json,
+                edges_json,
+                tracked_files_json,
+                external_dependencies_json,
+                spec_json,
+                diagnostics_json
+            FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('compiled_contracts')}
+            WHERE is_active = TRUE
+            ORDER BY compiled_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+    finally:
+        conn.close()
+
+    def _load_json_list(value: Any) -> list[Any]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+
+    def _load_json_dict(value: Any) -> dict[str, Any]:
+        try:
+            parsed = json.loads(str(value or "{}"))
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    return CompiledContractRecord(
+        compile_id=row[0],
+        pipeline_id=row[1],
+        pipeline_name=row[2],
+        pipeline_path=row[3],
+        project_root=row[4],
+        artifact_path=row[5],
+        config_path=row[6],
+        target=row[7],
+        compiled_at=row[8],
+        is_active=bool(row[9]),
+        contract_hash=row[10],
+        edge_hash=row[11],
+        config_hash=row[12],
+        project_python_hash=row[13],
+        node_hashes_json=_load_json_list(row[14]),
+        edges_json=_load_json_list(row[15]),
+        tracked_files_json=_load_json_list(row[16]),
+        external_dependencies_json=_load_json_list(row[17]),
+        spec_json=_load_json_dict(row[18]),
+        diagnostics_json=_load_json_list(row[19]),
+    )
 
 
 def _load_database_block_size(conn) -> int | None:
@@ -2078,6 +2278,7 @@ def get_latest_pipeline_run(
                     f"""
                     SELECT
                         run_id,
+                        compile_id,
                         pipeline_id,
                         pipeline_name,
                         target,
@@ -2119,14 +2320,15 @@ def get_latest_pipeline_run(
             return None
         return {
             "run_id": row[0],
-            "pipeline_id": row[1],
-            "pipeline_name": row[2],
-            "target": row[3],
-            "artifact_path": row[4],
-            "started_at": row[5],
-            "finished_at": row[6],
-            "status": row[7],
-            "error_message": row[8],
+            "compile_id": row[1] if len(row) > 9 else None,
+            "pipeline_id": row[2] if len(row) > 9 else row[1],
+            "pipeline_name": row[3] if len(row) > 9 else row[2],
+            "target": row[4] if len(row) > 9 else row[3],
+            "artifact_path": row[5] if len(row) > 9 else row[4],
+            "started_at": row[6] if len(row) > 9 else row[5],
+            "finished_at": row[7] if len(row) > 9 else row[6],
+            "status": row[8] if len(row) > 9 else row[7],
+            "error_message": row[9] if len(row) > 9 else row[8],
         }
     finally:
         conn.close()
