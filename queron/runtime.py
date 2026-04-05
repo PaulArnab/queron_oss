@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import uuid
 from typing import Any, Callable
@@ -121,6 +122,7 @@ class PipelineRuntime:
         self,
         *,
         pipeline_id: str,
+        run_label: str | None = None,
         compile_id: str | None = None,
         duckdb_path: str,
         working_dir: str | None = None,
@@ -134,12 +136,14 @@ class PipelineRuntime:
         on_log: Callable[[PipelineLogEvent], None] | None = None,
     ) -> None:
         self.pipeline_id = pipeline_id
+        self.run_label = str(run_label).strip() or None if run_label is not None else None
         self.compile_id = str(compile_id).strip() or None if compile_id is not None else None
         self.duckdb_path = str(Path(duckdb_path).resolve())
         self.working_dir = str(Path(working_dir or Path(self.duckdb_path).parent).resolve())
         self.spec = spec
         self.module_globals = module_globals or {}
         self.run_id = str(uuid.uuid4())
+        self.log_path = str(self._resolve_log_path())
         self.runtime_bindings = runtime_bindings or {}
         self.config_bindings = config_bindings or {}
         self.connections_config = load_connections_config(connections_text, yaml_path=connections_path)
@@ -153,6 +157,21 @@ class PipelineRuntime:
         self._node_run_ids: dict[str, str] = {}
         self._node_active_state_ids: dict[str, str] = {}
         self._pipeline_started_at: str | None = None
+
+    def _resolve_log_path(self) -> Path:
+        return Path(self.duckdb_path).resolve().parent / "logs" / f"{self.run_id}.jsonl"
+
+    def _refresh_log_path(self) -> None:
+        self.log_path = str(self._resolve_log_path())
+
+    def _write_log_event(self, event: PipelineLogEvent) -> None:
+        try:
+            log_path = Path(self.log_path).expanduser().resolve()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(event.model_dump(), ensure_ascii=True) + "\n")
+        except Exception:
+            pass
 
     def _resolve_input_path(self, input_path: str | None) -> Path:
         text = str(input_path or "").strip()
@@ -187,8 +206,6 @@ class PipelineRuntime:
         node: NodeSpec | None = None,
         artifact_name: str | None = None,
     ) -> None:
-        if self._on_log is None:
-            return
         if not str(message or "").strip():
             return
         event = build_log_event(
@@ -203,6 +220,9 @@ class PipelineRuntime:
             node_kind=node.kind if node is not None else None,
             artifact_name=artifact_name or (self._node_artifact_name(node) if node is not None else None),
         )
+        self._write_log_event(event)
+        if self._on_log is None:
+            return
         try:
             self._on_log(event)
         except Exception:
@@ -303,8 +323,10 @@ class PipelineRuntime:
         self._node_run_ids[node_name] = generated
         return generated
 
-    def attach_run_context(self, *, run_id: str, node_runs: list[dict[str, Any]]) -> None:
+    def attach_run_context(self, *, run_id: str, node_runs: list[dict[str, Any]], run_label: str | None = None) -> None:
         self.run_id = str(run_id)
+        self.run_label = str(run_label).strip() or None if run_label is not None else None
+        self._refresh_log_path()
         self._run_started = False
         self._selected_node_names = set()
         self._node_run_ids = {
@@ -359,6 +381,8 @@ class PipelineRuntime:
         self._record_pipeline_run(
             PipelineRunRecord(
                 run_id=self.run_id,
+                run_label=self.run_label,
+                log_path=self.log_path,
                 compile_id=self.compile_id,
                 pipeline_id=self.pipeline_id,
                 pipeline_name=self.spec.pipeline_name,
@@ -479,6 +503,17 @@ class PipelineRuntime:
             connection_id=self._ensure_duckdb_connection_id(),
             target_table=target_table,
         )
+
+    def _selected_local_artifact_tables(self) -> list[str]:
+        seen: set[str] = set()
+        target_tables: list[str] = []
+        for node in self._selected_nodes():
+            target_table = str(node.target_table or "").strip()
+            if not target_table or target_table in seen:
+                continue
+            seen.add(target_table)
+            target_tables.append(target_table)
+        return target_tables
 
     def mark_node_success(self, node: NodeSpec, result: NodeExecutionResult | dict[str, Any] | None = None) -> None:
         payload = self._normalize_execution_result(node, result)
@@ -639,9 +674,37 @@ class PipelineRuntime:
             if any(value == "success_with_warnings" for value in self._node_terminal_statuses.values())
             else "success"
         )
+        try:
+            import duckdb_core
+
+            duckdb_core.archive_pipeline_targets(
+                connection_id=self._ensure_duckdb_connection_id(),
+                run_id=self.run_id,
+                target_tables=self._selected_local_artifact_tables(),
+            )
+        except Exception as exc:
+            self._record_pipeline_run(
+                PipelineRunRecord(
+                    run_id=self.run_id,
+                    run_label=self.run_label,
+                    log_path=self.log_path,
+                    compile_id=self.compile_id,
+                    pipeline_id=self.pipeline_id,
+                    pipeline_name=self.spec.pipeline_name,
+                    target=self.spec.target,
+                    artifact_path=self.duckdb_path,
+                    started_at=self._pipeline_started_at,
+                    finished_at=utc_now_timestamp(),
+                    status="failed",
+                    error_message=f"Artifact archive failed: {exc}",
+                )
+            )
+            raise
         self._record_pipeline_run(
             PipelineRunRecord(
                 run_id=self.run_id,
+                run_label=self.run_label,
+                log_path=self.log_path,
                 compile_id=self.compile_id,
                 pipeline_id=self.pipeline_id,
                 pipeline_name=self.spec.pipeline_name,
@@ -657,6 +720,8 @@ class PipelineRuntime:
         self._record_pipeline_run(
             PipelineRunRecord(
                 run_id=self.run_id,
+                run_label=self.run_label,
+                log_path=self.log_path,
                 compile_id=self.compile_id,
                 pipeline_id=self.pipeline_id,
                 pipeline_name=self.spec.pipeline_name,

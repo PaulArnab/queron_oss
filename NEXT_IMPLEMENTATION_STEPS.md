@@ -1,6 +1,6 @@
 # Next Implementation Steps
 
-1. Implement `cleared` state.
+1. [Done] Implement `cleared` state.
    - `cleared` is a reset-history marker for a node inside the current `run_id`.
    - It acts as a separator between run activity and reset activity on the same run.
    - Any node selected by a reset operation should append:
@@ -22,7 +22,7 @@
        - `b: failed -> cleared -> ready`
        - `c: ready`
 
-2. Separate compile and run.
+2. [Done] Separate compile and run.
    - Compile must become durable state, not just in-memory validation.
    - Compile should write the compiled execution contract to the artifact store.
    - `run` must use the durable compiled contract and should not compile again.
@@ -31,22 +31,22 @@
      - no compiled contract exists
      - or the pipeline changed after the last compile
 
-3. Add confirmation for reset options.
-   - Reset actions should warn before clearing artifacts/tables.
-   - The warning/confirmation flow should match the existing run purge confirmation behavior.
-   - Support both:
-     - interactive CLI confirmation
-     - JSON/API confirmation payloads for UI flows
+3. [Deferred] Add confirmation for reset options.
+   - Not planned for the current OSS release.
+   - Current contract:
+     - users are expected to understand reset and rerun behavior explicitly
+     - `run(..., clean_existing=True)` / `queron run --clean-existing` remains the existing purge flow
+     - reset commands execute directly when called successfully
 
 4. Tighten the user-level public API.
    - For pipeline run level, only expose:
-     - `compile_pipeline_file(...)`
-     - `run_pipeline_file(...)`
-     - `resume_pipeline_file(...)`
-     - `reset_node_file(...)`
-     - `reset_downstream_file(...)`
-     - `reset_upstream_file(...)`
-     - `reset_all_file(...)`
+     - `compile_pipeline(...)`
+     - `run_pipeline(...)`
+     - `resume_pipeline(...)`
+     - `reset_node(...)`
+     - `reset_downstream(...)`
+     - `reset_upstream(...)`
+     - `reset_all(...)`
    - For pipeline node level, only expose:
      - `postgres.ingress(...)`
      - `postgres.egress(...)`

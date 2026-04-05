@@ -36,6 +36,8 @@ class LogCode:
     PIPELINE_COMPILE_FAILED = "pipeline_compile_failed"
     PIPELINE_PURGE_CONFIRMATION_REQUIRED = "pipeline_purge_confirmation_required"
     PIPELINE_TARGET_SELECTED = "pipeline_target_selected"
+    PIPELINE_ARCHIVE_STARTED = "pipeline_archive_started"
+    PIPELINE_ARCHIVE_FINISHED = "pipeline_archive_finished"
     PIPELINE_CLEAN_STARTED = "pipeline_clean_started"
     PIPELINE_CLEAN_FINISHED = "pipeline_clean_finished"
     PIPELINE_EXECUTION_STARTED = "pipeline_execution_started"
@@ -300,6 +302,8 @@ class PipelineRunRecord(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     run_id: str = Field(min_length=1)
+    run_label: str | None = None
+    log_path: str | None = None
     compile_id: str | None = None
     pipeline_id: str = Field(min_length=1, validation_alias=AliasChoices("pipeline_id", "notebook_id"))
     pipeline_name: str | None = Field(default=None, validation_alias=AliasChoices("pipeline_name", "notebook_name"))

@@ -527,7 +527,7 @@ RUNTIME_BINDINGS = {
 }
 
 if __name__ == "__main__":
-    result = queron.run_pipeline_file(
+    result = queron.run_pipeline(
         Path(__file__).resolve(),
         connections_path="connections.yaml",
         runtime_bindings=RUNTIME_BINDINGS,

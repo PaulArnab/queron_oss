@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,6 +17,8 @@ class RunPipelineResult:
     executed_nodes: list[str]
     artifact_path: str
     run_id: str | None = None
+    run_label: str | None = None
+    log_path: str | None = None
 
 
 @dataclass
@@ -33,6 +35,51 @@ class InitPipelineProjectResult:
     written_files: list[str]
     created_directories: list[str]
     sample: bool = False
+
+
+@dataclass
+class InspectDagResult:
+    pipeline_path: str
+    artifact_path: str
+    compile_id: str | None = None
+    run_id: str | None = None
+    run_label: str | None = None
+    run_status: str | None = None
+    nodes: list[dict[str, Any]] = field(default_factory=list)
+    edges: list[list[str]] = field(default_factory=list)
+
+
+@dataclass
+class InspectNodeResult:
+    pipeline_path: str
+    artifact_path: str
+    compile_id: str | None = None
+    run_id: str | None = None
+    run_label: str | None = None
+    run_status: str | None = None
+    selection: str = "node"
+    requested_node: str | None = None
+    nodes: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class InspectNodeHistoryResult:
+    pipeline_path: str
+    artifact_path: str
+    compile_id: str | None = None
+    run_id: str | None = None
+    run_label: str | None = None
+    run_status: str | None = None
+    node_name: str | None = None
+    node_kind: str | None = None
+    node_run_id: str | None = None
+    node_run_status: str | None = None
+    logical_artifact: str | None = None
+    artifact_name: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    error_message: str | None = None
+    states: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _emit_log_event(
@@ -154,6 +201,11 @@ def _default_artifact_path(pipeline_path: Path) -> Path:
     return pipeline_path.parent / ".queron" / f"{pipeline_path.stem}.duckdb"
 
 
+def _normalize_run_label(run_label: str | None) -> str | None:
+    text = str(run_label or "").strip()
+    return text or None
+
+
 def load_pipeline_code_from_file(path: str | Path) -> tuple[Path, str]:
     resolved = Path(path).expanduser().resolve()
     if not resolved.exists() or not resolved.is_file():
@@ -161,7 +213,7 @@ def load_pipeline_code_from_file(path: str | Path) -> tuple[Path, str]:
     return resolved, resolved.read_text(encoding="utf-8")
 
 
-def compile_pipeline_file(
+def compile_pipeline(
     pipeline_path: str | Path,
     *,
     config_path: str | Path | None = None,
@@ -294,25 +346,26 @@ def resume_compiled_pipeline(
 ) -> RunPipelineResult:
     if compiled.spec is None:
         raise RuntimeError("Compiled pipeline is missing a spec.")
-    active_on_log = on_log or getattr(runtime, "_on_log", None)
     latest_run, node_runs, active_states = _current_failed_run_context(
         runtime,
         expected_compile_id=getattr(runtime, "compile_id", None),
     )
-    runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+    runtime.attach_run_context(
+        run_id=str(latest_run.get("run_id") or ""),
+        node_runs=node_runs,
+        run_label=str(latest_run.get("run_label") or "").strip() or None,
+    )
     runtime._pipeline_started_at = str(latest_run.get("started_at") or "").strip() or None
     selected_nodes = _resume_selected_nodes(compiled.spec, node_runs=node_runs, active_states=active_states)
     if not selected_nodes:
         raise RuntimeError("The current failed run does not have any nodes ready to resume.")
-    _emit_log_event(
-        active_on_log,
+    runtime._log_event(
         code=LogCode.PIPELINE_TARGET_SELECTED,
         message=f"Resuming run '{runtime.run_id}' from {len(selected_nodes)} node(s).",
         details={"run_id": runtime.run_id, "selected_nodes": sorted(selected_nodes)},
     )
     runtime.clear_selected_outputs(selected_nodes)
-    _emit_log_event(
-        active_on_log,
+    runtime._log_event(
         code=LogCode.PIPELINE_EXECUTION_STARTED,
         message="Executing resumed pipeline segment.",
         details={"run_id": runtime.run_id, "selected_nodes": sorted(selected_nodes)},
@@ -320,21 +373,17 @@ def resume_compiled_pipeline(
     try:
         executed = execute_compiled_pipeline(compiled, runtime=runtime, selected_node_names=selected_nodes)
     except Exception as exc:
-        _emit_log_event(
-            active_on_log,
+        runtime._log_event(
             code=LogCode.PIPELINE_EXECUTION_FAILED,
             message=f"Execution failed: {exc}",
             severity="error",
             details={"exception_type": type(exc).__name__},
-            run_id=getattr(runtime, "run_id", None),
         )
         raise
-    _emit_log_event(
-        active_on_log,
+    runtime._log_event(
         code=LogCode.PIPELINE_EXECUTION_FINISHED,
         message=f"Finished successfully. Executed {len(executed)} node(s).",
         details={"executed_nodes": list(executed)},
-        run_id=getattr(runtime, "run_id", None),
     )
     return RunPipelineResult(
         compiled=compiled,
@@ -469,6 +518,7 @@ def _build_runtime_for_pipeline(
     compiled: CompiledPipeline,
     artifact_path: str | Path | None,
     pipeline_id: str | None,
+    run_label: str | None,
     compile_id: str | None,
     runtime_bindings: dict[str, Any] | None,
     connections_path: str | Path | None,
@@ -479,6 +529,7 @@ def _build_runtime_for_pipeline(
     resolved_artifact_path = _resolve_artifact_path(pipeline_path, artifact_path)
     runtime = PipelineRuntime(
         pipeline_id=str(pipeline_id or _default_pipeline_id(pipeline_path)),
+        run_label=run_label,
         compile_id=compile_id,
         duckdb_path=str(resolved_artifact_path),
         working_dir=str(pipeline_path.parent.resolve()),
@@ -489,6 +540,514 @@ def _build_runtime_for_pipeline(
         on_log=on_log,
     )
     return runtime, resolved_artifact_path
+
+
+def _ensure_run_label_available(
+    *,
+    artifact_path: str | Path,
+    run_label: str | None,
+) -> str | None:
+    normalized_label = _normalize_run_label(run_label)
+    if normalized_label is None:
+        return None
+
+    import duckdb_core
+
+    existing = duckdb_core.get_pipeline_run_by_label(
+        database_path=str(Path(artifact_path).expanduser().resolve()),
+        run_label=normalized_label,
+    )
+    if existing is not None:
+        raise RuntimeError(
+            f"Run label '{normalized_label}' already exists for this pipeline. Use a unique run label or omit it."
+        )
+    return normalized_label
+
+
+def _inspect_pipeline_runs(
+    pipeline_path: str | Path,
+    *,
+    artifact_path: str | Path | None = None,
+    limit: int | None = None,
+) -> tuple[Path, Path, list[dict[str, Any]]]:
+    resolved_pipeline_path, _code = load_pipeline_code_from_file(pipeline_path)
+    resolved_artifact_path = (
+        Path(artifact_path).expanduser().resolve()
+        if artifact_path is not None
+        else _default_artifact_path(resolved_pipeline_path).resolve()
+    )
+    if not resolved_artifact_path.exists() or not resolved_artifact_path.is_file():
+        raise RuntimeError(
+            f"Artifact database '{resolved_artifact_path}' was not found. Compile or run the pipeline first."
+        )
+
+    import duckdb_core
+
+    runs = duckdb_core.list_pipeline_runs(
+        database_path=str(resolved_artifact_path),
+        limit=limit,
+    )
+    return resolved_pipeline_path, resolved_artifact_path, runs
+
+
+def _select_pipeline_run_for_inspection(
+    *,
+    resolved_artifact_path: Path,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    default_to_latest: bool = True,
+) -> dict[str, Any] | None:
+    if run_id is not None and run_label is not None:
+        raise RuntimeError("Use either run_id or run_label, not both.")
+
+    import duckdb_core
+
+    if run_id is not None:
+        selected_run = duckdb_core.get_pipeline_run_by_id(
+            database_path=str(resolved_artifact_path),
+            run_id=str(run_id),
+        )
+        if selected_run is None:
+            raise RuntimeError(f"Run '{run_id}' was not found for this pipeline.")
+        return selected_run
+
+    if run_label is not None:
+        selected_run = duckdb_core.get_pipeline_run_by_label(
+            database_path=str(resolved_artifact_path),
+            run_label=str(run_label),
+        )
+        if selected_run is None:
+            raise RuntimeError(f"Run label '{run_label}' was not found for this pipeline.")
+        return selected_run
+
+    if not default_to_latest:
+        return None
+
+    latest_runs = duckdb_core.list_pipeline_runs(
+        database_path=str(resolved_artifact_path),
+        limit=1,
+    )
+    if not latest_runs:
+        return None
+    return latest_runs[0]
+
+
+def _inspect_pipeline_logs(
+    pipeline_path: str | Path,
+    *,
+    artifact_path: str | Path | None = None,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    tail: int | None = None,
+) -> tuple[Path, Path, dict[str, Any], list[str]]:
+    resolved_pipeline_path, resolved_artifact_path, _runs = _inspect_pipeline_runs(
+        pipeline_path,
+        artifact_path=artifact_path,
+        limit=None,
+    )
+    if tail is not None and int(tail) <= 0:
+        raise RuntimeError("tail must be a positive integer.")
+
+    selected_run = _select_pipeline_run_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        run_id=run_id,
+        run_label=run_label,
+        default_to_latest=True,
+    )
+    if selected_run is None:
+        raise RuntimeError("No runs were found for this pipeline.")
+
+    log_path_text = str(selected_run.get("log_path") or "").strip()
+    if not log_path_text:
+        raise RuntimeError("The selected run does not have a persisted log file.")
+    resolved_log_path = Path(log_path_text).expanduser().resolve()
+    if not resolved_log_path.exists() or not resolved_log_path.is_file():
+        raise RuntimeError(f"Log file '{resolved_log_path}' was not found.")
+
+    lines = resolved_log_path.read_text(encoding="utf-8").splitlines()
+    if tail is not None:
+        lines = lines[-int(tail) :]
+    return resolved_pipeline_path, resolved_artifact_path, selected_run, lines
+
+
+def _inspect_node_artifact_name(node_payload: dict[str, Any]) -> str | None:
+    for key in ("target_table", "target_relation", "output_path", "out"):
+        text = str(node_payload.get(key) or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _load_compiled_contract_for_inspection(
+    *,
+    resolved_artifact_path: Path,
+    selected_run: dict[str, Any] | None,
+):
+    import duckdb_core
+
+    compile_id: str | None = None
+    if selected_run is not None:
+        compile_id = str(selected_run.get("compile_id") or "").strip() or None
+
+    if compile_id is not None:
+        contract = duckdb_core.load_compiled_contract_by_id(
+            database_path=str(resolved_artifact_path),
+            compile_id=compile_id,
+        )
+        if contract is None:
+            raise RuntimeError(
+                f"Compile contract '{compile_id}' for the selected run was not found in the artifact database."
+            )
+        return contract
+
+    contract = duckdb_core.load_active_compiled_contract(database_path=str(resolved_artifact_path))
+    if contract is None:
+        raise RuntimeError("No compiled pipeline contract was found. Run queron compile first.")
+    return contract
+
+
+def _contract_nodes_and_edges(contract) -> tuple[list[dict[str, Any]], list[list[str]]]:
+    raw_nodes = contract.spec_json.get("nodes") if isinstance(contract.spec_json, dict) else []
+    if not isinstance(raw_nodes, list):
+        raw_nodes = []
+    raw_edges = contract.edges_json if isinstance(contract.edges_json, list) else []
+    edges: list[list[str]] = []
+    for raw_edge in raw_edges:
+        if not isinstance(raw_edge, list) or len(raw_edge) != 2:
+            continue
+        source = str(raw_edge[0] or "").strip()
+        target = str(raw_edge[1] or "").strip()
+        if source and target:
+            edges.append([source, target])
+    return raw_nodes, edges
+
+
+def _select_contract_node_names(
+    *,
+    requested_node: str,
+    nodes_by_name: dict[str, dict[str, Any]],
+    edges: list[list[str]],
+    upstream: bool,
+    downstream: bool,
+) -> tuple[str, set[str]]:
+    normalized_node = str(requested_node or "").strip()
+    if not normalized_node:
+        raise RuntimeError("node_name is required.")
+    if upstream and downstream:
+        raise RuntimeError("Use either upstream or downstream, not both.")
+    if normalized_node not in nodes_by_name:
+        raise RuntimeError(f"Node '{normalized_node}' was not found in the compiled pipeline.")
+
+    if not upstream and not downstream:
+        return "node", {normalized_node}
+
+    adjacency: dict[str, set[str]] = {name: set() for name in nodes_by_name}
+    reverse_adjacency: dict[str, set[str]] = {name: set() for name in nodes_by_name}
+    for source, target in edges:
+        adjacency.setdefault(source, set()).add(target)
+        reverse_adjacency.setdefault(target, set()).add(source)
+        adjacency.setdefault(target, set())
+        reverse_adjacency.setdefault(source, set())
+
+    if upstream:
+        selection = "upstream"
+        frontier = [normalized_node]
+        selected = {normalized_node}
+        while frontier:
+            current = frontier.pop()
+            for parent in reverse_adjacency.get(current, set()):
+                if parent in selected:
+                    continue
+                selected.add(parent)
+                frontier.append(parent)
+        return selection, selected
+
+    selection = "downstream"
+    frontier = [normalized_node]
+    selected = {normalized_node}
+    while frontier:
+        current = frontier.pop()
+        for child in adjacency.get(current, set()):
+            if child in selected:
+                continue
+            selected.add(child)
+            frontier.append(child)
+    return selection, selected
+
+
+def inspect_node(
+    pipeline_path: str | Path,
+    node_name: str,
+    *,
+    artifact_path: str | Path | None = None,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    upstream: bool = False,
+    downstream: bool = False,
+) -> InspectNodeResult:
+    resolved_pipeline_path, resolved_artifact_path, _runs = _inspect_pipeline_runs(
+        pipeline_path,
+        artifact_path=artifact_path,
+        limit=None,
+    )
+    selected_run = _select_pipeline_run_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        run_id=run_id,
+        run_label=run_label,
+        default_to_latest=True,
+    )
+
+    contract = _load_compiled_contract_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+    )
+    raw_nodes, edges = _contract_nodes_and_edges(contract)
+    nodes_by_name: dict[str, dict[str, Any]] = {}
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        name = str(raw_node.get("name") or "").strip()
+        if name:
+            nodes_by_name[name] = raw_node
+
+    selection, selected_names = _select_contract_node_names(
+        requested_node=node_name,
+        nodes_by_name=nodes_by_name,
+        edges=edges,
+        upstream=bool(upstream),
+        downstream=bool(downstream),
+    )
+
+    node_runs_by_name: dict[str, dict[str, Any]] = {}
+    active_states_by_name: dict[str, dict[str, Any]] = {}
+    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    if selected_run_id:
+        import duckdb_core
+
+        for item in duckdb_core.get_node_runs_for_run_by_database(
+            database_path=str(resolved_artifact_path),
+            run_id=selected_run_id,
+        ):
+            name = str(item.get("node_name") or "").strip()
+            if name:
+                node_runs_by_name[name] = item
+        for item in duckdb_core.get_active_node_states_for_run_by_database(
+            database_path=str(resolved_artifact_path),
+            run_id=selected_run_id,
+        ):
+            name = str(item.get("node_name") or "").strip()
+            if name:
+                active_states_by_name[name] = item
+
+    dependents_by_name: dict[str, list[str]] = {name: [] for name in nodes_by_name}
+    for source, target in edges:
+        if source in dependents_by_name and target not in dependents_by_name[source]:
+            dependents_by_name[source].append(target)
+
+    nodes: list[dict[str, Any]] = []
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        name = str(raw_node.get("name") or "").strip()
+        if not name or name not in selected_names:
+            continue
+        node_run = node_runs_by_name.get(name, {})
+        active_state = active_states_by_name.get(name, {})
+        dependencies = raw_node.get("dependencies")
+        if not isinstance(dependencies, list):
+            dependencies = []
+        nodes.append(
+            {
+                "name": name,
+                "kind": str(raw_node.get("kind") or "").strip() or None,
+                "current_state": str(active_state.get("state") or "").strip() or None,
+                "node_run_status": str(node_run.get("status") or "").strip() or None,
+                "logical_artifact": _inspect_node_artifact_name(raw_node),
+                "artifact_name": str(node_run.get("artifact_name") or "").strip() or None,
+                "dependencies": [
+                    str(item).strip()
+                    for item in dependencies
+                    if str(item).strip()
+                ],
+                "dependents": sorted(
+                    str(item).strip()
+                    for item in dependents_by_name.get(name, [])
+                    if str(item).strip()
+                ),
+                "started_at": str(node_run.get("started_at") or "").strip() or None,
+                "finished_at": str(node_run.get("finished_at") or "").strip() or None,
+            }
+        )
+
+    return InspectNodeResult(
+        pipeline_path=str(resolved_pipeline_path),
+        artifact_path=str(resolved_artifact_path),
+        compile_id=contract.compile_id,
+        run_id=selected_run_id or None,
+        run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
+        run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        selection=selection,
+        requested_node=str(node_name).strip(),
+        nodes=nodes,
+    )
+
+
+def inspect_node_history(
+    pipeline_path: str | Path,
+    node_name: str,
+    *,
+    artifact_path: str | Path | None = None,
+    run_id: str | None = None,
+    run_label: str | None = None,
+) -> InspectNodeHistoryResult:
+    resolved_pipeline_path, resolved_artifact_path, _runs = _inspect_pipeline_runs(
+        pipeline_path,
+        artifact_path=artifact_path,
+        limit=None,
+    )
+    selected_run = _select_pipeline_run_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        run_id=run_id,
+        run_label=run_label,
+        default_to_latest=True,
+    )
+
+    contract = _load_compiled_contract_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+    )
+    raw_nodes, _edges = _contract_nodes_and_edges(contract)
+    nodes_by_name: dict[str, dict[str, Any]] = {}
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        name = str(raw_node.get("name") or "").strip()
+        if name:
+            nodes_by_name[name] = raw_node
+
+    normalized_node_name = str(node_name or "").strip()
+    if not normalized_node_name:
+        raise RuntimeError("node_name is required.")
+    if normalized_node_name not in nodes_by_name:
+        raise RuntimeError(f"Node '{normalized_node_name}' was not found in the compiled pipeline.")
+
+    node_payload = nodes_by_name[normalized_node_name]
+    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    node_run: dict[str, Any] = {}
+    states: list[dict[str, Any]] = []
+    if selected_run_id:
+        import duckdb_core
+
+        for item in duckdb_core.get_node_runs_for_run_by_database(
+            database_path=str(resolved_artifact_path),
+            run_id=selected_run_id,
+        ):
+            if str(item.get("node_name") or "").strip() == normalized_node_name:
+                node_run = item
+                break
+        states = duckdb_core.get_node_states_for_run_by_database(
+            database_path=str(resolved_artifact_path),
+            run_id=selected_run_id,
+            node_name=normalized_node_name,
+        )
+
+    return InspectNodeHistoryResult(
+        pipeline_path=str(resolved_pipeline_path),
+        artifact_path=str(resolved_artifact_path),
+        compile_id=contract.compile_id,
+        run_id=selected_run_id or None,
+        run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
+        run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        node_name=normalized_node_name,
+        node_kind=str(node_payload.get("kind") or "").strip() or None,
+        node_run_id=str(node_run.get("node_run_id") or "").strip() or None,
+        node_run_status=str(node_run.get("status") or "").strip() or None,
+        logical_artifact=_inspect_node_artifact_name(node_payload),
+        artifact_name=str(node_run.get("artifact_name") or "").strip() or None,
+        started_at=str(node_run.get("started_at") or "").strip() or None,
+        finished_at=str(node_run.get("finished_at") or "").strip() or None,
+        error_message=str(node_run.get("error_message") or "").strip() or None,
+        states=states,
+    )
+
+
+def inspect_dag(
+    pipeline_path: str | Path,
+    *,
+    artifact_path: str | Path | None = None,
+    run_id: str | None = None,
+    run_label: str | None = None,
+) -> InspectDagResult:
+    resolved_pipeline_path, resolved_artifact_path, _runs = _inspect_pipeline_runs(
+        pipeline_path,
+        artifact_path=artifact_path,
+        limit=None,
+    )
+    selected_run = _select_pipeline_run_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        run_id=run_id,
+        run_label=run_label,
+        default_to_latest=True,
+    )
+    contract = _load_compiled_contract_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+    )
+
+    node_runs_by_name: dict[str, dict[str, Any]] = {}
+    active_states_by_name: dict[str, dict[str, Any]] = {}
+    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    if selected_run_id:
+        import duckdb_core
+
+        for item in duckdb_core.get_node_runs_for_run_by_database(
+            database_path=str(resolved_artifact_path),
+            run_id=selected_run_id,
+        ):
+            node_name = str(item.get("node_name") or "").strip()
+            if node_name:
+                node_runs_by_name[node_name] = item
+        for item in duckdb_core.get_active_node_states_for_run_by_database(
+            database_path=str(resolved_artifact_path),
+            run_id=selected_run_id,
+        ):
+                node_name = str(item.get("node_name") or "").strip()
+                if node_name:
+                    active_states_by_name[node_name] = item
+
+    raw_nodes, edges = _contract_nodes_and_edges(contract)
+
+    nodes: list[dict[str, Any]] = []
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        name = str(raw_node.get("name") or "").strip()
+        if not name:
+            continue
+        node_run = node_runs_by_name.get(name, {})
+        active_state = active_states_by_name.get(name, {})
+        nodes.append(
+            {
+                "name": name,
+                "kind": str(raw_node.get("kind") or "").strip() or None,
+                "artifact_name": _inspect_node_artifact_name(raw_node),
+                "current_state": str(active_state.get("state") or "").strip() or None,
+                "node_run_status": str(node_run.get("status") or "").strip() or None,
+                "started_at": str(node_run.get("started_at") or "").strip() or None,
+                    "finished_at": str(node_run.get("finished_at") or "").strip() or None,
+                }
+            )
+
+    return InspectDagResult(
+        pipeline_path=str(resolved_pipeline_path),
+        artifact_path=str(resolved_artifact_path),
+        compile_id=contract.compile_id,
+        run_id=selected_run_id or None,
+        run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
+        run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        nodes=nodes,
+        edges=edges,
+    )
 
 
 def _target_tables_for_nodes(spec: PipelineSpec, node_names: set[str]) -> list[str]:
@@ -505,6 +1064,65 @@ def _target_tables_for_nodes(spec: PipelineSpec, node_names: set[str]) -> list[s
         seen.add(target_table)
         target_tables.append(target_table)
     return target_tables
+
+
+def _preserve_latest_incomplete_run_outputs_before_purge(
+    compiled: CompiledPipeline,
+    *,
+    runtime: PipelineRuntime,
+) -> dict[str, str]:
+    if compiled.spec is None:
+        return {}
+
+    import duckdb_core
+
+    latest_run = duckdb_core.get_latest_pipeline_run(
+        connection_id=runtime._ensure_duckdb_connection_id(),
+        status=None,
+    )
+    if not latest_run:
+        return {}
+
+    latest_run_id = str(latest_run.get("run_id") or "").strip()
+    latest_status = str(latest_run.get("status") or "").strip().lower()
+    if not latest_run_id or latest_status in {"success", "success_with_warnings"}:
+        return {}
+
+    selected_node_names = {node.name for node in compiled.spec.nodes}
+    existing_outputs = runtime.existing_output_tables(selected_node_names)
+    if not existing_outputs:
+        return {}
+
+    runtime._log_event(
+        code=LogCode.PIPELINE_ARCHIVE_STARTED,
+        message=(
+            f"Archiving {len(existing_outputs)} output table(s) from prior "
+            f"{latest_status} run '{latest_run_id}' before purge."
+        ),
+        details={
+            "previous_run_id": latest_run_id,
+            "previous_run_status": latest_status,
+            "target_tables": list(existing_outputs),
+        },
+    )
+    archived = duckdb_core.archive_pipeline_targets(
+        connection_id=runtime._ensure_duckdb_connection_id(),
+        run_id=latest_run_id,
+        target_tables=list(existing_outputs),
+    )
+    runtime._log_event(
+        code=LogCode.PIPELINE_ARCHIVE_FINISHED,
+        message=(
+            f"Archived {len(archived)} output table(s) from prior "
+            f"{latest_status} run '{latest_run_id}'."
+        ),
+        details={
+            "previous_run_id": latest_run_id,
+            "previous_run_status": latest_status,
+            "archived_tables": dict(archived),
+        },
+    )
+    return archived
 
 
 def _current_failed_run_context(
@@ -574,7 +1192,7 @@ def _resume_selected_nodes(
     }
 
 
-def run_pipeline_file(
+def run_pipeline(
     pipeline_path: str | Path,
     *,
     config_path: str | Path | None = None,
@@ -585,6 +1203,7 @@ def run_pipeline_file(
     target_node: str | None = None,
     clean_existing: bool = False,
     pipeline_id: str | None = None,
+    run_label: str | None = None,
     on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> RunPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
@@ -618,6 +1237,7 @@ def run_pipeline_file(
             executed_nodes=[],
             artifact_path=str(resolved_artifact_path),
             run_id=None,
+            log_path=None,
         )
     _emit_log_event(
         on_log,
@@ -625,32 +1245,31 @@ def run_pipeline_file(
         message=f"Compiled contract validated with {len(compiled.spec.nodes)} node(s).",
         details={"node_count": len(compiled.spec.nodes)},
     )
+    normalized_run_label = _ensure_run_label_available(
+        artifact_path=resolved_artifact_path,
+        run_label=run_label,
+    )
     runtime, resolved_artifact_path = _build_runtime_for_pipeline(
         pipeline_path=resolved_pipeline_path,
         compiled=compiled,
         artifact_path=artifact_path,
         pipeline_id=pipeline_id,
+        run_label=normalized_run_label,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
         connections_path=connections_path,
         on_log=on_log,
     )
     if clean_existing:
-        _emit_log_event(
-            on_log,
-            code=LogCode.PIPELINE_CLEAN_STARTED,
-            message="Cleaning existing pipeline outputs before execution...",
-        )
+        _preserve_latest_incomplete_run_outputs_before_purge(compiled, runtime=runtime)
         runtime.clear_pipeline_outputs()
     if target_node:
-        _emit_log_event(
-            on_log,
+        runtime._log_event(
             code=LogCode.PIPELINE_TARGET_SELECTED,
             message=f"Executing target node '{target_node}' with dependencies.",
             details={"target_node": target_node},
         )
-    _emit_log_event(
-        on_log,
+    runtime._log_event(
         code=LogCode.PIPELINE_EXECUTION_STARTED,
         message="Executing pipeline DAG.",
         details={"target_node": target_node, "clean_existing": bool(clean_existing)},
@@ -658,31 +1277,29 @@ def run_pipeline_file(
     try:
         executed = execute_compiled_pipeline(compiled, runtime=runtime, target_node=target_node)
     except Exception as exc:
-        _emit_log_event(
-            on_log,
+        runtime._log_event(
             code=LogCode.PIPELINE_EXECUTION_FAILED,
             message=f"Execution failed: {exc}",
             severity="error",
             details={"exception_type": type(exc).__name__},
-            run_id=getattr(runtime, "run_id", None),
         )
         raise
-    _emit_log_event(
-        on_log,
+    runtime._log_event(
         code=LogCode.PIPELINE_EXECUTION_FINISHED,
         message=f"Finished successfully. Executed {len(executed)} node(s).",
         details={"executed_nodes": list(executed)},
-        run_id=runtime.run_id,
     )
     return RunPipelineResult(
         compiled=compiled,
         executed_nodes=executed,
         artifact_path=str(resolved_artifact_path),
         run_id=runtime.run_id,
+        run_label=runtime.run_label,
+        log_path=runtime.log_path,
     )
 
 
-def resume_pipeline_file(
+def resume_pipeline(
     pipeline_path: str | Path,
     *,
     config_path: str | Path | None = None,
@@ -724,6 +1341,7 @@ def resume_pipeline_file(
             executed_nodes=[],
             artifact_path=str(resolved_artifact_path),
             run_id=None,
+            log_path=None,
         )
     _emit_log_event(
         on_log,
@@ -737,6 +1355,7 @@ def resume_pipeline_file(
         compiled=compiled,
         artifact_path=artifact_path,
         pipeline_id=pipeline_id,
+        run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
         connections_path=connections_path,
@@ -748,10 +1367,12 @@ def resume_pipeline_file(
         executed_nodes=result.executed_nodes,
         artifact_path=str(resolved_artifact_path),
         run_id=result.run_id,
+        run_label=runtime.run_label,
+        log_path=runtime.log_path,
     )
 
 
-def reset_node_file(
+def reset_node(
     pipeline_path: str | Path,
     *,
     node_name: str,
@@ -774,6 +1395,7 @@ def reset_node_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=None,
+        run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
@@ -784,7 +1406,11 @@ def reset_node_file(
             runtime,
             expected_compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         )
-        runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+        runtime.attach_run_context(
+            run_id=str(latest_run.get("run_id") or ""),
+            node_runs=node_runs,
+            run_label=str(latest_run.get("run_label") or "").strip() or None,
+        )
     except Exception as exc:
         if "older compile contract" in str(exc):
             raise
@@ -797,7 +1423,7 @@ def reset_node_file(
     )
 
 
-def reset_downstream_file(
+def reset_downstream(
     pipeline_path: str | Path,
     *,
     node_name: str,
@@ -820,6 +1446,7 @@ def reset_downstream_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=None,
+        run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
@@ -830,7 +1457,11 @@ def reset_downstream_file(
             runtime,
             expected_compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         )
-        runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+        runtime.attach_run_context(
+            run_id=str(latest_run.get("run_id") or ""),
+            node_runs=node_runs,
+            run_label=str(latest_run.get("run_label") or "").strip() or None,
+        )
     except Exception as exc:
         if "older compile contract" in str(exc):
             raise
@@ -843,7 +1474,7 @@ def reset_downstream_file(
     )
 
 
-def reset_upstream_file(
+def reset_upstream(
     pipeline_path: str | Path,
     *,
     node_name: str,
@@ -866,6 +1497,7 @@ def reset_upstream_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=None,
+        run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
@@ -876,7 +1508,11 @@ def reset_upstream_file(
             runtime,
             expected_compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         )
-        runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+        runtime.attach_run_context(
+            run_id=str(latest_run.get("run_id") or ""),
+            node_runs=node_runs,
+            run_label=str(latest_run.get("run_label") or "").strip() or None,
+        )
     except Exception as exc:
         if "older compile contract" in str(exc):
             raise
@@ -889,7 +1525,7 @@ def reset_upstream_file(
     )
 
 
-def reset_all_file(
+def reset_all(
     pipeline_path: str | Path,
     *,
     config_path: str | Path | None = None,
@@ -911,6 +1547,7 @@ def reset_all_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=None,
+        run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
@@ -921,7 +1558,11 @@ def reset_all_file(
             runtime,
             expected_compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         )
-        runtime.attach_run_context(run_id=str(latest_run.get("run_id") or ""), node_runs=node_runs)
+        runtime.attach_run_context(
+            run_id=str(latest_run.get("run_id") or ""),
+            node_runs=node_runs,
+            run_label=str(latest_run.get("run_label") or "").strip() or None,
+        )
     except Exception as exc:
         if "older compile contract" in str(exc):
             raise
@@ -959,6 +1600,7 @@ def list_existing_outputs_for_file(
         compiled=compiled,
         artifact_path=resolved_artifact_path,
         pipeline_id=pipeline_id,
+        run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
         connections_path=connections_path,

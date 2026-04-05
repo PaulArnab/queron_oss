@@ -11,11 +11,59 @@ BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+import queron
 import queron.cli
 from duckdb_driver import load_duckdb
 
 
 class VerifyQueronCliTests(unittest.TestCase):
+    def test_package_root_exports_only_user_level_surface(self):
+        expected_exports = {
+            "init_pipeline_project",
+            "compile_pipeline",
+            "inspect_node",
+            "inspect_node_history",
+            "inspect_dag",
+            "run_pipeline",
+            "resume_pipeline",
+            "reset_node",
+            "reset_downstream",
+            "reset_upstream",
+            "reset_all",
+            "postgres",
+            "db2",
+            "file",
+            "csv",
+            "jsonl",
+            "parquet",
+            "python",
+            "model",
+            "check",
+            "ref",
+            "source",
+        }
+        unexpected_exports = {
+            "CompiledPipeline",
+            "compile_pipeline_code",
+            "compile_pipeline_text",
+            "execute_compiled_pipeline",
+            "execute_pipeline",
+            "PipelineRuntime",
+            "reset_compiled_node",
+            "reset_compiled_downstream",
+            "reset_compiled_upstream",
+            "reset_compiled_all",
+            "resume_compiled_pipeline",
+            "build_log_event",
+            "RuntimeBinding",
+            "load_connections_config",
+        }
+
+        for name in expected_exports:
+            self.assertTrue(hasattr(queron, name), msg=f"expected queron.{name} to be public")
+        for name in unexpected_exports:
+            self.assertFalse(hasattr(queron, name), msg=f"did not expect queron.{name} to be public")
+
     def _compile_pipeline(
         self,
         pipeline_path: pathlib.Path,
@@ -293,10 +341,30 @@ def enriched():
 
             conn = load_duckdb().connect(str(artifact_path))
             try:
-                rows = conn.execute('SELECT id FROM "main"."enriched"').fetchall()
+                latest_runs = conn.execute(
+                    """
+                    SELECT run_id
+                    FROM "_queron_meta"."pipeline_runs"
+                    ORDER BY COALESCE(finished_at, started_at) DESC
+                    LIMIT 2
+                    """
+                ).fetchall()
+                self.assertEqual(len(latest_runs), 2)
+                latest_run_id = str(latest_runs[0][0] or "").strip()
+                prior_run_id = str(latest_runs[1][0] or "").strip()
+                latest_schema = f"run_{latest_run_id.replace('-', '')}"
+                prior_schema = f"run_{prior_run_id.replace('-', '')}"
+
+                rows = conn.execute(
+                    f'SELECT id FROM "{latest_schema}"."enriched" ORDER BY id'
+                ).fetchall()
+                prior_rows = conn.execute(
+                    f'SELECT id FROM "{prior_schema}"."enriched" ORDER BY id'
+                ).fetchall()
             finally:
                 conn.close()
             self.assertEqual(rows, [(2,)])
+            self.assertEqual(prior_rows, [(2,)])
 
     def test_resume_command_resumes_from_latest_failed_node(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -347,7 +415,8 @@ def seed():
 
             conn = load_duckdb().connect(str(artifact_path))
             try:
-                rows = conn.execute('SELECT id FROM "main"."seed"').fetchall()
+                archived_schema = f"run_{str(failed_run_id).replace('-', '')}"
+                rows = conn.execute(f'SELECT id FROM "{archived_schema}"."seed" ORDER BY id').fetchall()
                 pipeline_runs = conn.execute(
                     'SELECT run_id, status FROM "_queron_meta"."pipeline_runs"'
                 ).fetchall()
@@ -365,6 +434,141 @@ def seed():
             self.assertEqual(rows, [(1,)])
             self.assertEqual(pipeline_runs, [(failed_run_id, "success")])
             self.assertEqual(active_states, [("seed", "complete")])
+
+    def test_clean_existing_archives_failed_run_outputs_before_purge(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            local_files_dir = root / "local_files"
+            local_files_dir.mkdir(parents=True, exist_ok=True)
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.csv.ingress(
+    name='ext',
+    out='ext',
+    path='local_files/input.csv',
+)
+def ext():
+    pass
+
+@queron.model.sql(
+    name='final',
+    out='final',
+    query=\"\"\"
+SELECT id + 1 AS id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def final():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            stderr = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+                failed_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+            self.assertEqual(failed_exit, 1)
+            self.assertIn("Run failed:", stderr.getvalue())
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                failed_run = conn.execute(
+                    """
+                    SELECT run_id, status
+                    FROM "_queron_meta"."pipeline_runs"
+                    ORDER BY COALESCE(finished_at, started_at) DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertIsNotNone(failed_run)
+                failed_run_id = str(failed_run[0] or "").strip()
+                self.assertEqual(failed_run[1], "failed")
+                main_tables = conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'main'
+                    ORDER BY table_name
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertEqual(main_tables, [("seed",)])
+
+            (local_files_dir / "input.csv").write_text("id\n5\n", encoding="utf-8")
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                success_exit = queron.cli.main(
+                    ["run", str(pipeline_path), "--artifact-path", str(artifact_path), "--yes"]
+                )
+            self.assertEqual(success_exit, 0)
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                run_rows = conn.execute(
+                    """
+                    SELECT run_id, status
+                    FROM "_queron_meta"."pipeline_runs"
+                    ORDER BY COALESCE(finished_at, started_at) DESC
+                    LIMIT 2
+                    """
+                ).fetchall()
+                self.assertEqual(len(run_rows), 2)
+                latest_run_id = str(run_rows[0][0] or "").strip()
+                latest_status = str(run_rows[0][1] or "").strip()
+                self.assertIn(latest_status, {"success", "success_with_warnings"})
+                self.assertNotEqual(latest_run_id, failed_run_id)
+
+                failed_schema = f"run_{failed_run_id.replace('-', '')}"
+                success_schema = f"run_{latest_run_id.replace('-', '')}"
+
+                failed_tables = conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = ?
+                    ORDER BY table_name
+                    """,
+                    (failed_schema,),
+                ).fetchall()
+                success_tables = conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = ? AND table_name IN ('seed', 'ext', 'final')
+                    ORDER BY table_name
+                    """,
+                    (success_schema,),
+                ).fetchall()
+                main_tables = conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'main'
+                    ORDER BY table_name
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertEqual(failed_tables, [("seed",)])
+            self.assertEqual(success_tables, [("ext",), ("final",), ("seed",)])
+            self.assertEqual(main_tables, [])
 
     def test_failed_run_persists_skipped_node_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -485,6 +689,34 @@ def leaf():
                 initial_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
             self.assertEqual(initial_exit, 0)
 
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                latest_run = conn.execute(
+                    """
+                    SELECT run_id
+                    FROM "_queron_meta"."pipeline_runs"
+                    ORDER BY COALESCE(finished_at, started_at) DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                self.assertIsNotNone(latest_run)
+                archived_schema = f"run_{str(latest_run[0] or '').replace('-', '')}"
+            finally:
+                conn.close()
+
+            def restore_main_tables() -> None:
+                conn = load_duckdb().connect(str(artifact_path))
+                try:
+                    conn.execute('DROP TABLE IF EXISTS "main"."leaf"')
+                    conn.execute('DROP TABLE IF EXISTS "main"."mid"')
+                    conn.execute('DROP TABLE IF EXISTS "main"."seed"')
+                    conn.execute(f'CREATE TABLE "main"."seed" AS SELECT * FROM "{archived_schema}"."seed"')
+                    conn.execute(f'CREATE TABLE "main"."mid" AS SELECT * FROM "{archived_schema}"."mid"')
+                    conn.execute(f'CREATE TABLE "main"."leaf" AS SELECT * FROM "{archived_schema}"."leaf"')
+                finally:
+                    conn.close()
+
+            restore_main_tables()
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 reset_node_exit = queron.cli.main(
                     ["reset-node", str(pipeline_path), "mid", "--artifact-path", str(artifact_path)]
@@ -504,12 +736,7 @@ def leaf():
             self.assertNotIn("mid", existing)
             self.assertIn("leaf", existing)
 
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                rerun_exit = queron.cli.main(
-                    ["run", str(pipeline_path), "--artifact-path", str(artifact_path), "--yes"]
-                )
-            self.assertEqual(rerun_exit, 0)
-
+            restore_main_tables()
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 reset_upstream_exit = queron.cli.main(
                     ["reset-upstream", str(pipeline_path), "mid", "--artifact-path", str(artifact_path)]
@@ -529,17 +756,12 @@ def leaf():
             self.assertNotIn("mid", existing)
             self.assertIn("leaf", existing)
 
+            restore_main_tables()
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                rerun_exit = queron.cli.main(
-                    ["run", str(pipeline_path), "--artifact-path", str(artifact_path), "--yes"]
+                reset_downstream_exit = queron.cli.main(
+                    ["reset-downstream", str(pipeline_path), "mid", "--artifact-path", str(artifact_path)]
                 )
-            self.assertEqual(rerun_exit, 0)
-
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                reset_all_exit = queron.cli.main(
-                    ["reset-all", str(pipeline_path), "--artifact-path", str(artifact_path)]
-                )
-            self.assertEqual(reset_all_exit, 0)
+            self.assertEqual(reset_downstream_exit, 0)
             conn = load_duckdb().connect(str(artifact_path))
             try:
                 existing = {
@@ -550,7 +772,9 @@ def leaf():
                 }
             finally:
                 conn.close()
-            self.assertEqual(existing, set())
+            self.assertIn("seed", existing)
+            self.assertNotIn("mid", existing)
+            self.assertNotIn("leaf", existing)
 
     def test_reset_history_appends_cleared_then_ready_for_selected_nodes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -660,9 +884,11 @@ def seed():
             )
             self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
 
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                first_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
-            self.assertEqual(first_exit, 0)
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                conn.execute('CREATE TABLE "main"."seed" AS SELECT 1 AS id')
+            finally:
+                conn.close()
 
             stdout = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
@@ -675,6 +901,908 @@ def seed():
             self.assertTrue(payload.get("requires_confirmation"))
             self.assertEqual(payload.get("phase"), "awaiting_confirmation")
             self.assertTrue(payload.get("ok"))
+
+    def test_run_command_rejects_duplicate_non_null_run_label(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                first_exit = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "nightly_customer_refresh",
+                    ]
+                )
+            self.assertEqual(first_exit, 0)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                second_exit = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "nightly_customer_refresh",
+                        "--yes",
+                    ]
+                )
+
+            self.assertEqual(second_exit, 1)
+            self.assertIn("already exists for this pipeline", stderr.getvalue())
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                labels = conn.execute(
+                    'SELECT run_label FROM "_queron_meta"."pipeline_runs" ORDER BY started_at'
+                ).fetchall()
+            finally:
+                conn.close()
+            self.assertEqual(labels, [("nightly_customer_refresh",)])
+
+    def test_inspect_runs_lists_pipeline_runs_and_honors_limit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                first_exit = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "nightly_customer_refresh",
+                    ]
+                )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                second_exit = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "ad_hoc_debug",
+                        "--yes",
+                    ]
+                )
+
+            self.assertEqual(first_exit, 0)
+            self.assertEqual(second_exit, 0)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                inspect_exit = queron.cli.main(["inspect_runs", str(pipeline_path), "--artifact-path", str(artifact_path)])
+
+            self.assertEqual(inspect_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            text = stdout.getvalue()
+            self.assertIn("Runs", text)
+            self.assertIn("nightly_customer_refresh", text)
+            self.assertIn("ad_hoc_debug", text)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                limited_exit = queron.cli.main(
+                    ["inspect_runs", str(pipeline_path), "--artifact-path", str(artifact_path), "--limit", "1"]
+                )
+
+            self.assertEqual(limited_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            limited_text = stdout.getvalue()
+            self.assertIn("ad_hoc_debug", limited_text)
+            self.assertNotIn("nightly_customer_refresh", limited_text)
+
+    def test_run_writes_log_file_without_default_console_streaming(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Run ID:", stdout.getvalue())
+            self.assertIn("Log file:", stdout.getvalue())
+            self.assertIn("Run succeeded.", stdout.getvalue())
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                row = conn.execute(
+                    'SELECT run_id, log_path FROM "_queron_meta"."pipeline_runs" ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1'
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(row)
+            self.assertTrue(bool(row[0]))
+            self.assertTrue(bool(row[1]))
+            log_path = pathlib.Path(str(row[1]))
+            self.assertTrue(log_path.exists())
+            log_text = log_path.read_text(encoding="utf-8")
+            self.assertIn("pipeline_execution_started", log_text)
+
+    def test_stream_logs_and_inspect_logs_cli(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "stream_test",
+                        "--stream-logs",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("[pipeline]", stderr.getvalue())
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                inspect_exit = queron.cli.main(
+                    [
+                        "inspect_logs",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "stream_test",
+                        "--tail",
+                        "5",
+                    ]
+                )
+
+            self.assertEqual(inspect_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            inspect_text = stdout.getvalue()
+            self.assertIn("Run label: stream_test", inspect_text)
+            self.assertIn("Logs", inspect_text)
+            self.assertIn("pipeline_execution_finished", inspect_text)
+
+    def test_inspect_logs_by_run_id_for_unlabeled_run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                row = conn.execute(
+                    'SELECT run_id FROM "_queron_meta"."pipeline_runs" ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1'
+                ).fetchone()
+            finally:
+                conn.close()
+
+            self.assertIsNotNone(row)
+            run_id = str(row[0] or "").strip()
+            self.assertTrue(run_id)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                inspect_exit = queron.cli.main(
+                    [
+                        "inspect_logs",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-id",
+                        run_id,
+                        "--tail",
+                        "5",
+                    ]
+                )
+
+            self.assertEqual(inspect_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            inspect_text = stdout.getvalue()
+            self.assertIn(f"Run ID: {run_id}", inspect_text)
+            self.assertNotIn("Run label:", inspect_text)
+            self.assertIn("Logs", inspect_text)
+            self.assertIn("pipeline_execution_finished", inspect_text)
+
+    def test_inspect_dag_cli_without_runs_uses_compiled_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='final',
+    out='final',
+    query=\"\"\"
+SELECT id FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def final():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(["inspect_dag", str(pipeline_path), "--artifact-path", str(artifact_path)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            text = stdout.getvalue()
+            self.assertIn("Compile ID:", text)
+            self.assertNotIn("Run ID:", text)
+            self.assertIn("Nodes", text)
+            self.assertIn("- seed  model.sql  -  main.seed", text)
+            self.assertIn("- final  model.sql  -  main.final", text)
+            self.assertIn("Edges", text)
+            self.assertIn("- seed -> final", text)
+
+    def test_inspect_dag_cli_supports_run_label_and_run_id(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='final',
+    out='final',
+    query=\"\"\"
+SELECT id FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def final():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                run_exit = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                    ]
+                )
+            self.assertEqual(run_exit, 0)
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                unlabeled_row = conn.execute(
+                    'SELECT run_id FROM "_queron_meta"."pipeline_runs" WHERE run_label IS NULL ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1'
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(unlabeled_row)
+            unlabeled_run_id = str(unlabeled_row[0] or "").strip()
+            self.assertTrue(unlabeled_run_id)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                labeled_exit = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "dag_label",
+                        "--clean-existing",
+                        "--yes",
+                    ]
+                )
+            self.assertEqual(labeled_exit, 0)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                inspect_latest_exit = queron.cli.main(
+                    ["inspect_dag", str(pipeline_path), "--artifact-path", str(artifact_path)]
+                )
+            self.assertEqual(inspect_latest_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            latest_text = stdout.getvalue()
+            self.assertIn("Run label: dag_label", latest_text)
+            self.assertIn("Run status: success", latest_text)
+            self.assertIn("- seed  model.sql  complete  main.seed", latest_text)
+            self.assertIn("- final  model.sql  complete  main.final", latest_text)
+            self.assertIn("- seed -> final", latest_text)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                inspect_by_label_exit = queron.cli.main(
+                    [
+                        "inspect_dag",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "dag_label",
+                    ]
+                )
+            self.assertEqual(inspect_by_label_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            by_label_text = stdout.getvalue()
+            self.assertIn("Run label: dag_label", by_label_text)
+            self.assertIn("Run status: success", by_label_text)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                inspect_by_id_exit = queron.cli.main(
+                    [
+                        "inspect_dag",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-id",
+                        unlabeled_run_id,
+                    ]
+                )
+            self.assertEqual(inspect_by_id_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            by_id_text = stdout.getvalue()
+            self.assertIn(f"Run ID: {unlabeled_run_id}", by_id_text)
+            self.assertNotIn("Run label:", by_id_text)
+            self.assertIn("Run status: success", by_id_text)
+            self.assertIn("- seed  model.sql  complete  main.seed", by_id_text)
+
+    def test_inspect_node_python_and_cli_support_upstream_and_downstream(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='mid',
+    out='mid',
+    query=\"\"\"
+SELECT id + 1 AS id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def mid():
+    pass
+
+@queron.model.sql(
+    name='leaf',
+    out='leaf',
+    query=\"\"\"
+SELECT id + 1 AS id
+FROM {{ queron.ref("mid") }}
+\"\"\",
+)
+def leaf():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                unlabeled_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+            self.assertEqual(unlabeled_exit, 0)
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                unlabeled_row = conn.execute(
+                    'SELECT run_id FROM "_queron_meta"."pipeline_runs" WHERE run_label IS NULL ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1'
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(unlabeled_row)
+            unlabeled_run_id = str(unlabeled_row[0] or "").strip()
+            self.assertTrue(unlabeled_run_id)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                labeled_exit = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "node_label",
+                    ]
+                )
+            self.assertEqual(labeled_exit, 0)
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                labeled_row = conn.execute(
+                    'SELECT run_id FROM "_queron_meta"."pipeline_runs" WHERE run_label = ? LIMIT 1',
+                    ("node_label",),
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(labeled_row)
+            labeled_run_id = str(labeled_row[0] or "").strip()
+            self.assertTrue(labeled_run_id)
+
+            python_result = queron.inspect_node(
+                str(pipeline_path),
+                "mid",
+                artifact_path=str(artifact_path),
+                run_label="node_label",
+            )
+            self.assertEqual(python_result.selection, "node")
+            self.assertEqual(python_result.requested_node, "mid")
+            self.assertEqual(len(python_result.nodes), 1)
+            node_payload = python_result.nodes[0]
+            self.assertEqual(node_payload.get("name"), "mid")
+            self.assertEqual(node_payload.get("logical_artifact"), "main.mid")
+            self.assertEqual(node_payload.get("artifact_name"), f"run_{labeled_run_id.replace('-', '')}.mid")
+            self.assertEqual(node_payload.get("dependencies"), ["seed"])
+            self.assertEqual(node_payload.get("dependents"), ["leaf"])
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                inspect_upstream_exit = queron.cli.main(
+                    [
+                        "inspect_node",
+                        str(pipeline_path),
+                        "mid",
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-label",
+                        "node_label",
+                        "--upstream",
+                    ]
+                )
+            self.assertEqual(inspect_upstream_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            upstream_text = stdout.getvalue()
+            self.assertIn("Run label: node_label", upstream_text)
+            self.assertIn("Selection: upstream", upstream_text)
+            self.assertIn("Requested node: mid", upstream_text)
+            self.assertIn(
+                f"- seed  model.sql  complete  logical=main.seed  physical=run_{labeled_run_id.replace('-', '')}.seed",
+                upstream_text,
+            )
+            self.assertIn(
+                f"- mid  model.sql  complete  logical=main.mid  physical=run_{labeled_run_id.replace('-', '')}.mid",
+                upstream_text,
+            )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                inspect_downstream_exit = queron.cli.main(
+                    [
+                        "inspect_node",
+                        str(pipeline_path),
+                        "mid",
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-id",
+                        unlabeled_run_id,
+                        "--downstream",
+                    ]
+                )
+            self.assertEqual(inspect_downstream_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            downstream_text = stdout.getvalue()
+            self.assertIn(f"Run ID: {unlabeled_run_id}", downstream_text)
+            self.assertNotIn("Run label:", downstream_text)
+            self.assertIn("Selection: downstream", downstream_text)
+            self.assertIn(
+                f"- mid  model.sql  complete  logical=main.mid  physical=run_{unlabeled_run_id.replace('-', '')}.mid",
+                downstream_text,
+            )
+            self.assertIn(
+                f"- leaf  model.sql  complete  logical=main.leaf  physical=run_{unlabeled_run_id.replace('-', '')}.leaf",
+                downstream_text,
+            )
+
+    def test_inspect_node_history_python_and_cli_show_failed_then_reset_timeline(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='broken',
+    out='broken',
+    query=\"\"\"
+SELECT CAST('bad' AS INTEGER) AS id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def broken():
+    pass
+
+@queron.model.sql(
+    name='leaf',
+    out='leaf',
+    query=\"\"\"
+SELECT id + 1 AS id
+FROM {{ queron.ref("broken") }}
+\"\"\",
+)
+def leaf():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                failed_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+            self.assertEqual(failed_exit, 1)
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                failed_row = conn.execute(
+                    'SELECT run_id FROM "_queron_meta"."pipeline_runs" ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1'
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(failed_row)
+            failed_run_id = str(failed_row[0] or "").strip()
+            self.assertTrue(failed_run_id)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                reset_exit = queron.cli.main(
+                    ["reset-upstream", str(pipeline_path), "broken", "--artifact-path", str(artifact_path)]
+                )
+            self.assertEqual(reset_exit, 0)
+
+            python_result = queron.inspect_node_history(
+                str(pipeline_path),
+                "broken",
+                artifact_path=str(artifact_path),
+                run_id=failed_run_id,
+            )
+            self.assertEqual(python_result.run_id, failed_run_id)
+            self.assertEqual(python_result.node_name, "broken")
+            self.assertEqual(python_result.node_kind, "model.sql")
+            self.assertEqual(python_result.node_run_status, "ready")
+            states = [str(item.get("state") or "").strip() for item in python_result.states]
+            triggers = [str(item.get("trigger") or "").strip() for item in python_result.states]
+            self.assertEqual(states, ["ready", "running", "failed", "cleared", "ready"])
+            self.assertEqual(
+                triggers,
+                ["run_initialized", "node_started", "node_failed", "reset_upstream", "reset_upstream"],
+            )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                inspect_exit = queron.cli.main(
+                    [
+                        "inspect_node_history",
+                        str(pipeline_path),
+                        "broken",
+                        "--artifact-path",
+                        str(artifact_path),
+                        "--run-id",
+                        failed_run_id,
+                    ]
+                )
+            self.assertEqual(inspect_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            text = stdout.getvalue()
+            self.assertIn(f"Run ID: {failed_run_id}", text)
+            self.assertIn("Node: broken", text)
+            self.assertIn("Node status: ready", text)
+            self.assertIn("States", text)
+            self.assertIn("trigger=run_initialized", text)
+            self.assertIn("trigger=node_started", text)
+            self.assertIn("trigger=node_failed", text)
+            self.assertIn("trigger=reset_upstream", text)
+            self.assertIn("- failed", text)
+            self.assertIn("- cleared", text)
+            self.assertIn("- ready", text)
+
+    def test_successful_runs_archive_local_duckdb_artifacts_per_run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            local_files = root / "local_files"
+            local_files.mkdir(parents=True, exist_ok=True)
+            (local_files / "input.csv").write_text("id\n1\n2\n", encoding="utf-8")
+
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / "artifacts.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+@queron.csv.ingress(
+    name='seed',
+    out='seed',
+    path='local_files/input.csv',
+    header=True,
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='final',
+    out='final',
+    query=f\"\"\"
+SELECT id
+FROM {queron.ref("seed")}
+\"\"\",
+)
+def final():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path, artifact_path=artifact_path)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                first_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+            self.assertEqual(first_exit, 0)
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                first_run = conn.execute(
+                    'SELECT run_id FROM "_queron_meta"."pipeline_runs" ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 1'
+                ).fetchone()
+                self.assertIsNotNone(first_run)
+                first_run_id = str(first_run[0] or "").strip()
+                self.assertTrue(first_run_id)
+                first_schema = f"run_{first_run_id.replace('-', '')}"
+
+                main_tables = conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'main' AND table_name IN ('seed', 'final')
+                    ORDER BY table_name
+                    """
+                ).fetchall()
+                self.assertEqual(main_tables, [])
+
+                archived_tables = conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = ? AND table_name IN ('seed', 'final')
+                    ORDER BY table_name
+                    """,
+                    (first_schema,),
+                ).fetchall()
+                self.assertEqual(archived_tables, [("final",), ("seed",)])
+
+                node_run_artifacts = conn.execute(
+                    """
+                    SELECT artifact_name
+                    FROM "_queron_meta"."node_runs"
+                    WHERE run_id = ? AND node_name IN ('seed', 'final')
+                    ORDER BY node_name
+                    """,
+                    (first_run_id,),
+                ).fetchall()
+                self.assertEqual(
+                    node_run_artifacts,
+                    [(f"{first_schema}.final",), (f"{first_schema}.seed",)],
+                )
+
+                lineage_rows = conn.execute(
+                    """
+                    SELECT child_schema, child_table, parent_kind, parent_schema, parent_table
+                    FROM "_queron_meta"."table_lineage"
+                    WHERE child_table IN ('seed', 'final')
+                    ORDER BY child_table, parent_kind, parent_table
+                    """
+                ).fetchall()
+                self.assertIn((first_schema, "seed", "file", None, "input.csv"), lineage_rows)
+                self.assertIn((first_schema, "final", "artifact", first_schema, "seed"), lineage_rows)
+            finally:
+                conn.close()
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                second_exit = queron.cli.main(["run", str(pipeline_path), "--artifact-path", str(artifact_path)])
+            self.assertEqual(second_exit, 0)
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                run_rows = conn.execute(
+                    'SELECT run_id FROM "_queron_meta"."pipeline_runs" ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 2'
+                ).fetchall()
+                self.assertEqual(len(run_rows), 2)
+                second_run_id = str(run_rows[0][0] or "").strip()
+                self.assertNotEqual(second_run_id, first_run_id)
+                second_schema = f"run_{second_run_id.replace('-', '')}"
+
+                main_tables = conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'main' AND table_name IN ('seed', 'final')
+                    ORDER BY table_name
+                    """
+                ).fetchall()
+                self.assertEqual(main_tables, [])
+
+                first_archived = conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = ? AND table_name IN ('seed', 'final')
+                    ORDER BY table_name
+                    """,
+                    (first_schema,),
+                ).fetchall()
+                second_archived = conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = ? AND table_name IN ('seed', 'final')
+                    ORDER BY table_name
+                    """,
+                    (second_schema,),
+                ).fetchall()
+                self.assertEqual(first_archived, [("final",), ("seed",)])
+                self.assertEqual(second_archived, [("final",), ("seed",)])
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":

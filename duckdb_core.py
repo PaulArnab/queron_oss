@@ -933,6 +933,8 @@ def _pipeline_runs_create_sql(*, table_name: str) -> str:
     return f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             run_id VARCHAR PRIMARY KEY,
+            run_label VARCHAR,
+            log_path VARCHAR,
             compile_id VARCHAR,
             pipeline_id VARCHAR,
             pipeline_name VARCHAR,
@@ -1079,6 +1081,14 @@ def _ensure_queron_meta_tables(conn) -> None:
     conn.execute(_node_runs_create_sql(table_name=node_runs_name))
     conn.execute(_node_states_create_sql(table_name=node_states_name))
     try:
+        conn.execute(f"ALTER TABLE {pipeline_runs_name} ADD COLUMN IF NOT EXISTS run_label VARCHAR")
+    except Exception:
+        pass
+    try:
+        conn.execute(f"ALTER TABLE {pipeline_runs_name} ADD COLUMN IF NOT EXISTS log_path VARCHAR")
+    except Exception:
+        pass
+    try:
         conn.execute(f"ALTER TABLE {pipeline_runs_name} ADD COLUMN IF NOT EXISTS compile_id VARCHAR")
     except Exception:
         pass
@@ -1093,6 +1103,9 @@ def _ensure_queron_meta_tables(conn) -> None:
         create_sql=_pipeline_runs_create_sql(table_name=pipeline_runs_name),
         column_names=[
             "run_id",
+            "run_label",
+            "log_path",
+            "compile_id",
             "pipeline_id",
             "pipeline_name",
             "target",
@@ -1104,6 +1117,9 @@ def _ensure_queron_meta_tables(conn) -> None:
         ],
         source_column_names=[
             "run_id",
+            "run_label",
+            "log_path",
+            "compile_id",
             "notebook_id",
             "notebook_name",
             "target",
@@ -1289,6 +1305,8 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
     meta_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}"
     values = (
         item.run_id,
+        item.run_label,
+        item.log_path,
         item.compile_id,
         item.pipeline_id,
         item.pipeline_name,
@@ -1304,6 +1322,8 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
             f"""
             INSERT OR REPLACE INTO {meta_table} (
                 run_id,
+                run_label,
+                log_path,
                 compile_id,
                 pipeline_id,
                 pipeline_name,
@@ -1313,7 +1333,7 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 finished_at,
                 status,
                 error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1322,6 +1342,9 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
             f"""
             INSERT OR REPLACE INTO {meta_table} (
                 run_id,
+                run_label,
+                log_path,
+                compile_id,
                 notebook_id,
                 notebook_name,
                 target,
@@ -1330,9 +1353,9 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 finished_at,
                 status,
                 error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            values[0:1] + values[2:],
+            values[0:3] + values[3:],
         )
 
 
@@ -1742,6 +1765,91 @@ def load_active_compiled_contract(
             ORDER BY compiled_at DESC
             LIMIT 1
             """
+        ).fetchone()
+        if row is None:
+            return None
+    finally:
+        conn.close()
+
+    def _load_json_list(value: Any) -> list[Any]:
+        try:
+            parsed = json.loads(str(value or "[]"))
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+
+    def _load_json_dict(value: Any) -> dict[str, Any]:
+        try:
+            parsed = json.loads(str(value or "{}"))
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    return CompiledContractRecord(
+        compile_id=row[0],
+        pipeline_id=row[1],
+        pipeline_name=row[2],
+        pipeline_path=row[3],
+        project_root=row[4],
+        artifact_path=row[5],
+        config_path=row[6],
+        target=row[7],
+        compiled_at=row[8],
+        is_active=bool(row[9]),
+        contract_hash=row[10],
+        edge_hash=row[11],
+        config_hash=row[12],
+        project_python_hash=row[13],
+        node_hashes_json=_load_json_list(row[14]),
+        edges_json=_load_json_list(row[15]),
+        tracked_files_json=_load_json_list(row[16]),
+        external_dependencies_json=_load_json_list(row[17]),
+        spec_json=_load_json_dict(row[18]),
+        diagnostics_json=_load_json_list(row[19]),
+    )
+
+
+def load_compiled_contract_by_id(
+    *,
+    database_path: str,
+    compile_id: str,
+) -> CompiledContractRecord | None:
+    resolved_compile_id = str(compile_id or "").strip()
+    if not resolved_compile_id:
+        return None
+
+    resolved_database_path = str(Path(database_path).expanduser().resolve())
+    conn = _duckdb_connection(resolved_database_path)
+    try:
+        _ensure_queron_meta_tables(conn)
+        row = conn.execute(
+            f"""
+            SELECT
+                compile_id,
+                pipeline_id,
+                pipeline_name,
+                pipeline_path,
+                project_root,
+                artifact_path,
+                config_path,
+                target,
+                compiled_at,
+                is_active,
+                contract_hash,
+                edge_hash,
+                config_hash,
+                project_python_hash,
+                node_hashes_json,
+                edges_json,
+                tracked_files_json,
+                external_dependencies_json,
+                spec_json,
+                diagnostics_json
+            FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('compiled_contracts')}
+            WHERE compile_id = ?
+            LIMIT 1
+            """,
+            (resolved_compile_id,),
         ).fetchone()
         if row is None:
             return None
@@ -2267,6 +2375,7 @@ def get_latest_pipeline_run(
     database = _resolve_database_path(DuckDbConnectRequest(**cfg_dict))
     conn = _duckdb_connection(database)
     try:
+        _ensure_queron_meta_tables(conn)
         where_sql = ""
         params: tuple[Any, ...] = ()
         if status:
@@ -2278,6 +2387,8 @@ def get_latest_pipeline_run(
                     f"""
                     SELECT
                         run_id,
+                        run_label,
+                        log_path,
                         compile_id,
                         pipeline_id,
                         pipeline_name,
@@ -2299,6 +2410,9 @@ def get_latest_pipeline_run(
                     f"""
                     SELECT
                         run_id,
+                        run_label,
+                        log_path,
+                        compile_id,
                         notebook_id,
                         notebook_name,
                         target,
@@ -2320,18 +2434,185 @@ def get_latest_pipeline_run(
             return None
         return {
             "run_id": row[0],
-            "compile_id": row[1] if len(row) > 9 else None,
-            "pipeline_id": row[2] if len(row) > 9 else row[1],
-            "pipeline_name": row[3] if len(row) > 9 else row[2],
-            "target": row[4] if len(row) > 9 else row[3],
-            "artifact_path": row[5] if len(row) > 9 else row[4],
-            "started_at": row[6] if len(row) > 9 else row[5],
-            "finished_at": row[7] if len(row) > 9 else row[6],
-            "status": row[8] if len(row) > 9 else row[7],
-            "error_message": row[9] if len(row) > 9 else row[8],
+            "run_label": row[1],
+            "log_path": row[2],
+            "compile_id": row[3],
+            "pipeline_id": row[4],
+            "pipeline_name": row[5],
+            "target": row[6],
+            "artifact_path": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "status": row[10],
+            "error_message": row[11],
         }
     finally:
         conn.close()
+
+
+def get_pipeline_run_by_label(
+    *,
+    database_path: str,
+    run_label: str,
+) -> dict[str, Any] | None:
+    label = str(run_label or "").strip()
+    if not label:
+        return None
+
+    resolved_database_path = str(Path(database_path).expanduser().resolve())
+    conn = _duckdb_connection(resolved_database_path)
+    try:
+        _ensure_queron_meta_tables(conn)
+        row = conn.execute(
+            f"""
+            SELECT
+                run_id,
+                run_label,
+                log_path,
+                compile_id,
+                pipeline_id,
+                pipeline_name,
+                target,
+                artifact_path,
+                started_at,
+                finished_at,
+                status,
+                error_message
+            FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
+            WHERE run_label = ?
+            LIMIT 1
+            """,
+            (label,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": row[0],
+            "run_label": row[1],
+            "log_path": row[2],
+            "compile_id": row[3],
+            "pipeline_id": row[4],
+            "pipeline_name": row[5],
+            "target": row[6],
+            "artifact_path": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "status": row[10],
+            "error_message": row[11],
+        }
+    finally:
+        conn.close()
+
+
+def get_pipeline_run_by_id(
+    *,
+    database_path: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    resolved_run_id = str(run_id or "").strip()
+    if not resolved_run_id:
+        return None
+
+    resolved_database_path = str(Path(database_path).expanduser().resolve())
+    conn = _duckdb_connection(resolved_database_path)
+    try:
+        _ensure_queron_meta_tables(conn)
+        row = conn.execute(
+            f"""
+            SELECT
+                run_id,
+                run_label,
+                log_path,
+                compile_id,
+                pipeline_id,
+                pipeline_name,
+                target,
+                artifact_path,
+                started_at,
+                finished_at,
+                status,
+                error_message
+            FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
+            WHERE run_id = ?
+            LIMIT 1
+            """,
+            (resolved_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": row[0],
+            "run_label": row[1],
+            "log_path": row[2],
+            "compile_id": row[3],
+            "pipeline_id": row[4],
+            "pipeline_name": row[5],
+            "target": row[6],
+            "artifact_path": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "status": row[10],
+            "error_message": row[11],
+        }
+    finally:
+        conn.close()
+
+
+def list_pipeline_runs(
+    *,
+    database_path: str,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    resolved_database_path = str(Path(database_path).expanduser().resolve())
+    conn = _duckdb_connection(resolved_database_path)
+    try:
+        _ensure_queron_meta_tables(conn)
+        limit_sql = ""
+        params: tuple[Any, ...] = ()
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            params = (int(limit),)
+        rows = conn.execute(
+            f"""
+            SELECT
+                run_id,
+                run_label,
+                log_path,
+                compile_id,
+                pipeline_id,
+                pipeline_name,
+                target,
+                artifact_path,
+                started_at,
+                finished_at,
+                status,
+                error_message
+            FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
+            ORDER BY COALESCE(finished_at, started_at) DESC
+            {limit_sql}
+            """,
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        {
+            "run_id": row[0],
+            "run_label": row[1],
+            "log_path": row[2],
+            "compile_id": row[3],
+            "pipeline_id": row[4],
+            "pipeline_name": row[5],
+            "target": row[6],
+            "artifact_path": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "status": row[10],
+            "error_message": row[11],
+        }
+        for row in rows
+    ]
 
 
 def get_node_runs_for_run(
@@ -2412,6 +2693,84 @@ def get_node_runs_for_run(
     return out
 
 
+def get_node_runs_for_run_by_database(
+    *,
+    database_path: str,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    resolved_run_id = str(run_id or "").strip()
+    if not resolved_run_id:
+        return []
+
+    resolved_database_path = str(Path(database_path).expanduser().resolve())
+    conn = _duckdb_connection(resolved_database_path)
+    try:
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    node_run_id,
+                    run_id,
+                    node_name,
+                    node_kind,
+                    artifact_name,
+                    started_at,
+                    finished_at,
+                    status,
+                    row_count_in,
+                    row_count_out,
+                    artifact_size_bytes,
+                    error_message,
+                    warnings_json,
+                    details_json,
+                    active_node_state_id
+                FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('node_runs')}
+                WHERE run_id = ?
+                ORDER BY node_name
+                """,
+                (resolved_run_id,),
+            ).fetchall()
+        except Exception:
+            return []
+    finally:
+        conn.close()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            warnings_json = json.loads(str(row[12] or "[]"))
+            if not isinstance(warnings_json, list):
+                warnings_json = []
+        except Exception:
+            warnings_json = []
+        try:
+            details_json = json.loads(str(row[13] or "{}"))
+            if not isinstance(details_json, dict):
+                details_json = {}
+        except Exception:
+            details_json = {}
+        out.append(
+            {
+                "node_run_id": row[0],
+                "run_id": row[1],
+                "node_name": row[2],
+                "node_kind": row[3],
+                "artifact_name": row[4],
+                "started_at": row[5],
+                "finished_at": row[6],
+                "status": row[7],
+                "row_count_in": row[8],
+                "row_count_out": row[9],
+                "artifact_size_bytes": row[10],
+                "error_message": row[11],
+                "warnings_json": warnings_json,
+                "details_json": details_json,
+                "active_node_state_id": row[14],
+            }
+        )
+    return out
+
+
 def get_active_node_states_for_run(
     *,
     connection_id: str,
@@ -2443,6 +2802,161 @@ def get_active_node_states_for_run(
                 """,
                 (run_id,),
             ).fetchall()
+        except Exception:
+            return []
+    finally:
+        conn.close()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            details_json = json.loads(str(row[8] or "{}"))
+            if not isinstance(details_json, dict):
+                details_json = {}
+        except Exception:
+            details_json = {}
+        out.append(
+            {
+                "node_state_id": row[0],
+                "run_id": row[1],
+                "node_run_id": row[2],
+                "node_name": row[3],
+                "state": row[4],
+                "is_active": bool(row[5]),
+                "created_at": row[6],
+                "trigger": row[7],
+                "details_json": details_json,
+            }
+        )
+    return out
+
+
+def get_active_node_states_for_run_by_database(
+    *,
+    database_path: str,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    resolved_run_id = str(run_id or "").strip()
+    if not resolved_run_id:
+        return []
+
+    resolved_database_path = str(Path(database_path).expanduser().resolve())
+    conn = _duckdb_connection(resolved_database_path)
+    try:
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    node_state_id,
+                    run_id,
+                    node_run_id,
+                    node_name,
+                    state,
+                    is_active,
+                    created_at,
+                    trigger,
+                    details_json
+                FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('node_states')}
+                WHERE run_id = ? AND is_active = TRUE
+                ORDER BY node_name
+                """,
+                (resolved_run_id,),
+            ).fetchall()
+        except Exception:
+            return []
+    finally:
+        conn.close()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            details_json = json.loads(str(row[8] or "{}"))
+            if not isinstance(details_json, dict):
+                details_json = {}
+        except Exception:
+            details_json = {}
+        out.append(
+            {
+                "node_state_id": row[0],
+                "run_id": row[1],
+                "node_run_id": row[2],
+                "node_name": row[3],
+                "state": row[4],
+                "is_active": bool(row[5]),
+                "created_at": row[6],
+                "trigger": row[7],
+                "details_json": details_json,
+            }
+        )
+    return out
+
+
+def get_node_states_for_run_by_database(
+    *,
+    database_path: str,
+    run_id: str,
+    node_name: str | None = None,
+) -> list[dict[str, Any]]:
+    resolved_run_id = str(run_id or "").strip()
+    if not resolved_run_id:
+        return []
+
+    resolved_database_path = str(Path(database_path).expanduser().resolve())
+    resolved_node_name = str(node_name or "").strip()
+    state_sort_sql = """
+        CASE
+            WHEN COALESCE(trigger, '') LIKE 'reset_%' AND state = 'cleared' THEN 0
+            WHEN COALESCE(trigger, '') LIKE 'reset_%' AND state = 'ready' THEN 1
+            WHEN state = 'ready' THEN 0
+            WHEN state = 'running' THEN 1
+            WHEN state = 'failed' THEN 2
+            WHEN state = 'skipped' THEN 3
+            WHEN state = 'complete' THEN 4
+            WHEN state = 'cleared' THEN 5
+            ELSE 9
+        END
+    """
+    conn = _duckdb_connection(resolved_database_path)
+    try:
+        try:
+            if resolved_node_name:
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        node_state_id,
+                        run_id,
+                        node_run_id,
+                        node_name,
+                        state,
+                        is_active,
+                        created_at,
+                    trigger,
+                    details_json
+                    FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('node_states')}
+                    WHERE run_id = ? AND node_name = ?
+                    ORDER BY created_at, {state_sort_sql}, node_state_id
+                    """,
+                    (resolved_run_id, resolved_node_name),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        node_state_id,
+                        run_id,
+                        node_run_id,
+                        node_name,
+                        state,
+                        is_active,
+                        created_at,
+                    trigger,
+                    details_json
+                    FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('node_states')}
+                    WHERE run_id = ?
+                    ORDER BY node_name, created_at, {state_sort_sql}, node_state_id
+                    """,
+                    (resolved_run_id,),
+                ).fetchall()
         except Exception:
             return []
     finally:
@@ -2553,6 +3067,106 @@ def list_existing_pipeline_targets(
         return existing_targets
     finally:
         conn.close()
+
+
+def _archive_schema_name_for_run(run_id: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_]", "", str(run_id or "").strip())
+    if not normalized:
+        raise RuntimeError("run_id is required to archive pipeline targets.")
+    return f"run_{normalized}"
+
+
+def archive_pipeline_targets(
+    *,
+    connection_id: str,
+    run_id: str,
+    target_tables: list[str],
+) -> dict[str, str]:
+    cfg_dict = _connections.get(connection_id)
+    if cfg_dict is None:
+        raise LookupError("DuckDB connection not found. Please connect first.")
+
+    normalized_targets: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for target in target_tables:
+        schema, name = _split_target_table_name(target)
+        key = (schema, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_targets.append(key)
+
+    if not normalized_targets:
+        return {}
+
+    archive_schema = _archive_schema_name_for_run(run_id)
+    database = _resolve_database_path(DuckDbConnectRequest(**cfg_dict))
+    conn = _duckdb_connection(database)
+    archived: dict[str, str] = {}
+    try:
+        _ensure_queron_meta_tables(conn)
+        conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(archive_schema)}")
+
+        existing_targets: list[tuple[str, str]] = []
+        for schema, name in normalized_targets:
+            if _table_exists(conn, schema=schema, name=name):
+                existing_targets.append((schema, name))
+
+        for source_schema, table_name in existing_targets:
+            destination_qualified = _qualified_name(archive_schema, table_name)
+            source_qualified = _qualified_name(source_schema, table_name)
+            if _table_exists(conn, schema=archive_schema, name=table_name):
+                raise RuntimeError(
+                    f"Archived artifact table '{archive_schema}.{table_name}' already exists for run '{run_id}'."
+                )
+            conn.execute(f"CREATE TABLE {destination_qualified} AS SELECT * FROM {source_qualified}")
+            conn.execute(f"DROP TABLE {source_qualified}")
+            archived[f"{source_schema}.{table_name}"] = f"{archive_schema}.{table_name}"
+
+        if not archived:
+            return {}
+
+        mapping_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('column_mapping')}"
+        lineage_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('table_lineage')}"
+        node_runs_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('node_runs')}"
+        for source_qualified, destination_qualified in archived.items():
+            source_schema, table_name = _split_target_table_name(source_qualified)
+            conn.execute(
+                f"""
+                UPDATE {mapping_table}
+                SET target_schema = ?
+                WHERE target_schema = ? AND target_table = ?
+                """,
+                (archive_schema, source_schema, table_name),
+            )
+            conn.execute(
+                f"""
+                UPDATE {lineage_table}
+                SET child_schema = ?
+                WHERE child_schema = ? AND child_table = ?
+                """,
+                (archive_schema, source_schema, table_name),
+            )
+            conn.execute(
+                f"""
+                UPDATE {lineage_table}
+                SET parent_schema = ?
+                WHERE parent_kind = 'artifact' AND parent_schema = ? AND parent_table = ?
+                """,
+                (archive_schema, source_schema, table_name),
+            )
+            conn.execute(
+                f"""
+                UPDATE {node_runs_table}
+                SET artifact_name = ?
+                WHERE run_id = ? AND artifact_name = ?
+                """,
+                (destination_qualified, str(run_id), source_qualified),
+            )
+    finally:
+        conn.close()
+
+    return archived
 
 
 def get_table_lineage(
