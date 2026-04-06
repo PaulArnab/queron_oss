@@ -40,6 +40,10 @@ def _quote_identifier(identifier: str) -> str:
     return '"' + str(identifier).replace('"', '""') + '"'
 
 
+def _generate_run_id() -> str:
+    return uuid.uuid4().hex[:16]
+
+
 def _quote_compound_identifier(identifier: str) -> str:
     parts = [part.strip() for part in str(identifier).split(".") if part.strip()]
     if not parts:
@@ -142,7 +146,7 @@ class PipelineRuntime:
         self.working_dir = str(Path(working_dir or Path(self.duckdb_path).parent).resolve())
         self.spec = spec
         self.module_globals = module_globals or {}
-        self.run_id = str(uuid.uuid4())
+        self.run_id = _generate_run_id()
         self.log_path = str(self._resolve_log_path())
         self.runtime_bindings = runtime_bindings or {}
         self.config_bindings = config_bindings or {}

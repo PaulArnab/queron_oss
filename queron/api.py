@@ -42,6 +42,8 @@ class InitPipelineProjectResult:
 class InspectDagResult:
     pipeline_path: str
     artifact_path: str
+    pipeline_id: str | None = None
+    pipeline_name: str | None = None
     compile_id: str | None = None
     run_id: str | None = None
     run_label: str | None = None
@@ -914,6 +916,8 @@ def inspect_node(
                 "node_run_status": str(node_run.get("status") or "").strip() or None,
                 "logical_artifact": _inspect_node_artifact_name(raw_node),
                 "artifact_name": str(node_run.get("artifact_name") or "").strip() or None,
+                "row_count_in": node_run.get("row_count_in"),
+                "row_count_out": node_run.get("row_count_out"),
                 "dependencies": [
                     str(item).strip()
                     for item in dependencies
@@ -1067,6 +1071,16 @@ def inspect_dag(
 
     raw_nodes, edges = _contract_nodes_and_edges(contract)
     ordered_nodes = _order_contract_nodes_breadth_first(raw_nodes, edges)
+    pipeline_id = (
+        str(selected_run.get("pipeline_id") or "").strip()
+        if selected_run is not None
+        else ""
+    ) or str(getattr(contract, "pipeline_id", "") or "").strip() or None
+    pipeline_name = (
+        str(selected_run.get("pipeline_name") or "").strip()
+        if selected_run is not None
+        else ""
+    ) or str(getattr(contract, "pipeline_name", "") or "").strip() or None
 
     nodes: list[dict[str, Any]] = []
     for raw_node in ordered_nodes:
@@ -1092,6 +1106,8 @@ def inspect_dag(
     return InspectDagResult(
         pipeline_path=str(resolved_pipeline_path),
         artifact_path=str(resolved_artifact_path),
+        pipeline_id=pipeline_id,
+        pipeline_name=pipeline_name,
         compile_id=contract.compile_id,
         run_id=selected_run_id or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,

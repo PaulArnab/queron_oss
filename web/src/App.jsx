@@ -8,9 +8,15 @@ import {
   ReactFlow,
   ReactFlowProvider,
 } from "@xyflow/react";
-import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History } from "lucide-react";
+import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
+import { AgGridReact } from "ag-grid-react";
+import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X } from "lucide-react";
 import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
+import "ag-grid-community/styles/ag-grid.css";
+import "ag-grid-community/styles/ag-theme-quartz.css";
+
+ModuleRegistry.registerModules([AllCommunityModule]);
 
 const NODE_WIDTH = 280;
 const NODE_HEIGHT = 142;
@@ -132,6 +138,11 @@ function normalizeTone(kind, nodeId) {
   if (lowered.includes("egress") || lowered.includes("export")) return "egress";
   if (lowered.includes("model") || lowered.includes("sql")) return "model";
   return "other";
+}
+
+function isLocalArtifactKind(kind) {
+  const lowered = String(kind || "").trim().toLowerCase();
+  return lowered.includes("ingress") || lowered.includes("model");
 }
 
 function toneClasses(tone) {
@@ -286,6 +297,120 @@ function timeLabel(startedAt, finishedAt) {
   if (Number.isNaN(ms)) return "-";
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function buildArtifactPreviewRows(nodeId, details) {
+  const artifactName = String(details?.artifact || "").trim();
+  if (!artifactName) return [];
+
+  const totalRows = Math.max(1, Math.min(Number(details?.rows || 6), 12));
+  const base = artifactName
+    .replace(/^main\./i, "")
+    .replace(/^exports\//i, "")
+    .replace(/["']/g, "")
+    .replace(/\W+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+
+  return Array.from({ length: totalRows }, (_, index) => ({
+    row_id: index + 1,
+    artifact: artifactName,
+    node_id: nodeId,
+    entity_key: `${base}_${String(index + 1).padStart(3, "0")}`,
+    category: base.split("_")[0] || "artifact",
+    metric_value: (index + 1) * 17,
+    loaded_at: details.finishedAt || details.startedAt || null,
+  }));
+}
+
+const RUN_ARTIFACT_TABLES = Object.entries(NODE_DETAILS)
+  .filter(([, details]) => isLocalArtifactKind(details.kind) && details.artifact)
+  .map(([nodeId, details]) => ({
+    tableName: String(details.artifact),
+    nodeId,
+    kind: String(details.kind),
+    rowCount: Number(details.rows || 0),
+    rows: buildArtifactPreviewRows(nodeId, details),
+  }));
+
+const RUN_ARTIFACT_TABLE_MAP = Object.fromEntries(
+  RUN_ARTIFACT_TABLES.map((table) => [table.tableName.toLowerCase(), table]),
+);
+
+function createGridColumns(keys) {
+  return keys.map((key) => ({
+    field: key,
+    headerName: key,
+    sortable: true,
+    filter: true,
+    resizable: true,
+    flex: key === "artifact" ? 1.4 : 1,
+    minWidth: key === "artifact" ? 220 : 140,
+  }));
+}
+
+function runArtifactQuery(queryText) {
+  const query = String(queryText || "").trim();
+  if (!query) {
+    throw new Error("Enter a query. Supported commands: SHOW TABLES or SELECT ... FROM <artifact> [LIMIT n].");
+  }
+
+  if (/^show\s+tables\s*;?$/i.test(query)) {
+    const rows = RUN_ARTIFACT_TABLES.map((table) => ({
+      table_name: table.tableName,
+      node_id: table.nodeId,
+      kind: table.kind,
+      row_count: table.rowCount,
+    }));
+    return {
+      rowData: rows,
+      columnDefs: createGridColumns(["table_name", "node_id", "kind", "row_count"]),
+      summary: `${rows.length} artifact table${rows.length === 1 ? "" : "s"}`,
+    };
+  }
+
+  const selectMatch = query.match(/^select\s+(.+?)\s+from\s+([^\s;]+)(?:\s+limit\s+(\d+))?\s*;?$/i);
+  if (!selectMatch) {
+    throw new Error("Supported syntax: SHOW TABLES or SELECT <columns> FROM <artifact> [LIMIT n].");
+  }
+
+  const rawColumns = String(selectMatch[1] || "").trim();
+  const rawTable = String(selectMatch[2] || "")
+    .replace(/["'`]/g, "")
+    .trim()
+    .toLowerCase();
+  const limit = selectMatch[3] ? Math.max(1, Number(selectMatch[3])) : null;
+  const table = RUN_ARTIFACT_TABLE_MAP[rawTable];
+
+  if (!table) {
+    throw new Error(`Artifact table '${selectMatch[2]}' is not available for the selected run.`);
+  }
+
+  const sourceRows = [...table.rows];
+  const availableColumns = sourceRows.length ? Object.keys(sourceRows[0]) : [];
+  const requestedColumns =
+    rawColumns === "*"
+      ? availableColumns
+      : rawColumns
+          .split(",")
+          .map((item) => item.replace(/["'`]/g, "").trim())
+          .filter(Boolean);
+
+  const invalidColumns = requestedColumns.filter((column) => !availableColumns.includes(column));
+  if (invalidColumns.length) {
+    throw new Error(`Unknown column(s): ${invalidColumns.join(", ")}`);
+  }
+
+  const limitedRows = limit ? sourceRows.slice(0, limit) : sourceRows;
+  const rowData = limitedRows.map((row) =>
+    Object.fromEntries(requestedColumns.map((column) => [column, row[column]])),
+  );
+
+  return {
+    rowData,
+    columnDefs: createGridColumns(requestedColumns),
+    summary: `${rowData.length} row${rowData.length === 1 ? "" : "s"} from ${table.tableName}`,
+  };
 }
 
 function clockLabel(value) {
@@ -1012,6 +1137,109 @@ function GraphCanvas() {
   );
 }
 
+function ArtifactExplorerPage({
+  open,
+  query,
+  onQueryChange,
+  onClose,
+  onExecute,
+  result,
+  error,
+}) {
+  return (
+    <div
+      className={`pointer-events-none absolute inset-0 z-40 transform-gpu bg-white/80 transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        open ? "translate-x-0 opacity-100" : "translate-x-full opacity-0"
+      }`}
+    >
+      <div className="pointer-events-auto absolute inset-0 flex flex-col bg-white shadow-[-24px_0_80px_rgba(15,23,42,0.12)]">
+        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-3">
+          <div className="text-[12px] font-semibold uppercase tracking-[0.16em] text-slate-500">
+            {RUN_ARTIFACT_TABLES.length} local artifact table{RUN_ARTIFACT_TABLES.length === 1 ? "" : "s"}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onExecute}
+              title="Execute query"
+              aria-label="Execute query"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+            >
+              <Play size={17} strokeWidth={1.9} />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              title="Close artifacts"
+              aria-label="Close artifacts"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+            >
+              <X size={17} strokeWidth={1.9} />
+            </button>
+          </div>
+        </div>
+
+        <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_280px]">
+          <main className="flex min-h-0 flex-col bg-white">
+            <div className="border-b border-slate-200 px-6 py-5">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">SQL</div>
+              <textarea
+                value={query}
+                onChange={(event) => onQueryChange(event.target.value)}
+                placeholder={"SHOW TABLES\nSELECT * FROM main.policy_core LIMIT 25"}
+                className="mt-3 h-28 w-full resize-none bg-transparent px-0 py-0 text-[14px] leading-6 text-slate-800 outline-none placeholder:text-slate-300"
+                spellCheck={false}
+              />
+              {error ? <div className="mt-3 text-[13px] text-rose-600">{error}</div> : null}
+              {result?.summary ? <div className="mt-3 text-[13px] text-slate-500">{result.summary}</div> : null}
+            </div>
+
+            <div className="min-h-0 flex-1 px-6 pb-6 pt-4">
+              <div className="ag-theme-quartz h-full w-full">
+                <AgGridReact
+                  rowData={result?.rowData || []}
+                  columnDefs={result?.columnDefs || []}
+                  defaultColDef={{
+                    sortable: true,
+                    filter: true,
+                    resizable: true,
+                    minWidth: 120,
+                  }}
+                  animateRows
+                  rowSelection="single"
+                  suppressCellFocus
+                />
+              </div>
+            </div>
+          </main>
+
+          <aside className="flex min-h-0 flex-col border-l border-slate-200 bg-slate-50">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Available Tables</div>
+              <div className="mt-4 space-y-3">
+                {RUN_ARTIFACT_TABLES.map((table) => (
+                  <button
+                    key={table.tableName}
+                    type="button"
+                    onClick={() => onQueryChange(`SELECT * FROM ${table.tableName} LIMIT 25`)}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-left transition hover:border-slate-300 hover:bg-slate-50"
+                  >
+                    <div className="truncate text-[13px] font-semibold text-slate-900">{table.tableName}</div>
+                    <div className="mt-1 truncate text-[11px] text-slate-500">
+                      {table.kind} · {table.rowCount} row{table.rowCount === 1 ? "" : "s"}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HeaderActionButton({ title, icon: Icon }) {
   return (
     <button
@@ -1026,30 +1254,46 @@ function HeaderActionButton({ title, icon: Icon }) {
 }
 
 export default function App() {
+  const [artifactPageOpen, setArtifactPageOpen] = useState(false);
+  const [artifactQuery, setArtifactQuery] = useState("");
+  const [artifactResult, setArtifactResult] = useState(null);
+  const [artifactError, setArtifactError] = useState("");
+
+  const executeArtifactQuery = () => {
+    try {
+      const nextResult = runArtifactQuery(artifactQuery);
+      setArtifactResult(nextResult);
+      setArtifactError("");
+    } catch (error) {
+      setArtifactResult(null);
+      setArtifactError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   return (
-    <div className="h-screen w-full overflow-hidden bg-slate-100">
+    <div className="relative h-screen w-full overflow-hidden bg-slate-100">
       <div className="flex h-full w-full min-h-0 flex-col bg-white">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
-          <div className="flex items-center gap-8">
+        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
+          <div className="flex items-center gap-5">
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Pipeline ID</div>
-              <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-slate-950">{PIPELINE_META.pipelineId}</div>
+              <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-slate-950">{PIPELINE_META.pipelineId}</div>
             </div>
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Node Count</div>
-              <div className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-slate-950">{NODE_ORDER.length}</div>
+              <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-slate-950">{NODE_ORDER.length}</div>
             </div>
           </div>
 
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-6">
-              <div className="text-right">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4">
+              <div className="max-w-[240px] text-right">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run ID</div>
-                <div className="mt-1 text-[14px] font-medium text-slate-700">{RUN_SNAPSHOT.runId}</div>
+                <div className="mt-1 truncate text-[13px] font-medium text-slate-700">{RUN_SNAPSHOT.runId}</div>
               </div>
-              <div className="text-right">
+              <div className="max-w-[220px] text-right">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run Label</div>
-                <div className="mt-1 text-[14px] font-medium text-slate-700">{RUN_SNAPSHOT.runLabel}</div>
+                <div className="mt-1 truncate text-[13px] font-medium text-slate-700">{RUN_SNAPSHOT.runLabel}</div>
               </div>
             </div>
 
@@ -1059,6 +1303,14 @@ export default function App() {
               <HeaderActionButton title="Reset All" icon={RefreshCw} />
               <HeaderActionButton title="Reset Node" icon={RotateCcw} />
               <HeaderActionButton title="Reset Upstream" icon={History} />
+              <button
+                type="button"
+                onClick={() => setArtifactPageOpen(true)}
+                className="inline-flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-[13px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+              >
+                <Database size={16} strokeWidth={1.9} />
+                <span>Artifacts</span>
+              </button>
             </div>
           </div>
         </header>
@@ -1069,6 +1321,17 @@ export default function App() {
         </ReactFlowProvider>
         </div>
       </div>
+
+      <ArtifactExplorerPage
+        open={artifactPageOpen}
+        query={artifactQuery}
+        onQueryChange={setArtifactQuery}
+        onClose={() => setArtifactPageOpen(false)}
+        onExecute={executeArtifactQuery}
+        result={artifactResult}
+        error={artifactError}
+      />
     </div>
   );
 }
+
