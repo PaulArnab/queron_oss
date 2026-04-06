@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -722,6 +723,55 @@ def _contract_nodes_and_edges(contract) -> tuple[list[dict[str, Any]], list[list
     return raw_nodes, edges
 
 
+def _order_contract_nodes_breadth_first(
+    raw_nodes: list[dict[str, Any]],
+    edges: list[list[str]],
+) -> list[dict[str, Any]]:
+    nodes_by_name: dict[str, dict[str, Any]] = {}
+    children_by_name: dict[str, set[str]] = {}
+    in_degree: dict[str, int] = {}
+
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        name = str(raw_node.get("name") or "").strip()
+        if not name:
+            continue
+        nodes_by_name[name] = raw_node
+        children_by_name.setdefault(name, set())
+        in_degree.setdefault(name, 0)
+
+    for source, target in edges:
+        if source not in nodes_by_name or target not in nodes_by_name:
+            continue
+        if target in children_by_name[source]:
+            continue
+        children_by_name[source].add(target)
+        in_degree[target] = int(in_degree.get(target, 0)) + 1
+
+    queue = deque(sorted(name for name, degree in in_degree.items() if degree == 0))
+    ordered_names: list[str] = []
+    seen: set[str] = set()
+
+    while queue:
+        current = queue.popleft()
+        if current in seen:
+            continue
+        seen.add(current)
+        ordered_names.append(current)
+
+        for child in sorted(children_by_name.get(current, set())):
+            in_degree[child] = max(0, int(in_degree.get(child, 0)) - 1)
+            if in_degree[child] == 0 and child not in seen:
+                queue.append(child)
+
+    for name in sorted(nodes_by_name):
+        if name not in seen:
+            ordered_names.append(name)
+
+    return [nodes_by_name[name] for name in ordered_names if name in nodes_by_name]
+
+
 def _select_contract_node_names(
     *,
     requested_node: str,
@@ -1016,9 +1066,10 @@ def inspect_dag(
                     active_states_by_name[node_name] = item
 
     raw_nodes, edges = _contract_nodes_and_edges(contract)
+    ordered_nodes = _order_contract_nodes_breadth_first(raw_nodes, edges)
 
     nodes: list[dict[str, Any]] = []
-    for raw_node in raw_nodes:
+    for raw_node in ordered_nodes:
         if not isinstance(raw_node, dict):
             continue
         name = str(raw_node.get("name") or "").strip()
@@ -1307,7 +1358,6 @@ def resume_pipeline(
     runtime_bindings: dict[str, Any] | None = None,
     target: str | None = None,
     artifact_path: str | Path | None = None,
-    pipeline_id: str | None = None,
     on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> RunPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
@@ -1354,7 +1404,7 @@ def resume_pipeline(
         pipeline_path=resolved_pipeline_path,
         compiled=compiled,
         artifact_path=artifact_path,
-        pipeline_id=pipeline_id,
+        pipeline_id=compiled.spec.pipeline_id,
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,

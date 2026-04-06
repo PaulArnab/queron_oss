@@ -911,7 +911,7 @@ def _qualified_name(schema: str, name: str) -> str:
 
 
 _RUN_STATUS_VALUES = ("pending", "running", "success", "success_with_warnings", "failed", "skipped")
-_NODE_STATUS_VALUES = ("ready", "running", "complete", "failed", "skipped", "cleared")
+_NODE_STATUS_VALUES = ("ready", "running", "complete", "complete_with_warnings", "failed", "skipped", "cleared")
 
 
 def _run_status_check_sql() -> str:
@@ -2912,6 +2912,7 @@ def get_node_states_for_run_by_database(
             WHEN state = 'failed' THEN 2
             WHEN state = 'skipped' THEN 3
             WHEN state = 'complete' THEN 4
+            WHEN state = 'complete_with_warnings' THEN 4
             WHEN state = 'cleared' THEN 5
             ELSE 9
         END

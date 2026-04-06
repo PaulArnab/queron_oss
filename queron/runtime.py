@@ -524,6 +524,7 @@ class PipelineRuntime:
         if artifact_size_bytes is None:
             artifact_size_bytes = self._artifact_size_bytes_for_node(node)
         self._node_terminal_statuses[node.name] = "success_with_warnings" if payload.warnings else "success"
+        node_status = "complete_with_warnings" if payload.warnings else "complete"
         for warning in payload.warnings:
             warning_details = dict(warning.details or {})
             warning_details.update(
@@ -545,7 +546,7 @@ class PipelineRuntime:
             )
         node_state_id = self._append_node_state(
             node_name=node.name,
-            state="complete",
+            state=node_status,
             trigger="node_completed",
             details={
                 "node_kind": node.kind,
@@ -562,7 +563,7 @@ class PipelineRuntime:
                     artifact_name=payload.artifact_name,
                     started_at=self._node_started_at.get(node.name),
                     finished_at=utc_now_timestamp(),
-                    status="complete",
+                    status=node_status,
                     row_count_in=payload.row_count_in,
                     row_count_out=row_count_out,
                     artifact_size_bytes=artifact_size_bytes,

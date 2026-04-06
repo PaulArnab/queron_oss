@@ -64,6 +64,10 @@ class VerifyQueronCliTests(unittest.TestCase):
         for name in unexpected_exports:
             self.assertFalse(hasattr(queron, name), msg=f"did not expect queron.{name} to be public")
 
+    def test_resume_pipeline_does_not_accept_pipeline_id_override(self):
+        with self.assertRaises(TypeError):
+            queron.resume_pipeline("pipeline.py", pipeline_id="override-not-allowed")
+
     def _compile_pipeline(
         self,
         pipeline_path: pathlib.Path,
@@ -1260,6 +1264,10 @@ def final():
             self.assertIn("Nodes", text)
             self.assertIn("- seed  model.sql  -  main.seed", text)
             self.assertIn("- final  model.sql  -  main.final", text)
+            self.assertLess(
+                text.index("- seed  model.sql  -  main.seed"),
+                text.index("- final  model.sql  -  main.final"),
+            )
             self.assertIn("Edges", text)
             self.assertIn("- seed -> final", text)
 
