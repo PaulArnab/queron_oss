@@ -39,12 +39,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     compile_parser = subparsers.add_parser("compile", help="Compile a Queron pipeline and persist its execution contract.")
     _add_common_compile_flags(compile_parser)
-    compile_parser.add_argument(
-        "--artifact-path",
-        dest="artifact_path",
-        default=None,
-        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
-    )
     compile_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     compile_parser.set_defaults(handler=_handle_compile)
 
@@ -55,12 +49,6 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="connections_path",
         default=None,
         help="Path to connections.yaml. Defaults to ./connections.yaml when present.",
-    )
-    run_parser.add_argument(
-        "--artifact-path",
-        dest="artifact_path",
-        default=None,
-        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
     )
     run_parser.add_argument(
         "--target-node",
@@ -106,12 +94,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to connections.yaml. Defaults to ./connections.yaml when present.",
     )
     resume_parser.add_argument(
-        "--artifact-path",
-        dest="artifact_path",
-        default=None,
-        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
-    )
-    resume_parser.add_argument(
         "--stream-logs",
         action="store_true",
         dest="stream_logs",
@@ -122,7 +104,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     reset_node_parser = subparsers.add_parser("reset-node", help="Drop the output table for one pipeline node.")
     _add_common_compile_flags(reset_node_parser)
-    _add_common_reset_flags(reset_node_parser)
     reset_node_parser.add_argument("node_name", help="Pipeline node name to reset.")
     reset_node_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     reset_node_parser.set_defaults(handler=_handle_reset_node)
@@ -132,7 +113,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Drop the output tables for a node and all downstream dependents.",
     )
     _add_common_compile_flags(reset_downstream_parser)
-    _add_common_reset_flags(reset_downstream_parser)
     reset_downstream_parser.add_argument("node_name", help="Pipeline node name to reset downstream from.")
     reset_downstream_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     reset_downstream_parser.set_defaults(handler=_handle_reset_downstream)
@@ -142,14 +122,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Drop the output tables for a node and all upstream dependencies.",
     )
     _add_common_compile_flags(reset_upstream_parser)
-    _add_common_reset_flags(reset_upstream_parser)
     reset_upstream_parser.add_argument("node_name", help="Pipeline node name to reset upstream from.")
     reset_upstream_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     reset_upstream_parser.set_defaults(handler=_handle_reset_upstream)
 
     reset_all_parser = subparsers.add_parser("reset-all", help="Drop all pipeline output tables.")
     _add_common_compile_flags(reset_all_parser)
-    _add_common_reset_flags(reset_all_parser)
     reset_all_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     reset_all_parser.set_defaults(handler=_handle_reset_all)
 
@@ -157,13 +135,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_runs",
         help="List recorded runs for one pipeline artifact database.",
     )
-    inspect_runs_parser.add_argument("pipeline", help="Path to the pipeline Python file to inspect.")
-    inspect_runs_parser.add_argument(
-        "--artifact-path",
-        dest="artifact_path",
-        default=None,
-        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
-    )
+    inspect_runs_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
     inspect_runs_parser.add_argument(
         "--limit",
         dest="limit",
@@ -177,13 +149,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_logs",
         help="Show persisted logs for one pipeline run.",
     )
-    inspect_logs_parser.add_argument("pipeline", help="Path to the pipeline Python file to inspect.")
-    inspect_logs_parser.add_argument(
-        "--artifact-path",
-        dest="artifact_path",
-        default=None,
-        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
-    )
+    inspect_logs_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
     inspect_logs_parser.add_argument(
         "--run-id",
         dest="run_id",
@@ -209,13 +175,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_dag",
         help="Show the compiled DAG and the current node state view for one pipeline run.",
     )
-    inspect_dag_parser.add_argument("pipeline", help="Path to the pipeline Python file to inspect.")
-    inspect_dag_parser.add_argument(
-        "--artifact-path",
-        dest="artifact_path",
-        default=None,
-        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
-    )
+    inspect_dag_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
     inspect_dag_parser.add_argument(
         "--run-id",
         dest="run_id",
@@ -234,14 +194,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_node",
         help="Show one pipeline node or its upstream/downstream slice for a selected run.",
     )
-    inspect_node_parser.add_argument("pipeline", help="Path to the pipeline Python file to inspect.")
+    inspect_node_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
     inspect_node_parser.add_argument("node_name", help="Pipeline node name to inspect.")
-    inspect_node_parser.add_argument(
-        "--artifact-path",
-        dest="artifact_path",
-        default=None,
-        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
-    )
     inspect_node_parser.add_argument(
         "--run-id",
         dest="run_id",
@@ -272,14 +226,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_node_history",
         help="Show the state timeline for one pipeline node in a selected run.",
     )
-    inspect_node_history_parser.add_argument("pipeline", help="Path to the pipeline Python file to inspect.")
+    inspect_node_history_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
     inspect_node_history_parser.add_argument("node_name", help="Pipeline node name to inspect.")
-    inspect_node_history_parser.add_argument(
-        "--artifact-path",
-        dest="artifact_path",
-        default=None,
-        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
-    )
     inspect_node_history_parser.add_argument(
         "--run-id",
         dest="run_id",
@@ -309,13 +257,6 @@ def _add_common_compile_flags(parser: argparse.ArgumentParser) -> None:
         dest="target",
         default=None,
         help="Override the target environment used for source resolution.",
-    )
-def _add_common_reset_flags(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--artifact-path",
-        dest="artifact_path",
-        default=None,
-        help="Path to the DuckDB artifact database. Defaults to ./.queron/<pipeline>.duckdb.",
     )
 
 
@@ -438,7 +379,6 @@ def _handle_compile(args: argparse.Namespace) -> int:
             args.pipeline,
             config_path=args.config_path,
             target=args.target,
-            artifact_path=args.artifact_path,
         )
     except Exception as exc:
         if args.json_output:
@@ -446,11 +386,7 @@ def _handle_compile(args: argparse.Namespace) -> int:
         print(f"Compile failed: {exc}", file=sys.stderr)
         return 1
     payload = _pipeline_summary(compiled)
-    payload["artifact_path"] = str(
-        Path(args.artifact_path).expanduser().resolve()
-        if args.artifact_path is not None
-        else (Path(args.pipeline).expanduser().resolve().parent / ".queron" / f"{Path(args.pipeline).stem}.duckdb").resolve()
-    )
+    payload["artifact_path"] = compiled.contract.artifact_path if compiled.contract is not None else "-"
     payload["compile_id"] = compiled.contract.compile_id if compiled.contract is not None else None
     if args.json_output:
         return _emit_json(payload)
@@ -482,7 +418,6 @@ def _handle_run(args: argparse.Namespace) -> int:
             config_path=args.config_path,
             connections_path=args.connections_path,
             target=args.target,
-            artifact_path=args.artifact_path,
         )
         if has_compile_errors(compiled):
             payload = {
@@ -526,7 +461,6 @@ def _handle_run(args: argparse.Namespace) -> int:
             config_path=args.config_path,
             connections_path=args.connections_path,
             target=args.target,
-            artifact_path=args.artifact_path,
             target_node=args.target_node,
             clean_existing=bool(args.clean_existing or requires_full_purge),
             run_label=args.run_label,
@@ -577,7 +511,6 @@ def _handle_resume(args: argparse.Namespace) -> int:
             config_path=args.config_path,
             connections_path=args.connections_path,
             target=args.target,
-            artifact_path=args.artifact_path,
             on_log=_log if bool(getattr(args, "stream_logs", False)) and not args.json_output else None,
         )
     except Exception as exc:
@@ -637,16 +570,15 @@ def _handle_inspect_runs(args: argparse.Namespace) -> int:
     try:
         if args.limit is not None and int(args.limit) <= 0:
             raise RuntimeError("--limit must be a positive integer.")
-        pipeline_path, artifact_path, runs = _inspect_pipeline_runs(
-            args.pipeline,
-            artifact_path=args.artifact_path,
+        artifact_path, active_contract, runs = _inspect_pipeline_runs(
+            args.artifact,
             limit=args.limit,
         )
     except Exception as exc:
         print(f"Inspect runs failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Pipeline: {pipeline_path}")
+    print(f"Pipeline: {Path(active_contract.pipeline_path).expanduser().resolve()}")
     print(f"Artifact DB: {artifact_path}")
     if not runs:
         print("No runs found.")
@@ -666,9 +598,8 @@ def _handle_inspect_runs(args: argparse.Namespace) -> int:
 
 def _handle_inspect_logs(args: argparse.Namespace) -> int:
     try:
-        pipeline_path, artifact_path, selected_run, lines = _inspect_pipeline_logs(
-            args.pipeline,
-            artifact_path=args.artifact_path,
+        artifact_path, active_contract, selected_run, lines = _inspect_pipeline_logs(
+            args.artifact,
             run_id=args.run_id,
             run_label=args.run_label,
             tail=args.tail,
@@ -677,7 +608,7 @@ def _handle_inspect_logs(args: argparse.Namespace) -> int:
         print(f"Inspect logs failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Pipeline: {pipeline_path}")
+    print(f"Pipeline: {Path(active_contract.pipeline_path).expanduser().resolve()}")
     print(f"Artifact DB: {artifact_path}")
     print(f"Run ID: {selected_run.get('run_id')}")
     run_label = str(selected_run.get("run_label") or "").strip()
@@ -699,8 +630,7 @@ def _handle_inspect_logs(args: argparse.Namespace) -> int:
 def _handle_inspect_dag(args: argparse.Namespace) -> int:
     try:
         result = inspect_dag(
-            args.pipeline,
-            artifact_path=args.artifact_path,
+            args.artifact,
             run_id=args.run_id,
             run_label=args.run_label,
         )
@@ -744,9 +674,8 @@ def _handle_inspect_dag(args: argparse.Namespace) -> int:
 def _handle_inspect_node(args: argparse.Namespace) -> int:
     try:
         result = inspect_node(
-            args.pipeline,
+            args.artifact,
             args.node_name,
-            artifact_path=args.artifact_path,
             run_id=args.run_id,
             run_label=args.run_label,
             upstream=bool(args.upstream),
@@ -804,9 +733,8 @@ def _handle_inspect_node(args: argparse.Namespace) -> int:
 def _handle_inspect_node_history(args: argparse.Namespace) -> int:
     try:
         result = inspect_node_history(
-            args.pipeline,
+            args.artifact,
             args.node_name,
-            artifact_path=args.artifact_path,
             run_id=args.run_id,
             run_label=args.run_label,
         )
@@ -862,7 +790,6 @@ def _handle_reset_node(args: argparse.Namespace) -> int:
             node_name=args.node_name,
             config_path=args.config_path,
             target=args.target,
-            artifact_path=args.artifact_path,
         )
     except Exception as exc:
         if args.json_output:
@@ -879,7 +806,6 @@ def _handle_reset_downstream(args: argparse.Namespace) -> int:
             node_name=args.node_name,
             config_path=args.config_path,
             target=args.target,
-            artifact_path=args.artifact_path,
         )
     except Exception as exc:
         if args.json_output:
@@ -896,7 +822,6 @@ def _handle_reset_upstream(args: argparse.Namespace) -> int:
             node_name=args.node_name,
             config_path=args.config_path,
             target=args.target,
-            artifact_path=args.artifact_path,
         )
     except Exception as exc:
         if args.json_output:
@@ -912,7 +837,6 @@ def _handle_reset_all(args: argparse.Namespace) -> int:
             args.pipeline,
             config_path=args.config_path,
             target=args.target,
-            artifact_path=args.artifact_path,
         )
     except Exception as exc:
         if args.json_output:

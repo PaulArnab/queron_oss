@@ -163,7 +163,7 @@ class PipelineRuntime:
         self._pipeline_started_at: str | None = None
 
     def _resolve_log_path(self) -> Path:
-        return Path(self.duckdb_path).resolve().parent / "logs" / f"{self.run_id}.jsonl"
+        return Path(self.duckdb_path).resolve().parent / "logs" / str(self.pipeline_id) / f"{self.run_id}.jsonl"
 
     def _refresh_log_path(self) -> None:
         self.log_path = str(self._resolve_log_path())

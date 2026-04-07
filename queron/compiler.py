@@ -353,7 +353,7 @@ def _build_compile_contract(
         }
     )
     contract = CompiledContractRecord(
-        pipeline_id=str(spec.pipeline_id or pipeline_path.stem),
+        pipeline_id=str(spec.pipeline_id),
         pipeline_path=str(pipeline_path),
         project_root=str(project_root),
         artifact_path=str(artifact_path),
@@ -573,6 +573,15 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
     valid_count_operators = {"=", "==", "!=", ">", ">=", "<", "<="}
     valid_egress_modes = {"replace", "append", "create", "create_append"}
     valid_file_formats = {"csv", "parquet", "jsonl"}
+
+    if not str(spec.pipeline_id or "").strip():
+        diagnostics.append(
+            {
+                "level": "error",
+                "code": "missing_pipeline_id",
+                "message": "Pipeline is missing a required pipeline_id in __queron_native__.",
+            }
+        )
 
     for node in spec.nodes:
         if node.name in node_names:

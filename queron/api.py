@@ -195,12 +195,15 @@ def init_pipeline_project(
     )
 
 
-def _default_pipeline_id(pipeline_path: Path) -> str:
-    return pipeline_path.stem
-
-
-def _default_artifact_path(pipeline_path: Path) -> Path:
+def _fallback_artifact_path_for_diagnostics(pipeline_path: Path) -> Path:
     return pipeline_path.parent / ".queron" / f"{pipeline_path.stem}.duckdb"
+
+
+def _default_artifact_path(pipeline_path: Path, *, pipeline_id: str) -> Path:
+    normalized_pipeline_id = str(pipeline_id or "").strip()
+    if not normalized_pipeline_id:
+        raise RuntimeError("Pipeline is missing a required pipeline_id in __queron_native__.")
+    return pipeline_path.parent / ".queron" / f"{normalized_pipeline_id}.duckdb"
 
 
 def _normalize_run_label(run_label: str | None) -> str | None:
@@ -215,7 +218,7 @@ def load_pipeline_code_from_file(path: str | Path) -> tuple[Path, str]:
     return resolved, resolved.read_text(encoding="utf-8")
 
 
-def compile_pipeline(
+def _compile_pipeline_impl(
     pipeline_path: str | Path,
     *,
     config_path: str | Path | None = None,
@@ -224,7 +227,21 @@ def compile_pipeline(
 ) -> CompiledPipeline:
     resolved_pipeline_path, code = load_pipeline_code_from_file(pipeline_path)
     resolved_config_path, yaml_text = _resolve_config_input(resolved_pipeline_path, config_path)
-    resolved_artifact_path = _resolve_artifact_path(resolved_pipeline_path, artifact_path)
+    preview_compiled = compile_pipeline_code(
+        code,
+        yaml_text=yaml_text,
+        target=target,
+        source_path=resolved_pipeline_path,
+        artifact_path=None,
+        config_path=resolved_config_path,
+    )
+    resolved_artifact_path = _resolve_artifact_path(
+        resolved_pipeline_path,
+        artifact_path,
+        compiled=preview_compiled,
+        config_path=resolved_config_path,
+        target=target,
+    )
     compiled = compile_pipeline_code(
         code,
         yaml_text=yaml_text,
@@ -242,6 +259,20 @@ def compile_pipeline(
         record=compiled.contract,
     )
     return compiled
+
+
+def compile_pipeline(
+    pipeline_path: str | Path,
+    *,
+    config_path: str | Path | None = None,
+    target: str | None = None,
+) -> CompiledPipeline:
+    return _compile_pipeline_impl(
+        pipeline_path,
+        config_path=config_path,
+        target=target,
+        artifact_path=None,
+    )
 
 
 def compile_pipeline_text(
@@ -283,7 +314,21 @@ def _validated_compiled_pipeline_for_file(
 ) -> tuple[CompiledPipeline, Path]:
     resolved_pipeline_path, code = load_pipeline_code_from_file(pipeline_path)
     resolved_config_path, yaml_text = _resolve_config_input(resolved_pipeline_path, config_path)
-    resolved_artifact_path = _resolve_artifact_path(resolved_pipeline_path, artifact_path)
+    preview_compiled = compile_pipeline_code(
+        code,
+        yaml_text=yaml_text,
+        target=target,
+        source_path=resolved_pipeline_path,
+        artifact_path=None,
+        config_path=resolved_config_path,
+    )
+    resolved_artifact_path = _resolve_artifact_path(
+        resolved_pipeline_path,
+        artifact_path,
+        compiled=preview_compiled,
+        config_path=resolved_config_path,
+        target=target,
+    )
     compiled = compile_pipeline_code(
         code,
         yaml_text=yaml_text,
@@ -495,11 +540,53 @@ def list_existing_compiled_outputs(
     )
 
 
-def _resolve_artifact_path(pipeline_path: Path, artifact_path: str | Path | None) -> Path:
+def _pipeline_id_for_artifact_resolution(
+    pipeline_path: Path,
+    *,
+    compiled: CompiledPipeline | None = None,
+    config_path: Path | None = None,
+    target: str | None = None,
+) -> str | None:
+    pipeline_id = str(getattr(getattr(compiled, "spec", None), "pipeline_id", "") or "").strip() or None
+    if pipeline_id is not None:
+        return pipeline_id
+
+    resolved_pipeline_path, code = load_pipeline_code_from_file(pipeline_path)
+    yaml_path, yaml_text = _resolve_config_input(resolved_pipeline_path, config_path)
+    preview_compiled = compile_pipeline_code(
+        code,
+        yaml_text=yaml_text,
+        target=target,
+        source_path=resolved_pipeline_path,
+        artifact_path=None,
+        config_path=yaml_path,
+    )
+    return str(getattr(getattr(preview_compiled, "spec", None), "pipeline_id", "") or "").strip() or None
+
+
+def _resolve_artifact_path(
+    pipeline_path: Path,
+    artifact_path: str | Path | None,
+    *,
+    compiled: CompiledPipeline | None = None,
+    config_path: Path | None = None,
+    target: str | None = None,
+) -> Path:
+    if artifact_path is not None:
+        resolved = Path(artifact_path).expanduser().resolve()
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        return resolved
+
+    pipeline_id = _pipeline_id_for_artifact_resolution(
+        pipeline_path,
+        compiled=compiled,
+        config_path=config_path,
+        target=target,
+    )
     resolved = (
-        Path(artifact_path).expanduser().resolve()
-        if artifact_path is not None
-        else _default_artifact_path(pipeline_path).resolve()
+        _default_artifact_path(pipeline_path, pipeline_id=pipeline_id).resolve()
+        if pipeline_id is not None
+        else _fallback_artifact_path_for_diagnostics(pipeline_path).resolve()
     )
     resolved.parent.mkdir(parents=True, exist_ok=True)
     return resolved
@@ -519,7 +606,6 @@ def _build_runtime_for_pipeline(
     pipeline_path: Path,
     compiled: CompiledPipeline,
     artifact_path: str | Path | None,
-    pipeline_id: str | None,
     run_label: str | None,
     compile_id: str | None,
     runtime_bindings: dict[str, Any] | None,
@@ -528,9 +614,13 @@ def _build_runtime_for_pipeline(
 ) -> tuple[PipelineRuntime, Path]:
     if compiled.spec is None:
         raise RuntimeError("Compiled pipeline is missing a spec.")
-    resolved_artifact_path = _resolve_artifact_path(pipeline_path, artifact_path)
+    resolved_artifact_path = _resolve_artifact_path(
+        pipeline_path,
+        artifact_path,
+        compiled=compiled,
+    )
     runtime = PipelineRuntime(
-        pipeline_id=str(pipeline_id or _default_pipeline_id(pipeline_path)),
+        pipeline_id=str(compiled.spec.pipeline_id),
         run_label=run_label,
         compile_id=compile_id,
         duckdb_path=str(resolved_artifact_path),
@@ -566,30 +656,33 @@ def _ensure_run_label_available(
     return normalized_label
 
 
-def _inspect_pipeline_runs(
-    pipeline_path: str | Path,
-    *,
-    artifact_path: str | Path | None = None,
-    limit: int | None = None,
-) -> tuple[Path, Path, list[dict[str, Any]]]:
-    resolved_pipeline_path, _code = load_pipeline_code_from_file(pipeline_path)
-    resolved_artifact_path = (
-        Path(artifact_path).expanduser().resolve()
-        if artifact_path is not None
-        else _default_artifact_path(resolved_pipeline_path).resolve()
-    )
+def _resolve_inspect_artifact_path(artifact_path: str | Path) -> Path:
+    resolved_artifact_path = Path(artifact_path).expanduser().resolve()
     if not resolved_artifact_path.exists() or not resolved_artifact_path.is_file():
         raise RuntimeError(
             f"Artifact database '{resolved_artifact_path}' was not found. Compile or run the pipeline first."
         )
+    return resolved_artifact_path
+
+
+def _inspect_pipeline_runs(
+    artifact_path: str | Path,
+    *,
+    limit: int | None = None,
+):
+    resolved_artifact_path = _resolve_inspect_artifact_path(artifact_path)
 
     import duckdb_core
+
+    contract = duckdb_core.load_active_compiled_contract(database_path=str(resolved_artifact_path))
+    if contract is None:
+        raise RuntimeError("No compiled pipeline contract was found. Run queron compile first.")
 
     runs = duckdb_core.list_pipeline_runs(
         database_path=str(resolved_artifact_path),
         limit=limit,
     )
-    return resolved_pipeline_path, resolved_artifact_path, runs
+    return resolved_artifact_path, contract, runs
 
 
 def _select_pipeline_run_for_inspection(
@@ -635,16 +728,14 @@ def _select_pipeline_run_for_inspection(
 
 
 def _inspect_pipeline_logs(
-    pipeline_path: str | Path,
+    artifact_path: str | Path,
     *,
-    artifact_path: str | Path | None = None,
     run_id: str | None = None,
     run_label: str | None = None,
     tail: int | None = None,
-) -> tuple[Path, Path, dict[str, Any], list[str]]:
-    resolved_pipeline_path, resolved_artifact_path, _runs = _inspect_pipeline_runs(
-        pipeline_path,
-        artifact_path=artifact_path,
+) -> tuple[Path, Any, dict[str, Any], list[str]]:
+    resolved_artifact_path, active_contract, _runs = _inspect_pipeline_runs(
+        artifact_path,
         limit=None,
     )
     if tail is not None and int(tail) <= 0:
@@ -669,7 +760,7 @@ def _inspect_pipeline_logs(
     lines = resolved_log_path.read_text(encoding="utf-8").splitlines()
     if tail is not None:
         lines = lines[-int(tail) :]
-    return resolved_pipeline_path, resolved_artifact_path, selected_run, lines
+    return resolved_artifact_path, active_contract, selected_run, lines
 
 
 def _inspect_node_artifact_name(node_payload: dict[str, Any]) -> str | None:
@@ -827,18 +918,16 @@ def _select_contract_node_names(
 
 
 def inspect_node(
-    pipeline_path: str | Path,
+    artifact_path: str | Path,
     node_name: str,
     *,
-    artifact_path: str | Path | None = None,
     run_id: str | None = None,
     run_label: str | None = None,
     upstream: bool = False,
     downstream: bool = False,
 ) -> InspectNodeResult:
-    resolved_pipeline_path, resolved_artifact_path, _runs = _inspect_pipeline_runs(
-        pipeline_path,
-        artifact_path=artifact_path,
+    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
+        artifact_path,
         limit=None,
     )
     selected_run = _select_pipeline_run_for_inspection(
@@ -933,7 +1022,7 @@ def inspect_node(
         )
 
     return InspectNodeResult(
-        pipeline_path=str(resolved_pipeline_path),
+        pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
         artifact_path=str(resolved_artifact_path),
         compile_id=contract.compile_id,
         run_id=selected_run_id or None,
@@ -946,16 +1035,14 @@ def inspect_node(
 
 
 def inspect_node_history(
-    pipeline_path: str | Path,
+    artifact_path: str | Path,
     node_name: str,
     *,
-    artifact_path: str | Path | None = None,
     run_id: str | None = None,
     run_label: str | None = None,
 ) -> InspectNodeHistoryResult:
-    resolved_pipeline_path, resolved_artifact_path, _runs = _inspect_pipeline_runs(
-        pipeline_path,
-        artifact_path=artifact_path,
+    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
+        artifact_path,
         limit=None,
     )
     selected_run = _select_pipeline_run_for_inspection(
@@ -1005,7 +1092,7 @@ def inspect_node_history(
         )
 
     return InspectNodeHistoryResult(
-        pipeline_path=str(resolved_pipeline_path),
+        pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
         artifact_path=str(resolved_artifact_path),
         compile_id=contract.compile_id,
         run_id=selected_run_id or None,
@@ -1025,15 +1112,13 @@ def inspect_node_history(
 
 
 def inspect_dag(
-    pipeline_path: str | Path,
+    artifact_path: str | Path,
     *,
-    artifact_path: str | Path | None = None,
     run_id: str | None = None,
     run_label: str | None = None,
 ) -> InspectDagResult:
-    resolved_pipeline_path, resolved_artifact_path, _runs = _inspect_pipeline_runs(
-        pipeline_path,
-        artifact_path=artifact_path,
+    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
+        artifact_path,
         limit=None,
     )
     selected_run = _select_pipeline_run_for_inspection(
@@ -1098,7 +1183,7 @@ def inspect_dag(
             )
 
     return InspectDagResult(
-        pipeline_path=str(resolved_pipeline_path),
+        pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
         artifact_path=str(resolved_artifact_path),
         pipeline_id=pipeline_id,
         compile_id=contract.compile_id,
@@ -1252,7 +1337,7 @@ def _resume_selected_nodes(
     }
 
 
-def run_pipeline(
+def _run_pipeline_impl(
     pipeline_path: str | Path,
     *,
     config_path: str | Path | None = None,
@@ -1313,7 +1398,6 @@ def run_pipeline(
         pipeline_path=resolved_pipeline_path,
         compiled=compiled,
         artifact_path=artifact_path,
-        pipeline_id=pipeline_id,
         run_label=normalized_run_label,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
@@ -1359,7 +1443,35 @@ def run_pipeline(
     )
 
 
-def resume_pipeline(
+def run_pipeline(
+    pipeline_path: str | Path,
+    *,
+    config_path: str | Path | None = None,
+    connections_path: str | Path | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
+    target: str | None = None,
+    target_node: str | None = None,
+    clean_existing: bool = False,
+    pipeline_id: str | None = None,
+    run_label: str | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
+) -> RunPipelineResult:
+    return _run_pipeline_impl(
+        pipeline_path,
+        config_path=config_path,
+        connections_path=connections_path,
+        runtime_bindings=runtime_bindings,
+        target=target,
+        artifact_path=None,
+        target_node=target_node,
+        clean_existing=clean_existing,
+        pipeline_id=pipeline_id,
+        run_label=run_label,
+        on_log=on_log,
+    )
+
+
+def _resume_pipeline_impl(
     pipeline_path: str | Path,
     *,
     config_path: str | Path | None = None,
@@ -1413,7 +1525,6 @@ def resume_pipeline(
         pipeline_path=resolved_pipeline_path,
         compiled=compiled,
         artifact_path=artifact_path,
-        pipeline_id=compiled.spec.pipeline_id,
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
@@ -1431,7 +1542,27 @@ def resume_pipeline(
     )
 
 
-def reset_node(
+def resume_pipeline(
+    pipeline_path: str | Path,
+    *,
+    config_path: str | Path | None = None,
+    connections_path: str | Path | None = None,
+    runtime_bindings: dict[str, Any] | None = None,
+    target: str | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
+) -> RunPipelineResult:
+    return _resume_pipeline_impl(
+        pipeline_path,
+        config_path=config_path,
+        connections_path=connections_path,
+        runtime_bindings=runtime_bindings,
+        target=target,
+        artifact_path=None,
+        on_log=on_log,
+    )
+
+
+def _reset_node_impl(
     pipeline_path: str | Path,
     *,
     node_name: str,
@@ -1453,7 +1584,6 @@ def reset_node(
         pipeline_path=resolved_pipeline_path,
         compiled=compiled,
         artifact_path=resolved_artifact_path,
-        pipeline_id=None,
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
@@ -1482,7 +1612,7 @@ def reset_node(
     )
 
 
-def reset_downstream(
+def _reset_downstream_impl(
     pipeline_path: str | Path,
     *,
     node_name: str,
@@ -1504,7 +1634,6 @@ def reset_downstream(
         pipeline_path=resolved_pipeline_path,
         compiled=compiled,
         artifact_path=resolved_artifact_path,
-        pipeline_id=None,
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
@@ -1533,7 +1662,39 @@ def reset_downstream(
     )
 
 
-def reset_upstream(
+def reset_downstream(
+    pipeline_path: str | Path,
+    *,
+    node_name: str,
+    config_path: str | Path | None = None,
+    target: str | None = None,
+) -> ResetPipelineResult:
+    return _reset_downstream_impl(
+        pipeline_path,
+        node_name=node_name,
+        config_path=config_path,
+        target=target,
+        artifact_path=None,
+    )
+
+
+def reset_node(
+    pipeline_path: str | Path,
+    *,
+    node_name: str,
+    config_path: str | Path | None = None,
+    target: str | None = None,
+) -> ResetPipelineResult:
+    return _reset_node_impl(
+        pipeline_path,
+        node_name=node_name,
+        config_path=config_path,
+        target=target,
+        artifact_path=None,
+    )
+
+
+def _reset_upstream_impl(
     pipeline_path: str | Path,
     *,
     node_name: str,
@@ -1555,7 +1716,6 @@ def reset_upstream(
         pipeline_path=resolved_pipeline_path,
         compiled=compiled,
         artifact_path=resolved_artifact_path,
-        pipeline_id=None,
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
@@ -1584,7 +1744,23 @@ def reset_upstream(
     )
 
 
-def reset_all(
+def reset_upstream(
+    pipeline_path: str | Path,
+    *,
+    node_name: str,
+    config_path: str | Path | None = None,
+    target: str | None = None,
+) -> ResetPipelineResult:
+    return _reset_upstream_impl(
+        pipeline_path,
+        node_name=node_name,
+        config_path=config_path,
+        target=target,
+        artifact_path=None,
+    )
+
+
+def _reset_all_impl(
     pipeline_path: str | Path,
     *,
     config_path: str | Path | None = None,
@@ -1605,7 +1781,6 @@ def reset_all(
         pipeline_path=resolved_pipeline_path,
         compiled=compiled,
         artifact_path=resolved_artifact_path,
-        pipeline_id=None,
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
@@ -1634,6 +1809,20 @@ def reset_all(
     )
 
 
+def reset_all(
+    pipeline_path: str | Path,
+    *,
+    config_path: str | Path | None = None,
+    target: str | None = None,
+) -> ResetPipelineResult:
+    return _reset_all_impl(
+        pipeline_path,
+        config_path=config_path,
+        target=target,
+        artifact_path=None,
+    )
+
+
 def list_existing_outputs_for_file(
     pipeline_path: str | Path,
     *,
@@ -1642,7 +1831,6 @@ def list_existing_outputs_for_file(
     runtime_bindings: dict[str, Any] | None = None,
     target: str | None = None,
     artifact_path: str | Path | None = None,
-    pipeline_id: str | None = None,
 ) -> tuple[CompiledPipeline, list[str], str]:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
     compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
@@ -1658,7 +1846,6 @@ def list_existing_outputs_for_file(
         pipeline_path=resolved_pipeline_path,
         compiled=compiled,
         artifact_path=resolved_artifact_path,
-        pipeline_id=pipeline_id,
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
