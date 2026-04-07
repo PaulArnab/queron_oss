@@ -339,14 +339,12 @@ def _build_compile_contract(
     edge_hash = _hash_json(edges_json)
     spec_json = {
         "pipeline_id": spec.pipeline_id,
-        "pipeline_name": spec.pipeline_name,
         "target": spec.target,
         "nodes": normalized_nodes,
     }
     contract_hash = _hash_json(
         {
             "pipeline_id": spec.pipeline_id,
-            "pipeline_name": spec.pipeline_name,
             "target": spec.target,
             "node_hashes": node_hashes_json,
             "edge_hash": edge_hash,
@@ -356,7 +354,6 @@ def _build_compile_contract(
     )
     contract = CompiledContractRecord(
         pipeline_id=str(spec.pipeline_id or pipeline_path.stem),
-        pipeline_name=spec.pipeline_name,
         pipeline_path=str(pipeline_path),
         project_root=str(project_root),
         artifact_path=str(artifact_path),
@@ -534,9 +531,6 @@ def compile_pipeline_code(
     spec = PipelineSpec(
         pipeline_id=(
             str(native_metadata.get("pipeline_id") or native_metadata.get("notebook_id") or "").strip() or None
-        ),
-        pipeline_name=(
-            str(native_metadata.get("pipeline_name") or native_metadata.get("notebook_name") or "").strip() or None
         ),
         target=effective_target,
         nodes=nodes,

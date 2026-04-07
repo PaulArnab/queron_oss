@@ -43,7 +43,6 @@ class NodeSpec:
 @dataclass
 class PipelineSpec:
     pipeline_id: str | None
-    pipeline_name: str | None
     target: str | None
     nodes: list[NodeSpec]
     native_metadata: dict[str, Any] = field(default_factory=dict)
@@ -51,10 +50,6 @@ class PipelineSpec:
     @property
     def notebook_id(self) -> str | None:
         return self.pipeline_id
-
-    @property
-    def notebook_name(self) -> str | None:
-        return self.pipeline_name
 
     def node_by_name(self) -> dict[str, NodeSpec]:
         return {node.name: node for node in self.nodes}

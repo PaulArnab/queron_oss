@@ -937,7 +937,6 @@ def _pipeline_runs_create_sql(*, table_name: str) -> str:
             log_path VARCHAR,
             compile_id VARCHAR,
             pipeline_id VARCHAR,
-            pipeline_name VARCHAR,
             target VARCHAR,
             artifact_path VARCHAR,
             started_at VARCHAR,
@@ -975,7 +974,6 @@ def _compiled_contracts_create_sql(*, table_name: str) -> str:
         CREATE TABLE IF NOT EXISTS {table_name} (
             compile_id VARCHAR PRIMARY KEY,
             pipeline_id VARCHAR,
-            pipeline_name VARCHAR,
             pipeline_path VARCHAR,
             project_root VARCHAR,
             artifact_path VARCHAR,
@@ -1107,7 +1105,6 @@ def _ensure_queron_meta_tables(conn) -> None:
             "log_path",
             "compile_id",
             "pipeline_id",
-            "pipeline_name",
             "target",
             "artifact_path",
             "started_at",
@@ -1121,7 +1118,6 @@ def _ensure_queron_meta_tables(conn) -> None:
             "log_path",
             "compile_id",
             "notebook_id",
-            "notebook_name",
             "target",
             "artifact_path",
             "started_at",
@@ -1129,7 +1125,7 @@ def _ensure_queron_meta_tables(conn) -> None:
             "status",
             "error_message",
         ],
-        required_column_names=["pipeline_id", "pipeline_name"],
+        required_column_names=["pipeline_id"],
     )
     node_runs_sql = str(_table_create_sql(conn, schema_name="_queron_meta", table_name="node_runs") or "").lower()
     if "node_run_id" not in node_runs_sql or "active_node_state_id" not in node_runs_sql:
@@ -1309,7 +1305,6 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
         item.log_path,
         item.compile_id,
         item.pipeline_id,
-        item.pipeline_name,
         item.target,
         item.artifact_path,
         item.started_at,
@@ -1326,14 +1321,13 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 log_path,
                 compile_id,
                 pipeline_id,
-                pipeline_name,
                 target,
                 artifact_path,
                 started_at,
                 finished_at,
                 status,
                 error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1346,7 +1340,6 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 log_path,
                 compile_id,
                 notebook_id,
-                notebook_name,
                 target,
                 artifact_path,
                 started_at,
@@ -1355,7 +1348,7 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 error_message
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            values[0:3] + values[3:],
+            values,
         )
 
 
@@ -1375,7 +1368,6 @@ def _persist_compiled_contract(
         INSERT OR REPLACE INTO {meta_table} (
             compile_id,
             pipeline_id,
-            pipeline_name,
             pipeline_path,
             project_root,
             artifact_path,
@@ -1393,12 +1385,11 @@ def _persist_compiled_contract(
             external_dependencies_json,
             spec_json,
             diagnostics_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             compile_id,
             item.pipeline_id,
-            item.pipeline_name,
             item.pipeline_path,
             item.project_root,
             item.artifact_path,
@@ -1742,7 +1733,6 @@ def load_active_compiled_contract(
             SELECT
                 compile_id,
                 pipeline_id,
-                pipeline_name,
                 pipeline_path,
                 project_root,
                 artifact_path,
@@ -1788,24 +1778,23 @@ def load_active_compiled_contract(
     return CompiledContractRecord(
         compile_id=row[0],
         pipeline_id=row[1],
-        pipeline_name=row[2],
-        pipeline_path=row[3],
-        project_root=row[4],
-        artifact_path=row[5],
-        config_path=row[6],
-        target=row[7],
-        compiled_at=row[8],
-        is_active=bool(row[9]),
-        contract_hash=row[10],
-        edge_hash=row[11],
-        config_hash=row[12],
-        project_python_hash=row[13],
-        node_hashes_json=_load_json_list(row[14]),
-        edges_json=_load_json_list(row[15]),
-        tracked_files_json=_load_json_list(row[16]),
-        external_dependencies_json=_load_json_list(row[17]),
-        spec_json=_load_json_dict(row[18]),
-        diagnostics_json=_load_json_list(row[19]),
+        pipeline_path=row[2],
+        project_root=row[3],
+        artifact_path=row[4],
+        config_path=row[5],
+        target=row[6],
+        compiled_at=row[7],
+        is_active=bool(row[8]),
+        contract_hash=row[9],
+        edge_hash=row[10],
+        config_hash=row[11],
+        project_python_hash=row[12],
+        node_hashes_json=_load_json_list(row[13]),
+        edges_json=_load_json_list(row[14]),
+        tracked_files_json=_load_json_list(row[15]),
+        external_dependencies_json=_load_json_list(row[16]),
+        spec_json=_load_json_dict(row[17]),
+        diagnostics_json=_load_json_list(row[18]),
     )
 
 
@@ -1827,7 +1816,6 @@ def load_compiled_contract_by_id(
             SELECT
                 compile_id,
                 pipeline_id,
-                pipeline_name,
                 pipeline_path,
                 project_root,
                 artifact_path,
@@ -1873,24 +1861,23 @@ def load_compiled_contract_by_id(
     return CompiledContractRecord(
         compile_id=row[0],
         pipeline_id=row[1],
-        pipeline_name=row[2],
-        pipeline_path=row[3],
-        project_root=row[4],
-        artifact_path=row[5],
-        config_path=row[6],
-        target=row[7],
-        compiled_at=row[8],
-        is_active=bool(row[9]),
-        contract_hash=row[10],
-        edge_hash=row[11],
-        config_hash=row[12],
-        project_python_hash=row[13],
-        node_hashes_json=_load_json_list(row[14]),
-        edges_json=_load_json_list(row[15]),
-        tracked_files_json=_load_json_list(row[16]),
-        external_dependencies_json=_load_json_list(row[17]),
-        spec_json=_load_json_dict(row[18]),
-        diagnostics_json=_load_json_list(row[19]),
+        pipeline_path=row[2],
+        project_root=row[3],
+        artifact_path=row[4],
+        config_path=row[5],
+        target=row[6],
+        compiled_at=row[7],
+        is_active=bool(row[8]),
+        contract_hash=row[9],
+        edge_hash=row[10],
+        config_hash=row[11],
+        project_python_hash=row[12],
+        node_hashes_json=_load_json_list(row[13]),
+        edges_json=_load_json_list(row[14]),
+        tracked_files_json=_load_json_list(row[15]),
+        external_dependencies_json=_load_json_list(row[16]),
+        spec_json=_load_json_dict(row[17]),
+        diagnostics_json=_load_json_list(row[18]),
     )
 
 
@@ -2382,52 +2369,27 @@ def get_latest_pipeline_run(
             where_sql = "WHERE status = ?"
             params = (status,)
         try:
-            try:
-                row = conn.execute(
-                    f"""
-                    SELECT
-                        run_id,
-                        run_label,
-                        log_path,
-                        compile_id,
-                        pipeline_id,
-                        pipeline_name,
-                        target,
-                        artifact_path,
-                        started_at,
-                        finished_at,
-                        status,
-                        error_message
-                    FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
-                    {where_sql}
-                    ORDER BY COALESCE(finished_at, started_at) DESC
-                    LIMIT 1
-                    """,
-                    params,
-                ).fetchone()
-            except Exception:
-                row = conn.execute(
-                    f"""
-                    SELECT
-                        run_id,
-                        run_label,
-                        log_path,
-                        compile_id,
-                        notebook_id,
-                        notebook_name,
-                        target,
-                        artifact_path,
-                        started_at,
-                        finished_at,
-                        status,
-                        error_message
-                    FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
-                    {where_sql}
-                    ORDER BY COALESCE(finished_at, started_at) DESC
-                    LIMIT 1
-                    """,
-                    params,
-                ).fetchone()
+            row = conn.execute(
+                f"""
+                SELECT
+                    run_id,
+                    run_label,
+                    log_path,
+                    compile_id,
+                    pipeline_id,
+                    target,
+                    artifact_path,
+                    started_at,
+                    finished_at,
+                    status,
+                    error_message
+                FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
+                {where_sql}
+                ORDER BY COALESCE(finished_at, started_at) DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
         except Exception:
             return None
         if row is None:
@@ -2438,13 +2400,12 @@ def get_latest_pipeline_run(
             "log_path": row[2],
             "compile_id": row[3],
             "pipeline_id": row[4],
-            "pipeline_name": row[5],
-            "target": row[6],
-            "artifact_path": row[7],
-            "started_at": row[8],
-            "finished_at": row[9],
-            "status": row[10],
-            "error_message": row[11],
+            "target": row[5],
+            "artifact_path": row[6],
+            "started_at": row[7],
+            "finished_at": row[8],
+            "status": row[9],
+            "error_message": row[10],
         }
     finally:
         conn.close()
@@ -2471,7 +2432,6 @@ def get_pipeline_run_by_label(
                 log_path,
                 compile_id,
                 pipeline_id,
-                pipeline_name,
                 target,
                 artifact_path,
                 started_at,
@@ -2492,13 +2452,12 @@ def get_pipeline_run_by_label(
             "log_path": row[2],
             "compile_id": row[3],
             "pipeline_id": row[4],
-            "pipeline_name": row[5],
-            "target": row[6],
-            "artifact_path": row[7],
-            "started_at": row[8],
-            "finished_at": row[9],
-            "status": row[10],
-            "error_message": row[11],
+            "target": row[5],
+            "artifact_path": row[6],
+            "started_at": row[7],
+            "finished_at": row[8],
+            "status": row[9],
+            "error_message": row[10],
         }
     finally:
         conn.close()
@@ -2525,7 +2484,6 @@ def get_pipeline_run_by_id(
                 log_path,
                 compile_id,
                 pipeline_id,
-                pipeline_name,
                 target,
                 artifact_path,
                 started_at,
@@ -2546,13 +2504,12 @@ def get_pipeline_run_by_id(
             "log_path": row[2],
             "compile_id": row[3],
             "pipeline_id": row[4],
-            "pipeline_name": row[5],
-            "target": row[6],
-            "artifact_path": row[7],
-            "started_at": row[8],
-            "finished_at": row[9],
-            "status": row[10],
-            "error_message": row[11],
+            "target": row[5],
+            "artifact_path": row[6],
+            "started_at": row[7],
+            "finished_at": row[8],
+            "status": row[9],
+            "error_message": row[10],
         }
     finally:
         conn.close()
@@ -2580,7 +2537,6 @@ def list_pipeline_runs(
                 log_path,
                 compile_id,
                 pipeline_id,
-                pipeline_name,
                 target,
                 artifact_path,
                 started_at,
@@ -2603,13 +2559,12 @@ def list_pipeline_runs(
             "log_path": row[2],
             "compile_id": row[3],
             "pipeline_id": row[4],
-            "pipeline_name": row[5],
-            "target": row[6],
-            "artifact_path": row[7],
-            "started_at": row[8],
-            "finished_at": row[9],
-            "status": row[10],
-            "error_message": row[11],
+            "target": row[5],
+            "artifact_path": row[6],
+            "started_at": row[7],
+            "finished_at": row[8],
+            "status": row[9],
+            "error_message": row[10],
         }
         for row in rows
     ]

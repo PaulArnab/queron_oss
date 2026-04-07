@@ -43,7 +43,6 @@ class InspectDagResult:
     pipeline_path: str
     artifact_path: str
     pipeline_id: str | None = None
-    pipeline_name: str | None = None
     compile_id: str | None = None
     run_id: str | None = None
     run_label: str | None = None
@@ -1076,11 +1075,6 @@ def inspect_dag(
         if selected_run is not None
         else ""
     ) or str(getattr(contract, "pipeline_id", "") or "").strip() or None
-    pipeline_name = (
-        str(selected_run.get("pipeline_name") or "").strip()
-        if selected_run is not None
-        else ""
-    ) or str(getattr(contract, "pipeline_name", "") or "").strip() or None
 
     nodes: list[dict[str, Any]] = []
     for raw_node in ordered_nodes:
@@ -1107,7 +1101,6 @@ def inspect_dag(
         pipeline_path=str(resolved_pipeline_path),
         artifact_path=str(resolved_artifact_path),
         pipeline_id=pipeline_id,
-        pipeline_name=pipeline_name,
         compile_id=contract.compile_id,
         run_id=selected_run_id or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,

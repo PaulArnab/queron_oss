@@ -306,7 +306,6 @@ class PipelineRunRecord(BaseModel):
     log_path: str | None = None
     compile_id: str | None = None
     pipeline_id: str = Field(min_length=1, validation_alias=AliasChoices("pipeline_id", "notebook_id"))
-    pipeline_name: str | None = Field(default=None, validation_alias=AliasChoices("pipeline_name", "notebook_name"))
     target: str | None = None
     artifact_path: str | None = None
     started_at: str | None = None
@@ -317,10 +316,6 @@ class PipelineRunRecord(BaseModel):
     @property
     def notebook_id(self) -> str:
         return self.pipeline_id
-
-    @property
-    def notebook_name(self) -> str | None:
-        return self.pipeline_name
 
 
 class NodeRunRecord(BaseModel):
@@ -356,7 +351,6 @@ class NodeStateRecord(BaseModel):
 class CompiledContractRecord(BaseModel):
     compile_id: str | None = None
     pipeline_id: str = Field(min_length=1)
-    pipeline_name: str | None = None
     pipeline_path: str = Field(min_length=1)
     project_root: str = Field(min_length=1)
     artifact_path: str = Field(min_length=1)
