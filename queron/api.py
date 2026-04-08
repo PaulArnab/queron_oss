@@ -84,6 +84,23 @@ class InspectNodeHistoryResult:
     states: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass
+class InspectNodeQueryResult:
+    pipeline_path: str
+    artifact_path: str
+    pipeline_id: str | None = None
+    compile_id: str | None = None
+    run_id: str | None = None
+    run_label: str | None = None
+    run_status: str | None = None
+    node_name: str | None = None
+    node_kind: str | None = None
+    logical_artifact: str | None = None
+    sql: str | None = None
+    resolved_sql: str | None = None
+    dependencies: list[str] = field(default_factory=list)
+
+
 def _emit_log_event(
     on_log: Callable[[PipelineLogEvent], None] | None,
     *,
@@ -1108,6 +1125,70 @@ def inspect_node_history(
         finished_at=str(node_run.get("finished_at") or "").strip() or None,
         error_message=str(node_run.get("error_message") or "").strip() or None,
         states=states,
+    )
+
+
+def inspect_node_query(
+    artifact_path: str | Path,
+    node_name: str,
+    *,
+    run_id: str | None = None,
+    run_label: str | None = None,
+) -> InspectNodeQueryResult:
+    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
+        artifact_path,
+        limit=None,
+    )
+    selected_run = _select_pipeline_run_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        run_id=run_id,
+        run_label=run_label,
+        default_to_latest=True,
+    )
+
+    contract = _load_compiled_contract_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+    )
+    raw_nodes, _edges = _contract_nodes_and_edges(contract)
+    normalized_node_name = str(node_name or "").strip()
+    if not normalized_node_name:
+        raise RuntimeError("node_name is required.")
+
+    node_payload: dict[str, Any] | None = None
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        name = str(raw_node.get("name") or "").strip()
+        if name == normalized_node_name:
+            node_payload = raw_node
+            break
+    if node_payload is None:
+        raise RuntimeError(f"Node '{normalized_node_name}' was not found in the compiled pipeline.")
+
+    dependencies = node_payload.get("dependencies")
+    if not isinstance(dependencies, list):
+        dependencies = []
+
+    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    return InspectNodeQueryResult(
+        pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
+        artifact_path=str(resolved_artifact_path),
+        pipeline_id=contract.pipeline_id,
+        compile_id=contract.compile_id,
+        run_id=selected_run_id or None,
+        run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
+        run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        node_name=normalized_node_name,
+        node_kind=str(node_payload.get("kind") or "").strip() or None,
+        logical_artifact=_inspect_node_artifact_name(node_payload),
+        sql=str(node_payload.get("sql") or "").strip() or None,
+        resolved_sql=str(node_payload.get("resolved_sql") or "").strip() or None,
+        dependencies=[
+            str(item).strip()
+            for item in dependencies
+            if str(item).strip()
+        ],
     )
 
 

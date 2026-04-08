@@ -22,6 +22,7 @@ class VerifyQueronCliTests(unittest.TestCase):
             "init_pipeline_project",
             "compile_pipeline",
             "inspect_node",
+            "inspect_node_query",
             "inspect_node_history",
             "inspect_dag",
             "run_pipeline",
@@ -1901,6 +1902,102 @@ def leaf():
             self.assertIn("- failed", text)
             self.assertIn("- cleared", text)
             self.assertIn("- ready", text)
+
+    def test_inspect_node_query_python_returns_sql_and_resolved_sql(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / ".queron" / "policy123.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='final',
+    out='final',
+    query=\"\"\"
+SELECT id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def final():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            self._compile_pipeline(pipeline_path)
+            result = queron.inspect_node_query(str(artifact_path), "final")
+
+            self.assertEqual(result.pipeline_id, "policy123")
+            self.assertEqual(result.node_name, "final")
+            self.assertEqual(result.node_kind, "model.sql")
+            self.assertEqual(result.logical_artifact, "main.final")
+            self.assertIn("{{ queron.ref(\"seed\") }}", str(result.sql))
+            self.assertIn('"main"."seed"', str(result.resolved_sql))
+            self.assertEqual(result.dependencies, ["seed"])
+
+    def test_inspect_node_query_cli_prints_query_sections(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / ".queron" / "policy123.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='final',
+    out='final',
+    query=\"\"\"
+SELECT id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def final():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            self._compile_pipeline(pipeline_path)
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(["inspect_node_query", str(artifact_path), "final"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            text = stdout.getvalue()
+            self.assertIn("Pipeline ID: policy123", text)
+            self.assertIn("Node: final", text)
+            self.assertIn("SQL", text)
+            self.assertIn("Resolved SQL", text)
+            self.assertIn("{{ queron.ref(\"seed\") }}", text)
+            self.assertIn('"main"."seed"', text)
 
     def test_successful_runs_archive_local_duckdb_artifacts_per_run(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -12,6 +12,7 @@ from .api import (
     init_pipeline_project,
     compile_pipeline,
     inspect_node,
+    inspect_node_query,
     inspect_node_history,
     inspect_dag,
     has_compile_errors,
@@ -241,6 +242,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Unique run label to inspect within this pipeline.",
     )
     inspect_node_history_parser.set_defaults(handler=_handle_inspect_node_history)
+
+    inspect_node_query_parser = subparsers.add_parser(
+        "inspect_node_query",
+        help="Show the original and resolved SQL for one pipeline node in a selected run.",
+    )
+    inspect_node_query_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
+    inspect_node_query_parser.add_argument("node_name", help="Pipeline node name to inspect.")
+    inspect_node_query_parser.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=None,
+        help="Run ID to inspect. Defaults to the latest run when omitted.",
+    )
+    inspect_node_query_parser.add_argument(
+        "--run-label",
+        dest="run_label",
+        default=None,
+        help="Unique run label to inspect within this pipeline.",
+    )
+    inspect_node_query_parser.set_defaults(handler=_handle_inspect_node_query)
     return parser
 
 
@@ -780,6 +801,48 @@ def _handle_inspect_node_history(args: argparse.Namespace) -> int:
         trigger = str(item.get("trigger") or "").strip() or "-"
         active_suffix = "  active" if bool(item.get("is_active")) else ""
         print(f"- {state}  {created_at}  trigger={trigger}{active_suffix}")
+    return 0
+
+
+def _handle_inspect_node_query(args: argparse.Namespace) -> int:
+    try:
+        result = inspect_node_query(
+            args.artifact,
+            args.node_name,
+            run_id=args.run_id,
+            run_label=args.run_label,
+        )
+    except Exception as exc:
+        print(f"Inspect node query failed: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Pipeline: {result.pipeline_path}")
+    print(f"Artifact DB: {result.artifact_path}")
+    if result.pipeline_id:
+        print(f"Pipeline ID: {result.pipeline_id}")
+    if result.compile_id:
+        print(f"Compile ID: {result.compile_id}")
+    if result.run_id:
+        print(f"Run ID: {result.run_id}")
+    if result.run_label:
+        print(f"Run label: {result.run_label}")
+    if result.run_status:
+        print(f"Run status: {result.run_status}")
+    if result.node_name:
+        print(f"Node: {result.node_name}")
+    if result.node_kind:
+        print(f"Node kind: {result.node_kind}")
+    if result.logical_artifact:
+        print(f"Logical artifact: {result.logical_artifact}")
+    if result.dependencies:
+        print(f"Dependencies: {', '.join(result.dependencies)}")
+
+    print("")
+    print("SQL")
+    print(result.sql or "-")
+    print("")
+    print("Resolved SQL")
+    print(result.resolved_sql or "-")
     return 0
 
 

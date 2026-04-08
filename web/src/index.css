@@ -11,8 +11,95 @@ body,
 body {
   margin: 0;
   background: #000;
+  font-family: 'DM Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
 * {
   box-sizing: border-box;
+}
+
+.loom-grid {
+  --ag-background-color: #ffffff;
+  --ag-foreground-color: #334155;
+  --ag-font-family: 'DM Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --ag-font-size: 13px;
+  --ag-border-color: transparent;
+  --ag-wrapper-border-radius: 12px;
+  --ag-header-background-color: transparent;
+  --ag-header-foreground-color: #475569;
+  --ag-header-column-separator-display: none;
+  --ag-header-column-resize-handle-display: none;
+  --ag-row-border-color: #f1f5f9;
+  --ag-row-hover-color: #f8fafc;
+  --ag-selected-row-background-color: #f8fafc;
+  --ag-cell-horizontal-padding: 18px;
+  --ag-grid-size: 8px;
+  --ag-icon-font-color: #94a3b8;
+}
+
+.loom-grid .ag-root-wrapper {
+  border: none;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.loom-grid .ag-header,
+.loom-grid .ag-pinned-left-header,
+.loom-grid .ag-pinned-right-header {
+  background: transparent;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.loom-grid .ag-header-cell,
+.loom-grid .ag-cell {
+  border-right: none !important;
+}
+
+.loom-grid .ag-header-cell {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.loom-grid .ag-row {
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.loom-grid .ag-row:last-child {
+  border-bottom: none;
+}
+
+.loom-grid .ag-cell {
+  display: flex;
+  align-items: center;
+}
+
+.loom-grid .loom-grid-cell {
+  font-size: 13px;
+  color: #334155;
+}
+
+.loom-grid .loom-grid-cell-mono {
+  font-family: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  color: #475569;
+}
+
+.loom-grid .ag-body-viewport::-webkit-scrollbar,
+.loom-grid .ag-center-cols-viewport::-webkit-scrollbar,
+.loom-grid .ag-body-horizontal-scroll-viewport::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.loom-grid .ag-body-viewport::-webkit-scrollbar-thumb,
+.loom-grid .ag-center-cols-viewport::-webkit-scrollbar-thumb,
+.loom-grid .ag-body-horizontal-scroll-viewport::-webkit-scrollbar-thumb {
+  background: #e5e7eb;
+  border-radius: 10px;
+}
+
+.loom-grid .ag-body-viewport::-webkit-scrollbar-track,
+.loom-grid .ag-center-cols-viewport::-webkit-scrollbar-track,
+.loom-grid .ag-body-horizontal-scroll-viewport::-webkit-scrollbar-track {
+  background: transparent;
 }

@@ -10,7 +10,8 @@ import {
 } from "@xyflow/react";
 import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X } from "lucide-react";
+import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown } from "lucide-react";
+import alasql from "alasql";
 import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
 import "ag-grid-community/styles/ag-grid.css";
@@ -82,6 +83,32 @@ const NODE_DETAILS = {
   sql_121: { kind: "model.sql", artifact: "main.policy_servicing_enriched", rows: 18, startedAt: "2026-04-05T05:41:47.993551Z", finishedAt: "2026-04-05T05:41:48.801533Z" },
   sql_126: { kind: "db2.egress", artifact: '"DB2INST1"."policy_servicing_enriched_load"', rows: 18, startedAt: "2026-04-05T05:41:48.952901Z", finishedAt: "2026-04-05T05:41:50.565138Z", warnings: [{ code: "db2_precision_widened" }] },
   sql_131: { kind: "postgres.egress", artifact: '"public"."policy_servicing_enriched_load"', rows: 18, startedAt: "2026-04-05T05:41:50.736838Z", finishedAt: "2026-04-05T05:41:51.347323Z" },
+};
+const NODE_QUERY_DETAILS = {
+  python_113: { resolvedSql: null },
+  sql_115: { resolvedSql: null },
+  sql_117: { resolvedSql: null },
+  sql_119: { resolvedSql: null },
+  sql_78: { resolvedSql: "SELECT\n    p.policy_id,\n    policy_number,\n    product_line,\n    underwriting_company,\n    status,\n    effective_date,\n    expiration_date,\n    written_premium,\n    deductible_amount,\n    billing_plan,\n    agent_code,\n    risk_state\nFROM \"public\".\"policy\" p" },
+  sql_79: { resolvedSql: "SELECT\n    coverage_id,\n    policy_id,\n    coverage_code,\n    coverage_name,\n    coverage_limit AS coverage_limit1,\n    deductible_amount,\n    premium_amount,\n    is_optional\nFROM \"public\".\"coverage\"" },
+  sql_81: { resolvedSql: "SELECT\n    claim_id,\n    claim_number,\n    policy_id,\n    loss_date,\n    reported_date,\n    claim_status,\n    loss_cause,\n    reserve_amount,\n    paid_amount,\n    claim_state,\n    adjuster_name,\n    closed_date\nFROM \"public\".\"claim\"" },
+  sql_83: { resolvedSql: "SELECT\n    POLICY_KEY,\n    POLICY_NUMBER,\n    PERSON_ID,\n    RELATIONSHIP_ROLE,\n    EFFECTIVE_DATE,\n    EXPIRATION_DATE,\n    PREFERRED_CONTACT_CHANNEL\nFROM \"DB2INST1\".\"POLICY\"" },
+  sql_85: { resolvedSql: "SELECT\n    PERSON_ID,\n    CUSTOMER_NUMBER,\n    FIRST_NAME,\n    LAST_NAME,\n    BIRTH_DATE,\n    OCCUPATION,\n    ANNUAL_INCOME,\n    PREFERRED_LANGUAGE\nFROM \"DB2INST1\".\"PERSON\"" },
+  sql_87: { resolvedSql: "SELECT\n    PERSON_ID,\n    ADDRESS_TYPE,\n    ADDRESS_LINE1,\n    CITY,\n    STATE_CODE,\n    POSTAL_CODE,\n    COUNTRY_CODE,\n    IS_PRIMARY\nFROM \"DB2INST1\".\"ADDRESS\"\nWHERE IS_PRIMARY = 1" },
+  sql_89: { resolvedSql: "SELECT\n    PERSON_ID,\n    PHONE_TYPE,\n    PHONE_NUMBER,\n    IS_PRIMARY\nFROM \"DB2INST1\".\"PHONE\"\nWHERE IS_PRIMARY = 1" },
+  sql_99: { resolvedSql: "SELECT\n    PERSON_ID,\n    EMAIL_TYPE,\n    EMAIL_ADDRESS,\n    IS_PRIMARY\nFROM \"DB2INST1\".\"EMAIL\"\nWHERE IS_PRIMARY = 1" },
+  sql_141: { resolvedSql: "SELECT * FROM \"main\".\"policy_coverage\"" },
+  sql_95: { resolvedSql: "SELECT\n    policy_id,\n    COUNT(*) AS coverage_count,\n    SUM(premium_amount) AS total_coverage_premium,\n    MAX(CASE WHEN is_optional THEN 1 ELSE 0 END) AS has_optional_coverage\nFROM \"main\".\"policy_coverage\"\nGROUP BY policy_id" },
+  sql_93: { resolvedSql: "SELECT\n    policy_id,\n    COUNT(*) AS claim_count,\n    SUM(reserve_amount) AS total_reserved_amount,\n    SUM(paid_amount) AS total_paid_amount,\n    MAX(loss_date) AS latest_loss_date,\n    MAX(CASE WHEN claim_status = 'OPEN' THEN 1 ELSE 0 END) AS has_open_claim\nFROM \"main\".\"policy_claim\"\nGROUP BY policy_id" },
+  sql_97: { resolvedSql: "SELECT\n    cp.POLICY_NUMBER AS policy_number,\n    cp.PERSON_ID AS person_id,\n    p.CUSTOMER_NUMBER AS customer_number,\n    p.FIRST_NAME AS first_name,\n    p.LAST_NAME AS last_name,\n    p.BIRTH_DATE AS birth_date,\n    p.OCCUPATION AS occupation,\n    p.ANNUAL_INCOME AS annual_income,\n    p.PREFERRED_LANGUAGE AS preferred_language,\n    a.ADDRESS_LINE1 AS address_line1,\n    a.CITY AS city,\n    a.STATE_CODE AS state_code,\n    a.POSTAL_CODE AS postal_code,\n    ph.PHONE_NUMBER AS phone_number,\n    e.EMAIL_ADDRESS AS email_address,\n    cp.PREFERRED_CONTACT_CHANNEL AS preferred_contact_channel\nFROM \"main\".\"customer_policy_link\" cp\nJOIN \"main\".\"customer_person\" p\n  ON cp.PERSON_ID = p.PERSON_ID\nLEFT JOIN \"main\".\"customer_address\" a\n  ON cp.PERSON_ID = a.PERSON_ID\nLEFT JOIN \"main\".\"customer_phone\" ph\n  ON cp.PERSON_ID = ph.PERSON_ID\nLEFT JOIN \"main\".\"customer_email\" e\n  ON cp.PERSON_ID = e.PERSON_ID" },
+  sql_91: { resolvedSql: "SELECT\n    p.policy_id,\n    p.policy_number,\n    p.product_line,\n    p.underwriting_company,\n    p.status AS policy_status,\n    p.effective_date,\n    p.expiration_date,\n    p.written_premium,\n    p.deductible_amount,\n    p.billing_plan,\n    p.agent_code,\n    p.risk_state,\n    c.customer_number,\n    c.first_name,\n    c.last_name,\n    c.birth_date,\n    c.occupation,\n    c.annual_income,\n    c.preferred_language,\n    c.address_line1,\n    c.city,\n    c.state_code AS customer_state,\n    c.postal_code,\n    c.phone_number,\n    c.email_address,\n    c.preferred_contact_channel,\n    COALESCE(cs.coverage_count, 0) AS coverage_count,\n    COALESCE(cs.total_coverage_premium, 0) AS total_coverage_premium,\n    COALESCE(cs.has_optional_coverage, 0) AS has_optional_coverage,\n    COALESCE(cl.claim_count, 0) AS claim_count,\n    COALESCE(cl.total_reserved_amount, 0) AS total_reserved_amount,\n    COALESCE(cl.total_paid_amount, 0) AS total_paid_amount,\n    cl.latest_loss_date,\n    COALESCE(cl.has_open_claim, 0) AS has_open_claim\nFROM \"main\".\"policy_core\" p\nLEFT JOIN \"main\".\"customer_profile\" c\n  ON p.policy_number = c.policy_number\nLEFT JOIN \"main\".\"coverage_summary\" cs\n  ON p.policy_id = cs.policy_id\nLEFT JOIN \"main\".\"claim_summary\" cl\n  ON p.policy_id = cl.policy_id" },
+  sql_103: { resolvedSql: "SELECT EXISTS(\n        SELECT 1\n        FROM \"main\".\"policy_customer_360\"\n        WHERE policy_number IS NULL\n           OR customer_number IS NULL\n    )" },
+  sql_107: { resolvedSql: "SELECT\n    policy_number,\n    customer_number,\n    first_name,\n    last_name,\n    product_line,\n    policy_status,\n    written_premium,\n    total_coverage_premium,\n    claim_count,\n    total_paid_amount,\n    CASE\n        WHEN has_open_claim = 1 THEN 'HIGH_TOUCH'\n        WHEN claim_count >= 2 THEN 'WATCHLIST'\n        WHEN written_premium >= 2500 THEN 'HIGH_VALUE'\n        ELSE 'STANDARD'\n    END AS servicing_segment\nFROM \"main\".\"policy_customer_360\"" },
+  sql_133: { resolvedSql: "SELECT * FROM \"main\".\"policy_customer_360\"" },
+  sql_105: { resolvedSql: "SELECT COUNT(*)\n    FROM \"main\".\"policy_servicing_queue\"\n    WHERE servicing_segment = 'HIGH_TOUCH'" },
+  sql_121: { resolvedSql: "SELECT\n        q.policy_number,\n        q.customer_number,\n        q.first_name,\n        q.last_name,\n        q.product_line,\n        q.policy_status,\n        q.written_premium,\n        q.total_coverage_premium,\n        q.claim_count,\n        q.total_paid_amount,\n        q.servicing_segment,\n        COALESCE(o.servicing_segment_override, q.servicing_segment) AS final_segment,\n        COALESCE(v.vip_flag, FALSE) AS vip_flag,\n        v.vip_reason,\n        p.queue_owner,\n        p.base_sla_hours,\n        t.target_contact_hours\n    FROM \"main\".\"policy_servicing_queue\" q\n    LEFT JOIN \"main\".\"vip_customers\" v\n      ON q.customer_number = v.customer_number\n    LEFT JOIN \"main\".\"servicing_overrides\" o\n      ON q.policy_number = o.policy_number\n    LEFT JOIN \"main\".\"service_playbook\" p\n      ON q.product_line = p.product_line\n    LEFT JOIN \"main\".\"segment_targets\" t\n      ON COALESCE(o.servicing_segment_override, q.servicing_segment) = t.servicing_segment" },
+  sql_126: { resolvedSql: "SELECT *\n    FROM \"main\".\"policy_servicing_enriched\"" },
+  sql_131: { resolvedSql: "SELECT *\n    FROM \"main\".\"policy_servicing_enriched\"" },
 };
 const RUN_TIMING = (() => {
   const started = Object.values(NODE_DETAILS)
@@ -346,21 +373,42 @@ function createGridColumns(keys) {
     resizable: true,
     flex: key === "artifact" ? 1.4 : 1,
     minWidth: key === "artifact" ? 220 : 140,
+    cellClass:
+      key === "metric_value" || key === "loaded_at" || key === "row_id" || key === "row_count"
+        ? "loom-grid-cell-mono"
+        : "loom-grid-cell",
   }));
 }
 
-function runArtifactQuery(queryText) {
-  const query = String(queryText || "").trim();
-  if (!query) {
-    throw new Error("Enter a query. Supported commands: SHOW TABLES or SELECT ... FROM <artifact> [LIMIT n].");
+// ── AlaSQL query engine ───────────────────────────────────────────────────────
+// Tables are registered once at module load, after RUN_ARTIFACT_TABLE_MAP is built.
+function initAlasqlTables() {
+  for (const table of RUN_ARTIFACT_TABLES) {
+    const name = table.tableName;
+    alasql(`DROP TABLE IF EXISTS \`${name}\``);
+    alasql(`CREATE TABLE \`${name}\``);
+    alasql.tables[name].data = table.rows.map((r) => ({ ...r }));
   }
+}
 
-  if (/^show\s+tables\s*;?$/i.test(query)) {
-    const rows = RUN_ARTIFACT_TABLES.map((table) => ({
-      table_name: table.tableName,
-      node_id: table.nodeId,
-      kind: table.kind,
-      row_count: table.rowCount,
+function runArtifactQuery(queryText) {
+  let q = String(queryText || "").trim().replace(/;+\s*$/, "").trim();
+  if (!q) throw new Error("Enter a SELECT query or SHOW TABLES.");
+
+  // Auto-escape known table names so users don't have to type backticks for names with dots
+  RUN_ARTIFACT_TABLES.forEach((t) => {
+    if (t.tableName.includes(".")) {
+      const matchName = t.tableName.replace(/\./g, "\\.");
+      q = q.replace(new RegExp(`(?<!['"\`])\\b${matchName}\\b(?!['"\`])`, "gi"), `\`${t.tableName}\``);
+    }
+  });
+
+  if (/^show\s+tables$/i.test(q)) {
+    const rows = RUN_ARTIFACT_TABLES.map((t) => ({
+      table_name: t.tableName,
+      node_id: t.nodeId,
+      kind: t.kind,
+      row_count: t.rowCount,
     }));
     return {
       rowData: rows,
@@ -369,49 +417,22 @@ function runArtifactQuery(queryText) {
     };
   }
 
-  const selectMatch = query.match(/^select\s+(.+?)\s+from\s+([^\s;]+)(?:\s+limit\s+(\d+))?\s*;?$/i);
-  if (!selectMatch) {
-    throw new Error("Supported syntax: SHOW TABLES or SELECT <columns> FROM <artifact> [LIMIT n].");
+  if (!/^select\b/i.test(q)) {
+    throw new Error("Only SELECT queries and SHOW TABLES are supported.");
   }
 
-  const rawColumns = String(selectMatch[1] || "").trim();
-  const rawTable = String(selectMatch[2] || "")
-    .replace(/["'`]/g, "")
-    .trim()
-    .toLowerCase();
-  const limit = selectMatch[3] ? Math.max(1, Number(selectMatch[3])) : null;
-  const table = RUN_ARTIFACT_TABLE_MAP[rawTable];
-
-  if (!table) {
-    throw new Error(`Artifact table '${selectMatch[2]}' is not available for the selected run.`);
-  }
-
-  const sourceRows = [...table.rows];
-  const availableColumns = sourceRows.length ? Object.keys(sourceRows[0]) : [];
-  const requestedColumns =
-    rawColumns === "*"
-      ? availableColumns
-      : rawColumns
-          .split(",")
-          .map((item) => item.replace(/["'`]/g, "").trim())
-          .filter(Boolean);
-
-  const invalidColumns = requestedColumns.filter((column) => !availableColumns.includes(column));
-  if (invalidColumns.length) {
-    throw new Error(`Unknown column(s): ${invalidColumns.join(", ")}`);
-  }
-
-  const limitedRows = limit ? sourceRows.slice(0, limit) : sourceRows;
-  const rowData = limitedRows.map((row) =>
-    Object.fromEntries(requestedColumns.map((column) => [column, row[column]])),
-  );
-
+  const result = alasql(q);
+  if (!Array.isArray(result)) throw new Error("Query did not return rows. Only SELECT queries and SHOW TABLES are supported.");
+  const columns = result.length > 0 ? Object.keys(result[0]) : [];
   return {
-    rowData,
-    columnDefs: createGridColumns(requestedColumns),
-    summary: `${rowData.length} row${rowData.length === 1 ? "" : "s"} from ${table.tableName}`,
+    rowData: result,
+    columnDefs: createGridColumns(columns),
+    summary: `${result.length} row${result.length === 1 ? "" : "s"} returned`,
   };
 }
+
+// Initialize tables on load
+initAlasqlTables();
 
 function clockLabel(value) {
   if (!value) return "-";
@@ -459,6 +480,7 @@ function buildInspectEntry(nodeId) {
     finishedAt: details.finishedAt,
     dependencies: [...(PARENT_IDS_BY_NODE[nodeId] || [])],
     dependents: [...(CHILD_IDS_BY_NODE[nodeId] || [])],
+    resolvedSql: NODE_QUERY_DETAILS[nodeId]?.resolvedSql || null,
   };
 }
 
@@ -543,7 +565,6 @@ function FlowCardNode({ data, selected }) {
           height: NODE_HEIGHT,
           position: "relative",
           overflow: "visible",
-          fontFamily: "Arial, Helvetica, sans-serif",
         }}
       >
         <Handle
@@ -660,7 +681,6 @@ function FlowCardNode({ data, selected }) {
         boxShadow: selected ? "0 10px 30px rgba(0,0,0,0.08)" : "0 1px 1px rgba(0,0,0,0.03)",
         position: "relative",
         overflow: "visible",
-        fontFamily: "Arial, Helvetica, sans-serif",
       }}
     >
       <div
@@ -809,9 +829,9 @@ function HistoryTable({ items }) {
         </colgroup>
         <thead>
           <tr className="border-b border-slate-200/90">
-            <th className="sticky top-0 z-10 bg-white px-6 py-4 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">State</th>
-            <th className="sticky top-0 z-10 bg-white px-6 py-4 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Trigger</th>
-            <th className="sticky top-0 z-10 bg-white px-6 py-4 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Time</th>
+            <th className="sticky top-0 z-10 bg-white px-4 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">State</th>
+            <th className="sticky top-0 z-10 bg-white px-4 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Trigger</th>
+            <th className="sticky top-0 z-10 bg-white px-4 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Time</th>
           </tr>
         </thead>
         <tbody>
@@ -819,16 +839,16 @@ function HistoryTable({ items }) {
             const badgeStyle = statusBadgeStyle(String(item.state || "").toLowerCase());
             return (
               <tr key={`history-row-${index}`} className="border-t border-slate-100">
-                <td className="px-6 py-5 align-top text-left">
+                <td className="px-4 py-2 align-middle text-left">
                   <span
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
-                      borderRadius: 6,
+                      borderRadius: 4,
                       background: badgeStyle.bg,
                       color: badgeStyle.text,
-                      padding: "5px 10px",
-                      fontSize: 11,
+                      padding: "3px 7px",
+                      fontSize: 10,
                       fontWeight: 800,
                       letterSpacing: "0.08em",
                       textTransform: "uppercase",
@@ -838,8 +858,8 @@ function HistoryTable({ items }) {
                     {item.state}
                   </span>
                 </td>
-                <td className="px-6 py-5 align-top text-left text-[14px] text-slate-600">{item.trigger}</td>
-                <td className="px-6 py-5 align-top text-left text-[14px] font-semibold text-slate-700">{clockLabel(item.timestamp)}</td>
+                <td className="px-4 py-2 align-middle text-left text-[12px] text-slate-600">{item.trigger}</td>
+                <td className="px-4 py-2 align-middle text-left text-[12px] font-semibold text-slate-700">{clockLabel(item.timestamp)}</td>
               </tr>
             );
           })}
@@ -861,10 +881,10 @@ function FlatNodeTable({ items, selectedId }) {
         </colgroup>
         <thead>
           <tr className="border-b border-slate-200/90">
-            <th className="sticky top-0 z-10 bg-white px-6 py-4 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Node</th>
-            <th className="sticky top-0 z-10 bg-white px-6 py-4 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Status</th>
-            <th className="sticky top-0 z-10 bg-white px-6 py-4 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Kind</th>
-            <th className="sticky top-0 z-10 bg-white px-6 py-4 text-right text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Time</th>
+            <th className="sticky top-0 z-10 bg-white px-4 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Node</th>
+            <th className="sticky top-0 z-10 bg-white px-4 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Status</th>
+            <th className="sticky top-0 z-10 bg-white px-4 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Kind</th>
+            <th className="sticky top-0 z-10 bg-white px-4 py-2 text-right text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Time</th>
           </tr>
         </thead>
         <tbody>
@@ -874,22 +894,22 @@ function FlatNodeTable({ items, selectedId }) {
             const active = item.id === selectedId;
             return (
               <tr key={`node-row-${item.id}`} className={`border-t border-slate-100 ${active ? "bg-slate-50/70" : ""}`}>
-                <td className="px-6 py-5 align-top">
+                <td className="px-4 py-2 align-middle">
                   <div className="min-w-0 text-left">
-                    <div className="truncate text-[15px] font-semibold text-slate-950">{item.title}</div>
-                    <div className="mt-1 text-[12px] uppercase tracking-[0.12em] text-slate-400">{item.id}</div>
+                    <div className="truncate text-[13px] font-semibold text-slate-950">{item.title}</div>
+                    <div className="mt-0.5 text-[10px] uppercase tracking-[0.12em] text-slate-400">{item.id}</div>
                   </div>
                 </td>
-                <td className="px-6 py-5 align-top text-left">
+                <td className="px-4 py-2 align-middle text-left">
                   <span
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
-                      borderRadius: 6,
+                      borderRadius: 4,
                       background: badgeStyle.bg,
                       color: badgeStyle.text,
-                      padding: "5px 10px",
-                      fontSize: 11,
+                      padding: "3px 7px",
+                      fontSize: 10,
                       fontWeight: 800,
                       letterSpacing: "0.08em",
                       textTransform: "uppercase",
@@ -899,12 +919,12 @@ function FlatNodeTable({ items, selectedId }) {
                     {item.displayState}
                   </span>
                 </td>
-                <td className="px-6 py-5 align-top text-left text-slate-600">
-                  <div className="flex items-center gap-2 text-[14px]">
+                <td className="px-4 py-2 align-middle text-left text-slate-600">
+                  <div className="flex items-center gap-1.5 text-[12px]">
                     <span
                       style={{
-                        width: 8,
-                        height: 8,
+                        width: 6,
+                        height: 6,
                         borderRadius: 999,
                         background: dotStyle.bg,
                         flexShrink: 0,
@@ -913,7 +933,7 @@ function FlatNodeTable({ items, selectedId }) {
                     <span className="truncate">{item.kind}</span>
                   </div>
                 </td>
-                <td className="px-6 py-5 align-top text-right text-[14px] font-semibold text-slate-700">{item.duration}</td>
+                <td className="px-4 py-2 align-middle text-right text-[12px] font-semibold text-slate-700">{item.duration}</td>
               </tr>
             );
           })}
@@ -923,7 +943,92 @@ function FlatNodeTable({ items, selectedId }) {
   );
 }
 
-function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange }) {
+function QueryPanel({ resolvedSql }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    if (!resolvedSql) return;
+    try {
+      await navigator.clipboard.writeText(resolvedSql);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch (_error) {
+      setCopied(false);
+    }
+  }
+
+  if (!resolvedSql) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
+        No resolved SQL is available for this node.
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden px-4 py-3">
+      <div className="relative min-h-0 flex-1 overflow-auto rounded-lg bg-slate-50">
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="absolute right-3 top-3 z-10 rounded-md border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-900"
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+        <pre className="min-h-full whitespace-pre-wrap break-words p-4 font-mono text-[12px] leading-5 text-slate-700">
+          {resolvedSql}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function ArtifactPreviewPanel({ artifactName, onOpenArtifact }) {
+  const table = artifactName ? RUN_ARTIFACT_TABLE_MAP[String(artifactName).toLowerCase()] : null;
+
+  if (!table) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
+        No local artifact preview is available for this node.
+      </div>
+    );
+  }
+
+  const rowData = table.rows.slice(0, 5);
+  const columnDefs = createGridColumns(rowData.length ? Object.keys(rowData[0]) : []);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden px-4 py-3">
+      <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
+        <span className="truncate">{table.tableName}</span>
+        <button
+          type="button"
+          onClick={() => onOpenArtifact(table.tableName)}
+          className="rounded-md border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
+        >
+          Open in explorer
+        </button>
+      </div>
+      <div className="ag-theme-quartz loom-grid min-h-0 flex-1 overflow-hidden rounded-lg border border-slate-200">
+        <AgGridReact
+          rowData={rowData}
+          columnDefs={columnDefs}
+          defaultColDef={{
+            sortable: true,
+            filter: true,
+            resizable: true,
+            minWidth: 120,
+          }}
+          headerHeight={32}
+          rowHeight={32}
+          domLayout="normal"
+        />
+      </div>
+    </div>
+  );
+}
+
+function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpenArtifact }) {
   if (!data || !data.selected) return null;
   const { selected, upstream, downstream, history, run } = data;
   const tabItems = activeTab === "downstream" ? downstream : upstream;
@@ -935,27 +1040,28 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange }) {
       className={`pointer-events-none absolute inset-x-0 bottom-0 z-20 transform-gpu border-t border-slate-200 bg-slate-50/95 transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
         open ? "translate-y-0 opacity-100" : "translate-y-[108%] opacity-0"
       }`}
-      style={{ fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif" }}
     >
+
       <button
         type="button"
         onClick={onClose}
-        className="pointer-events-auto absolute left-6 top-0 z-30 flex h-10 w-10 -translate-y-full items-center justify-center border border-b-0 border-slate-200 bg-white text-lg font-medium leading-none text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
         aria-label="Hide details"
+        className="pointer-events-auto absolute right-6 top-0 z-30 -translate-y-full flex items-center gap-1.5 rounded-t-md border border-b-0 border-slate-200 bg-white px-3 py-1.5 text-[12px] font-medium text-slate-500 shadow-sm transition hover:bg-slate-50 hover:text-slate-800"
       >
-        v
+        <X size={12} strokeWidth={2.5} />
+        <span>Close</span>
       </button>
 
-      <div className="pointer-events-auto relative mx-auto flex h-[440px] w-full max-w-[1600px] flex-col overflow-visible px-6 py-6 md:h-[460px]">
-        <div className="grid h-full min-h-0 gap-6 overflow-hidden lg:grid-cols-[380px_minmax(0,1fr)]">
+      <div className="pointer-events-auto relative mx-auto flex h-[320px] w-full max-w-[1600px] flex-col overflow-visible px-4 py-3 md:h-[340px]">
+        <div className="grid h-full min-h-0 gap-4 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)]">
           <aside
             className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_12px_rgba(15,23,42,0.05)]"
             style={{ borderLeftWidth: 6, borderLeftColor: selectedTone.bg }}
           >
-            <div className="flex items-start justify-between px-6 py-6">
+            <div className="flex items-start justify-between px-4 py-3">
               <div className="min-w-0">
-                <div className="truncate text-[19px] font-bold tracking-[-0.02em] text-slate-950">{selected.title}</div>
-                <div className="mt-1 flex min-w-0 items-center gap-2 text-[12px] text-slate-500">
+                <div className="truncate text-[14px] font-bold tracking-[-0.01em] text-slate-950">{selected.title}</div>
+                <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-slate-500">
                   <span className="shrink-0">{selected.id}</span>
                   {selected.artifactName ? (
                     <>
@@ -984,43 +1090,43 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange }) {
               </span>
             </div>
 
-            <div className="min-h-0 overflow-y-auto px-6 pb-6">
-              <div className="mb-6 grid grid-cols-2 gap-x-10 gap-y-4">
+            <div className="min-h-0 overflow-y-auto px-4 pb-3">
+              <div className="mb-3 grid grid-cols-2 gap-x-6 gap-y-2">
                 <div>
-                  <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Node status</div>
-                  <div className="mt-1 text-[15px] font-semibold text-slate-950">{selected.currentState}</div>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Node status</div>
+                  <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{selected.currentState}</div>
                 </div>
                 <div>
-                  <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Cell type</div>
-                  <div className="mt-1 text-[15px] font-semibold text-slate-950">{selected.kind}</div>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Cell type</div>
+                  <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{selected.kind}</div>
                 </div>
               </div>
 
               <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50/40">
-                <div className="border-b border-slate-200 px-4 py-3">
+                <div className="border-b border-slate-200 px-3 py-2">
                   <div>
-                    <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Run time</div>
-                    <div className="mt-1 text-[15px] font-semibold text-slate-950">{run.duration}</div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Run time</div>
+                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{run.duration}</div>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 border-b border-slate-200">
-                  <div className="border-r border-slate-200 px-4 py-3">
-                    <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Start time</div>
-                    <div className="mt-1 text-[15px] font-semibold text-slate-950">{clockLabel(run.startedAt)}</div>
+                  <div className="border-r border-slate-200 px-3 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Start time</div>
+                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{clockLabel(run.startedAt)}</div>
                   </div>
-                  <div className="px-4 py-3">
-                    <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">End time</div>
-                    <div className="mt-1 text-[15px] font-semibold text-slate-950">{clockLabel(run.finishedAt)}</div>
+                  <div className="px-3 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">End time</div>
+                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{clockLabel(run.finishedAt)}</div>
                   </div>
                 </div>
                 <div className="grid grid-cols-2">
-                  <div className="border-r border-slate-200 px-4 py-3">
-                    <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Downstream</div>
-                    <div className="mt-1 text-[15px] font-semibold text-slate-950">{downstream.length}</div>
+                  <div className="border-r border-slate-200 px-3 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Downstream</div>
+                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{downstream.length}</div>
                   </div>
-                  <div className="px-4 py-3">
-                    <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">Upstream</div>
-                    <div className="mt-1 text-[15px] font-semibold text-slate-950">{upstream.length}</div>
+                  <div className="px-3 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Upstream</div>
+                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{upstream.length}</div>
                   </div>
                 </div>
               </div>
@@ -1028,11 +1134,33 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange }) {
           </aside>
 
           <main className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_12px_rgba(15,23,42,0.05)]">
-            <div className="flex items-center gap-2 border-b border-slate-200 px-6 py-4">
+            <div className="flex items-center gap-1.5 border-b border-slate-200 px-4 py-2">
+              <button
+                type="button"
+                onClick={() => onTabChange("query")}
+                className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
+                  activeTab === "query"
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                }`}
+              >
+                Resolved SQL
+              </button>
+              <button
+                type="button"
+                onClick={() => onTabChange("data")}
+                className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
+                  activeTab === "data"
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                }`}
+              >
+                Data
+              </button>
               <button
                 type="button"
                 onClick={() => onTabChange("history")}
-                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
                   activeTab === "history"
                     ? "bg-slate-900 text-white"
                     : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
@@ -1043,7 +1171,7 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange }) {
               <button
                 type="button"
                 onClick={() => onTabChange("upstream")}
-                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
                   activeTab === "upstream"
                     ? "bg-slate-900 text-white"
                     : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
@@ -1054,7 +1182,7 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange }) {
               <button
                 type="button"
                 onClick={() => onTabChange("downstream")}
-                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
                   activeTab === "downstream"
                     ? "bg-slate-900 text-white"
                     : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
@@ -1067,6 +1195,10 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange }) {
             <div className="min-h-0 flex-1 overflow-hidden px-2 pb-2">
               {activeTab === "history" ? (
                 <HistoryTable items={history} />
+              ) : activeTab === "data" ? (
+                <ArtifactPreviewPanel artifactName={selected.artifactName} onOpenArtifact={onOpenArtifact} />
+              ) : activeTab === "query" ? (
+                <QueryPanel resolvedSql={selected.resolvedSql} />
               ) : (
                 <FlatNodeTable items={tabItems} selectedId={selected.id} />
               )}
@@ -1078,10 +1210,10 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange }) {
   );
 }
 
-function GraphCanvas() {
+function GraphCanvas({ onOpenArtifact }) {
   const [selectedNodeId, setSelectedNodeId] = useState("sql_126");
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState("history");
+  const [activeTab, setActiveTab] = useState("query");
   const panelData = useMemo(
     () => (selectedNodeId ? buildInspectPanelData(selectedNodeId) : null),
     [selectedNodeId],
@@ -1110,7 +1242,7 @@ function GraphCanvas() {
         nodeTypes={nodeTypes}
         onNodeClick={(_, node) => {
           setSelectedNodeId(String(node.id));
-          setActiveTab("history");
+          setActiveTab("query");
           setSheetOpen(true);
         }}
         fitView
@@ -1132,6 +1264,7 @@ function GraphCanvas() {
         onClose={() => setSheetOpen(false)}
         activeTab={activeTab}
         onTabChange={setActiveTab}
+        onOpenArtifact={onOpenArtifact}
       />
     </div>
   );
@@ -1187,7 +1320,13 @@ function ArtifactExplorerPage({
               <textarea
                 value={query}
                 onChange={(event) => onQueryChange(event.target.value)}
-                placeholder={"SHOW TABLES\nSELECT * FROM main.policy_core LIMIT 25"}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                    event.preventDefault();
+                    onExecute();
+                  }
+                }}
+                placeholder={"SHOW TABLES\nSELECT * FROM main.policy_core LIMIT 25\nSELECT * FROM main.policy_core WHERE category = 'policy' ORDER BY metric_value DESC\nSELECT entity_key, metric_value FROM main.policy_core WHERE metric_value > 50 LIMIT 5"}
                 className="mt-3 h-28 w-full resize-none bg-transparent px-0 py-0 text-[14px] leading-6 text-slate-800 outline-none placeholder:text-slate-300"
                 spellCheck={false}
               />
@@ -1196,7 +1335,7 @@ function ArtifactExplorerPage({
             </div>
 
             <div className="min-h-0 flex-1 px-6 pb-6 pt-4">
-              <div className="ag-theme-quartz h-full w-full">
+              <div className="ag-theme-quartz loom-grid h-full w-full overflow-hidden rounded-xl border border-slate-200">
                 <AgGridReact
                   rowData={result?.rowData || []}
                   columnDefs={result?.columnDefs || []}
@@ -1206,6 +1345,8 @@ function ArtifactExplorerPage({
                     resizable: true,
                     minWidth: 120,
                   }}
+                  headerHeight={36}
+                  rowHeight={36}
                   animateRows
                   rowSelection="single"
                   suppressCellFocus
@@ -1258,6 +1399,11 @@ export default function App() {
   const [artifactQuery, setArtifactQuery] = useState("");
   const [artifactResult, setArtifactResult] = useState(null);
   const [artifactError, setArtifactError] = useState("");
+
+  function openArtifactExplorerForTable(tableName) {
+    setArtifactQuery(`SELECT * FROM ${tableName} LIMIT 25`);
+    setArtifactPageOpen(true);
+  }
 
   const executeArtifactQuery = () => {
     try {
@@ -1317,7 +1463,7 @@ export default function App() {
 
         <div className="min-h-0 flex-1">
         <ReactFlowProvider>
-          <GraphCanvas />
+          <GraphCanvas onOpenArtifact={openArtifactExplorerForTable} />
         </ReactFlowProvider>
         </div>
       </div>
