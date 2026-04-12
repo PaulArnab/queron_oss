@@ -168,24 +168,9 @@ def _selected_node_artifact_record(
     )
     if not selected_node:
         raise RuntimeError(f"Node '{node_name}' was not found.")
-    details = _load_node_run_details(
-        artifact_path,
-        run_id=selection.run_id,
-        node_name=node_name,
-    )
     artifact_name = str(selected_node.get("artifact_name") or "").strip() or None
     if not artifact_name:
         raise RuntimeError(f"Node '{node_name}' does not have a materialized artifact for the selected run.")
-    destination_kind = None
-    destination = None
-    output_path = str(details.get("output_path") or "").strip() or None
-    target_relation = str(details.get("target_relation") or "").strip() or None
-    if output_path:
-        destination_kind = "file"
-        destination = output_path
-    elif target_relation:
-        destination_kind = "relation"
-        destination = target_relation
     return {
         "artifact_name": artifact_name,
         "logical_artifact": str(selected_node.get("logical_artifact") or "").strip() or None,
