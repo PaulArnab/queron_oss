@@ -25,6 +25,7 @@ from .api import (
     resume_pipeline,
     run_pipeline,
 )
+from .cli import _load_pipeline_namespace, _pipeline_id_from_file, _runtime_bindings_from_file
 from .runtime_models import LogCode, PipelineLogEvent
 
 
@@ -71,34 +72,6 @@ def _graph_event_from_log(event: PipelineLogEvent) -> dict[str, Any]:
         "node_kind": event.node_kind,
         "artifact_name": event.artifact_name,
     }
-
-
-def _load_pipeline_namespace(pipeline_path: str | Path) -> dict[str, Any]:
-    namespace: dict[str, Any] = {"__name__": "__queron_graph_live__"}
-    resolved = Path(pipeline_path).expanduser().resolve()
-    code = compile(resolved.read_text(encoding="utf-8"), str(resolved), "exec")
-    exec(code, namespace, namespace)
-    return namespace
-
-
-def _pipeline_id_from_file(pipeline_path: str | Path) -> str:
-    resolved = Path(pipeline_path).expanduser().resolve()
-    namespace = _load_pipeline_namespace(pipeline_path)
-    native = namespace.get("__queron_native__")
-    if not isinstance(native, dict):
-        raise RuntimeError(f"Pipeline '{resolved}' is missing __queron_native__.")
-    pipeline_id = str(native.get("pipeline_id") or "").strip()
-    if not pipeline_id:
-        raise RuntimeError(f"Pipeline '{resolved}' is missing __queron_native__.pipeline_id.")
-    return pipeline_id
-
-
-def _runtime_bindings_from_file(pipeline_path: str | Path) -> dict[str, Any] | None:
-    namespace = _load_pipeline_namespace(pipeline_path)
-    bindings = namespace.get("RUNTIME_BINDINGS")
-    return bindings if isinstance(bindings, dict) else None
-
-
 def resolve_graph_live_context(pipeline_path: str | Path) -> GraphLiveContext:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
     if not resolved_pipeline_path.exists() or not resolved_pipeline_path.is_file():

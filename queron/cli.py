@@ -25,8 +25,33 @@ from .api import (
     resume_pipeline,
     run_pipeline,
 )
-from .graph_live import build_graph_live_server, resolve_graph_live_context
 from .runtime_models import format_log_event
+
+
+def _load_pipeline_namespace(pipeline_path: str | Path) -> dict[str, Any]:
+    namespace: dict[str, Any] = {"__name__": "__queron_cli_pipeline__"}
+    resolved = Path(pipeline_path).expanduser().resolve()
+    code = compile(resolved.read_text(encoding="utf-8"), str(resolved), "exec")
+    exec(code, namespace, namespace)
+    return namespace
+
+
+def _pipeline_id_from_file(pipeline_path: str | Path) -> str:
+    resolved = Path(pipeline_path).expanduser().resolve()
+    namespace = _load_pipeline_namespace(pipeline_path)
+    native = namespace.get("__queron_native__")
+    if not isinstance(native, dict):
+        raise RuntimeError(f"Pipeline '{resolved}' is missing __queron_native__.")
+    pipeline_id = str(native.get("pipeline_id") or "").strip()
+    if not pipeline_id:
+        raise RuntimeError(f"Pipeline '{resolved}' is missing __queron_native__.pipeline_id.")
+    return pipeline_id
+
+
+def _runtime_bindings_from_file(pipeline_path: str | Path) -> dict[str, Any] | None:
+    namespace = _load_pipeline_namespace(pipeline_path)
+    bindings = namespace.get("RUNTIME_BINDINGS")
+    return bindings if isinstance(bindings, dict) else None
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -455,12 +480,14 @@ def _handle_run(args: argparse.Namespace) -> int:
         sys.stderr.write(format_log_event(event))
         sys.stderr.flush()
 
+    runtime_bindings = _runtime_bindings_from_file(args.pipeline)
     requires_full_purge = args.target_node is None
     if requires_full_purge and not bool(getattr(args, "clean_existing", False)):
         compiled, existing_outputs, artifact_path = list_existing_outputs_for_file(
             args.pipeline,
             config_path=args.config_path,
             connections_path=args.connections_path,
+            runtime_bindings=runtime_bindings,
             target=args.target,
         )
         if has_compile_errors(compiled):
@@ -504,6 +531,7 @@ def _handle_run(args: argparse.Namespace) -> int:
             args.pipeline,
             config_path=args.config_path,
             connections_path=args.connections_path,
+            runtime_bindings=runtime_bindings,
             target=args.target,
             target_node=args.target_node,
             clean_existing=bool(args.clean_existing or requires_full_purge),
@@ -549,11 +577,13 @@ def _handle_resume(args: argparse.Namespace) -> int:
         sys.stderr.write(format_log_event(event))
         sys.stderr.flush()
 
+    runtime_bindings = _runtime_bindings_from_file(args.pipeline)
     try:
         result = resume_pipeline(
             args.pipeline,
             config_path=args.config_path,
             connections_path=args.connections_path,
+            runtime_bindings=runtime_bindings,
             target=args.target,
             on_log=_log if bool(getattr(args, "stream_logs", False)) and not args.json_output else None,
         )
@@ -871,6 +901,8 @@ def _handle_inspect_node_query(args: argparse.Namespace) -> int:
 
 def _handle_open_graph(args: argparse.Namespace) -> int:
     try:
+        from .graph_live import build_graph_live_server, resolve_graph_live_context
+
         context = resolve_graph_live_context(args.pipeline)
         server = build_graph_live_server(
             context,
