@@ -559,16 +559,14 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
     out_producers: dict[str, NodeSpec] = {}
     normalized_out_producers: dict[str, tuple[str, NodeSpec]] = {}
     artifact_node_kinds = {"postgres.ingress", "db2.ingress", "python.ingress", *list(_ALL_FILE_INGRESS_KINDS), "model.sql"}
-    query_node_kinds = {
-        "model.sql",
-        "check.count",
-        "check.boolean",
+    egress_node_kinds = {
         "postgres.egress",
         "db2.egress",
         "parquet.egress",
         "csv.egress",
         "jsonl.egress",
     }
+    query_node_kinds = {"model.sql", "check.count", "check.boolean", *list(egress_node_kinds)}
     supported_kinds = artifact_node_kinds | query_node_kinds
     valid_count_operators = {"=", "==", "!=", ">", ">=", "<", "<="}
     valid_egress_modes = {"replace", "append", "create", "create_append"}
@@ -606,7 +604,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                 }
             )
             continue
-        if node.kind in artifact_node_kinds:
+        if node.kind in artifact_node_kinds or (node.kind in egress_node_kinds and logical_out):
             if logical_out in out_producers:
                 diagnostics.append(
                     {

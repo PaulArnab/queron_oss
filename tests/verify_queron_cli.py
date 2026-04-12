@@ -198,6 +198,114 @@ def seed():
                 (root / ".queron" / "policy123.duckdb").resolve(),
             )
 
+    def test_compile_pipeline_allows_out_on_egress_nodes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.csv.egress(
+    name='export_seed',
+    out='export_seed_snapshot',
+    path='exports/output.csv',
+    sql=\"\"\"
+SELECT * FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def export_seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertFalse(any(str(item.get("level")) == "error" for item in compiled.diagnostics))
+            export_node = compiled.spec.node_by_name()["export_seed"]
+            self.assertEqual(export_node.out, "export_seed_snapshot")
+            self.assertEqual(export_node.target_table, "main.export_seed_snapshot")
+            self.assertEqual(export_node.output_path, "exports/output.csv")
+
+    def test_run_pipeline_materializes_local_artifact_for_csv_egress_out(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / ".queron" / "policy123.duckdb"
+            export_path = root / "exports" / "output.csv"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id, 'alpha' AS label
+UNION ALL
+SELECT 2 AS id, 'beta' AS label
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.csv.egress(
+    name='export_seed',
+    out='export_seed_snapshot',
+    path='exports/output.csv',
+    sql=\"\"\"
+SELECT * FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def export_seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+            self.assertFalse(any(str(item.get("level")) == "error" for item in compiled.diagnostics))
+
+            result = queron.run_pipeline(pipeline_path)
+            self.assertIsNotNone(result.run_id)
+            self.assertTrue(export_path.exists())
+
+            run_schema = f"run_{result.run_id.replace('-', '')}"
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                archived_tables = conn.execute(
+                    f"SELECT table_name FROM information_schema.tables WHERE table_schema = '{run_schema}' ORDER BY table_name"
+                ).fetchall()
+                self.assertIn(("export_seed_snapshot",), archived_tables)
+
+                node_artifact = conn.execute(
+                    """
+                    SELECT artifact_name
+                    FROM "_queron_meta"."node_runs"
+                    WHERE run_id = ? AND node_name = 'export_seed'
+                    ORDER BY finished_at DESC
+                    LIMIT 1
+                    """,
+                    (result.run_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+
+            self.assertEqual(node_artifact[0], f"{run_schema}.export_seed_snapshot")
+
     def test_compile_command_reports_artifact_path_from_pipeline_id(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)

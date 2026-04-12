@@ -1650,8 +1650,16 @@ def _reset_node_impl(
     config_path: str | Path | None = None,
     target: str | None = None,
     artifact_path: str | Path | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> ResetPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
+    _emit_log_event(
+        on_log,
+        code=LogCode.PIPELINE_RESET_STARTED,
+        message=f"Resetting node '{node_name}' for {resolved_pipeline_path.name}.",
+        details={"pipeline_path": str(resolved_pipeline_path), "trigger": "reset_node", "selected_nodes": [node_name]},
+        node_name=node_name,
+    )
     compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
         resolved_pipeline_path,
         config_path=config_path,
@@ -1659,6 +1667,14 @@ def _reset_node_impl(
         artifact_path=artifact_path,
     )
     if has_compile_errors(compiled) or compiled.spec is None:
+        _emit_log_event(
+            on_log,
+            code=LogCode.PIPELINE_RESET_FAILED,
+            message="Reset-node validation failed because the compiled contract is unavailable.",
+            severity="error",
+            details={"trigger": "reset_node", "selected_nodes": [node_name]},
+            node_name=node_name,
+        )
         return ResetPipelineResult(compiled=compiled, artifact_path=str(resolved_artifact_path), reset_nodes=[], reset_tables=[])
 
     runtime, _ = _build_runtime_for_pipeline(
@@ -1669,7 +1685,7 @@ def _reset_node_impl(
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
-        on_log=None,
+        on_log=on_log,
     )
     try:
         latest_run, node_runs, _active_states = _current_failed_run_context(
@@ -1681,10 +1697,29 @@ def _reset_node_impl(
             node_runs=node_runs,
             run_label=str(latest_run.get("run_label") or "").strip() or None,
         )
+        result = reset_compiled_node(compiled, runtime=runtime, node_name=node_name)
     except Exception as exc:
-        if "older compile contract" in str(exc):
-            raise
-    result = reset_compiled_node(compiled, runtime=runtime, node_name=node_name)
+        _emit_log_event(
+            on_log,
+            code=LogCode.PIPELINE_RESET_FAILED,
+            message=f"Reset-node failed for '{node_name}'.",
+            severity="error",
+            details={"trigger": "reset_node", "selected_nodes": [node_name], "error": str(exc)},
+            node_name=node_name,
+        )
+        raise
+    _emit_log_event(
+        on_log,
+        code=LogCode.PIPELINE_RESET_FINISHED,
+        message=f"Reset-node finished for '{node_name}'.",
+        details={
+            "trigger": "reset_node",
+            "selected_nodes": list(result.reset_nodes),
+            "reset_tables": list(result.reset_tables),
+            "artifact_path": str(resolved_artifact_path),
+        },
+        node_name=node_name,
+    )
     return ResetPipelineResult(
         compiled=result.compiled,
         artifact_path=str(resolved_artifact_path),
@@ -1700,8 +1735,16 @@ def _reset_downstream_impl(
     config_path: str | Path | None = None,
     target: str | None = None,
     artifact_path: str | Path | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> ResetPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
+    _emit_log_event(
+        on_log,
+        code=LogCode.PIPELINE_RESET_STARTED,
+        message=f"Resetting downstream from node '{node_name}' for {resolved_pipeline_path.name}.",
+        details={"pipeline_path": str(resolved_pipeline_path), "trigger": "reset_downstream", "selected_nodes": [node_name]},
+        node_name=node_name,
+    )
     compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
         resolved_pipeline_path,
         config_path=config_path,
@@ -1709,6 +1752,14 @@ def _reset_downstream_impl(
         artifact_path=artifact_path,
     )
     if has_compile_errors(compiled) or compiled.spec is None:
+        _emit_log_event(
+            on_log,
+            code=LogCode.PIPELINE_RESET_FAILED,
+            message="Reset-downstream validation failed because the compiled contract is unavailable.",
+            severity="error",
+            details={"trigger": "reset_downstream", "selected_nodes": [node_name]},
+            node_name=node_name,
+        )
         return ResetPipelineResult(compiled=compiled, artifact_path=str(resolved_artifact_path), reset_nodes=[], reset_tables=[])
 
     runtime, _ = _build_runtime_for_pipeline(
@@ -1719,7 +1770,7 @@ def _reset_downstream_impl(
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
-        on_log=None,
+        on_log=on_log,
     )
     try:
         latest_run, node_runs, _active_states = _current_failed_run_context(
@@ -1731,10 +1782,29 @@ def _reset_downstream_impl(
             node_runs=node_runs,
             run_label=str(latest_run.get("run_label") or "").strip() or None,
         )
+        result = reset_compiled_downstream(compiled, runtime=runtime, node_name=node_name)
     except Exception as exc:
-        if "older compile contract" in str(exc):
-            raise
-    result = reset_compiled_downstream(compiled, runtime=runtime, node_name=node_name)
+        _emit_log_event(
+            on_log,
+            code=LogCode.PIPELINE_RESET_FAILED,
+            message=f"Reset-downstream failed for '{node_name}'.",
+            severity="error",
+            details={"trigger": "reset_downstream", "selected_nodes": [node_name], "error": str(exc)},
+            node_name=node_name,
+        )
+        raise
+    _emit_log_event(
+        on_log,
+        code=LogCode.PIPELINE_RESET_FINISHED,
+        message=f"Reset-downstream finished for '{node_name}'.",
+        details={
+            "trigger": "reset_downstream",
+            "selected_nodes": list(result.reset_nodes),
+            "reset_tables": list(result.reset_tables),
+            "artifact_path": str(resolved_artifact_path),
+        },
+        node_name=node_name,
+    )
     return ResetPipelineResult(
         compiled=result.compiled,
         artifact_path=str(resolved_artifact_path),
@@ -1749,6 +1819,7 @@ def reset_downstream(
     node_name: str,
     config_path: str | Path | None = None,
     target: str | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> ResetPipelineResult:
     return _reset_downstream_impl(
         pipeline_path,
@@ -1756,6 +1827,7 @@ def reset_downstream(
         config_path=config_path,
         target=target,
         artifact_path=None,
+        on_log=on_log,
     )
 
 
@@ -1765,6 +1837,7 @@ def reset_node(
     node_name: str,
     config_path: str | Path | None = None,
     target: str | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> ResetPipelineResult:
     return _reset_node_impl(
         pipeline_path,
@@ -1772,6 +1845,7 @@ def reset_node(
         config_path=config_path,
         target=target,
         artifact_path=None,
+        on_log=on_log,
     )
 
 
@@ -1782,8 +1856,16 @@ def _reset_upstream_impl(
     config_path: str | Path | None = None,
     target: str | None = None,
     artifact_path: str | Path | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> ResetPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
+    _emit_log_event(
+        on_log,
+        code=LogCode.PIPELINE_RESET_STARTED,
+        message=f"Resetting upstream from node '{node_name}' for {resolved_pipeline_path.name}.",
+        details={"pipeline_path": str(resolved_pipeline_path), "trigger": "reset_upstream", "selected_nodes": [node_name]},
+        node_name=node_name,
+    )
     compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
         resolved_pipeline_path,
         config_path=config_path,
@@ -1791,6 +1873,14 @@ def _reset_upstream_impl(
         artifact_path=artifact_path,
     )
     if has_compile_errors(compiled) or compiled.spec is None:
+        _emit_log_event(
+            on_log,
+            code=LogCode.PIPELINE_RESET_FAILED,
+            message="Reset-upstream validation failed because the compiled contract is unavailable.",
+            severity="error",
+            details={"trigger": "reset_upstream", "selected_nodes": [node_name]},
+            node_name=node_name,
+        )
         return ResetPipelineResult(compiled=compiled, artifact_path=str(resolved_artifact_path), reset_nodes=[], reset_tables=[])
 
     runtime, _ = _build_runtime_for_pipeline(
@@ -1801,7 +1891,7 @@ def _reset_upstream_impl(
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
-        on_log=None,
+        on_log=on_log,
     )
     try:
         latest_run, node_runs, _active_states = _current_failed_run_context(
@@ -1813,10 +1903,29 @@ def _reset_upstream_impl(
             node_runs=node_runs,
             run_label=str(latest_run.get("run_label") or "").strip() or None,
         )
+        result = reset_compiled_upstream(compiled, runtime=runtime, node_name=node_name)
     except Exception as exc:
-        if "older compile contract" in str(exc):
-            raise
-    result = reset_compiled_upstream(compiled, runtime=runtime, node_name=node_name)
+        _emit_log_event(
+            on_log,
+            code=LogCode.PIPELINE_RESET_FAILED,
+            message=f"Reset-upstream failed for '{node_name}'.",
+            severity="error",
+            details={"trigger": "reset_upstream", "selected_nodes": [node_name], "error": str(exc)},
+            node_name=node_name,
+        )
+        raise
+    _emit_log_event(
+        on_log,
+        code=LogCode.PIPELINE_RESET_FINISHED,
+        message=f"Reset-upstream finished for '{node_name}'.",
+        details={
+            "trigger": "reset_upstream",
+            "selected_nodes": list(result.reset_nodes),
+            "reset_tables": list(result.reset_tables),
+            "artifact_path": str(resolved_artifact_path),
+        },
+        node_name=node_name,
+    )
     return ResetPipelineResult(
         compiled=result.compiled,
         artifact_path=str(resolved_artifact_path),
@@ -1831,6 +1940,7 @@ def reset_upstream(
     node_name: str,
     config_path: str | Path | None = None,
     target: str | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> ResetPipelineResult:
     return _reset_upstream_impl(
         pipeline_path,
@@ -1838,6 +1948,7 @@ def reset_upstream(
         config_path=config_path,
         target=target,
         artifact_path=None,
+        on_log=on_log,
     )
 
 
@@ -1847,8 +1958,15 @@ def _reset_all_impl(
     config_path: str | Path | None = None,
     target: str | None = None,
     artifact_path: str | Path | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> ResetPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
+    _emit_log_event(
+        on_log,
+        code=LogCode.PIPELINE_RESET_STARTED,
+        message=f"Resetting all nodes for {resolved_pipeline_path.name}.",
+        details={"pipeline_path": str(resolved_pipeline_path), "trigger": "reset_all"},
+    )
     compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
         resolved_pipeline_path,
         config_path=config_path,
@@ -1856,6 +1974,13 @@ def _reset_all_impl(
         artifact_path=artifact_path,
     )
     if has_compile_errors(compiled) or compiled.spec is None:
+        _emit_log_event(
+            on_log,
+            code=LogCode.PIPELINE_RESET_FAILED,
+            message="Reset-all validation failed because the compiled contract is unavailable.",
+            severity="error",
+            details={"trigger": "reset_all"},
+        )
         return ResetPipelineResult(compiled=compiled, artifact_path=str(resolved_artifact_path), reset_nodes=[], reset_tables=[])
 
     runtime, _ = _build_runtime_for_pipeline(
@@ -1866,7 +1991,7 @@ def _reset_all_impl(
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
         connections_path=None,
-        on_log=None,
+        on_log=on_log,
     )
     try:
         latest_run, node_runs, _active_states = _current_failed_run_context(
@@ -1878,10 +2003,27 @@ def _reset_all_impl(
             node_runs=node_runs,
             run_label=str(latest_run.get("run_label") or "").strip() or None,
         )
+        result = reset_compiled_all(compiled, runtime=runtime)
     except Exception as exc:
-        if "older compile contract" in str(exc):
-            raise
-    result = reset_compiled_all(compiled, runtime=runtime)
+        _emit_log_event(
+            on_log,
+            code=LogCode.PIPELINE_RESET_FAILED,
+            message="Reset-all failed.",
+            severity="error",
+            details={"trigger": "reset_all", "error": str(exc)},
+        )
+        raise
+    _emit_log_event(
+        on_log,
+        code=LogCode.PIPELINE_RESET_FINISHED,
+        message="Reset-all finished.",
+        details={
+            "trigger": "reset_all",
+            "selected_nodes": list(result.reset_nodes),
+            "reset_tables": list(result.reset_tables),
+            "artifact_path": str(resolved_artifact_path),
+        },
+    )
     return ResetPipelineResult(
         compiled=result.compiled,
         artifact_path=str(resolved_artifact_path),
@@ -1895,12 +2037,14 @@ def reset_all(
     *,
     config_path: str | Path | None = None,
     target: str | None = None,
+    on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> ResetPipelineResult:
     return _reset_all_impl(
         pipeline_path,
         config_path=config_path,
         target=target,
         artifact_path=None,
+        on_log=on_log,
     )
 
 

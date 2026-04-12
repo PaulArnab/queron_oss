@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -11,7 +11,6 @@ import {
 import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
 import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown } from "lucide-react";
-import alasql from "alasql";
 import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
 import "ag-grid-community/styles/ag-grid.css";
@@ -151,7 +150,17 @@ function titleForNode(id, details) {
   if (id === "sql_103") return "Boolean Check";
   if (id === "sql_105") return "Count Check";
   if (id === "python_113") return "Service Playbook";
-  if (details.artifact) return humanize(details.artifact);
+  if (details.artifact) {
+    const artifact = String(details.artifact);
+    if (artifact.startsWith("main.") || artifact.startsWith("exports/")) {
+      return artifact
+        .replace(/^main\./, "")
+        .replace(/^exports\//, "")
+        .replace(/^"+|"+$/g, "")
+        .trim();
+    }
+    return humanize(artifact);
+  }
   return humanize(id);
 }
 
@@ -326,44 +335,6 @@ function timeLabel(startedAt, finishedAt) {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function buildArtifactPreviewRows(nodeId, details) {
-  const artifactName = String(details?.artifact || "").trim();
-  if (!artifactName) return [];
-
-  const totalRows = Math.max(1, Math.min(Number(details?.rows || 6), 12));
-  const base = artifactName
-    .replace(/^main\./i, "")
-    .replace(/^exports\//i, "")
-    .replace(/["']/g, "")
-    .replace(/\W+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toLowerCase();
-
-  return Array.from({ length: totalRows }, (_, index) => ({
-    row_id: index + 1,
-    artifact: artifactName,
-    node_id: nodeId,
-    entity_key: `${base}_${String(index + 1).padStart(3, "0")}`,
-    category: base.split("_")[0] || "artifact",
-    metric_value: (index + 1) * 17,
-    loaded_at: details.finishedAt || details.startedAt || null,
-  }));
-}
-
-const RUN_ARTIFACT_TABLES = Object.entries(NODE_DETAILS)
-  .filter(([, details]) => isLocalArtifactKind(details.kind) && details.artifact)
-  .map(([nodeId, details]) => ({
-    tableName: String(details.artifact),
-    nodeId,
-    kind: String(details.kind),
-    rowCount: Number(details.rows || 0),
-    rows: buildArtifactPreviewRows(nodeId, details),
-  }));
-
-const RUN_ARTIFACT_TABLE_MAP = Object.fromEntries(
-  RUN_ARTIFACT_TABLES.map((table) => [table.tableName.toLowerCase(), table]),
-);
-
 function createGridColumns(keys) {
   return keys.map((key) => ({
     field: key,
@@ -381,59 +352,6 @@ function createGridColumns(keys) {
 }
 
 // ── AlaSQL query engine ───────────────────────────────────────────────────────
-// Tables are registered once at module load, after RUN_ARTIFACT_TABLE_MAP is built.
-function initAlasqlTables() {
-  for (const table of RUN_ARTIFACT_TABLES) {
-    const name = table.tableName;
-    alasql(`DROP TABLE IF EXISTS \`${name}\``);
-    alasql(`CREATE TABLE \`${name}\``);
-    alasql.tables[name].data = table.rows.map((r) => ({ ...r }));
-  }
-}
-
-function runArtifactQuery(queryText) {
-  let q = String(queryText || "").trim().replace(/;+\s*$/, "").trim();
-  if (!q) throw new Error("Enter a SELECT query or SHOW TABLES.");
-
-  // Auto-escape known table names so users don't have to type backticks for names with dots
-  RUN_ARTIFACT_TABLES.forEach((t) => {
-    if (t.tableName.includes(".")) {
-      const matchName = t.tableName.replace(/\./g, "\\.");
-      q = q.replace(new RegExp(`(?<!['"\`])\\b${matchName}\\b(?!['"\`])`, "gi"), `\`${t.tableName}\``);
-    }
-  });
-
-  if (/^show\s+tables$/i.test(q)) {
-    const rows = RUN_ARTIFACT_TABLES.map((t) => ({
-      table_name: t.tableName,
-      node_id: t.nodeId,
-      kind: t.kind,
-      row_count: t.rowCount,
-    }));
-    return {
-      rowData: rows,
-      columnDefs: createGridColumns(["table_name", "node_id", "kind", "row_count"]),
-      summary: `${rows.length} artifact table${rows.length === 1 ? "" : "s"}`,
-    };
-  }
-
-  if (!/^select\b/i.test(q)) {
-    throw new Error("Only SELECT queries and SHOW TABLES are supported.");
-  }
-
-  const result = alasql(q);
-  if (!Array.isArray(result)) throw new Error("Query did not return rows. Only SELECT queries and SHOW TABLES are supported.");
-  const columns = result.length > 0 ? Object.keys(result[0]) : [];
-  return {
-    rowData: result,
-    columnDefs: createGridColumns(columns),
-    summary: `${result.length} row${result.length === 1 ? "" : "s"} returned`,
-  };
-}
-
-// Initialize tables on load
-initAlasqlTables();
-
 function clockLabel(value) {
   if (!value) return "-";
   const parsed = new Date(value);
@@ -528,6 +446,323 @@ function buildInspectPanelData(nodeId) {
       .map((currentId) => buildInspectEntry(currentId))
       .filter(Boolean),
     history: nodeHistory,
+  };
+}
+
+function requiresCleanExistingPrompt(payload) {
+  const message = String(payload?.error || "").toLowerCase();
+  if (payload?.requires_clean_existing) return true;
+  if (!message.includes("already exists")) return false;
+  return (
+    message.includes("table with name") ||
+    message.includes("schema with name") ||
+    message.includes("run will purge")
+  );
+}
+
+function buildFlowNodeDataFromApi(node) {
+  const id = String(node?.name || "");
+  const kind = String(node?.kind || "");
+  const status = String(node?.node_run_status || node?.current_state || "ready");
+  const artifactName = node?.artifact_name || null;
+  const rows = node?.row_count_out ?? null;
+  return {
+    label: titleForNode(id, { artifact: artifactName, kind }),
+    title: titleForNode(id, { artifact: artifactName, kind }),
+    nodeName: id,
+    id,
+    kind,
+    tone: normalizeTone(kind, id),
+    relationText: artifactName,
+    configText: kind.includes("egress") ? "delivery" : kind.includes("check") ? "validation" : "pipeline",
+    runtimeTone: runtimeTone(status, 0),
+    runtimeLabel: runtimeLabel(status, 0),
+    runtimeHint: artifactName || null,
+    rows,
+    duration: timeLabel(node?.started_at, node?.finished_at),
+  };
+}
+
+function buildFlowEdgeFromApi(source, target, nodeById) {
+  const details = nodeById.get(target);
+  const status = String(details?.node_run_status || details?.current_state || "ready");
+  const stroke = edgeStroke(runtimeTone(status, 0));
+  return {
+    id: `edge-${source}-${target}`,
+    source,
+    target,
+    type: "step",
+    markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 18, height: 18 },
+    animated: false,
+    style: { stroke, strokeWidth: 1.8 },
+    pathOptions: { borderRadius: 14, offset: 18 },
+    selectable: false,
+    focusable: false,
+  };
+}
+
+function buildInspectEntryFromApi(node, resolvedSql = null) {
+  if (!node) return null;
+  const id = String(node.name || "");
+  const kind = String(node.kind || "");
+  const status = String(node.node_run_status || node.current_state || "ready");
+  const titleArtifact = node.logical_artifact || node.artifact_name || null;
+  const artifactName = node.artifact_name || null;
+  return {
+    static: {
+      id,
+      title: titleForNode(id, { artifact: titleArtifact, kind }),
+      kind,
+      tone: normalizeTone(kind, id),
+      logicalArtifact: node.logical_artifact || null,
+      dependencies: Array.isArray(node.dependencies) ? node.dependencies : [],
+      dependents: Array.isArray(node.dependents) ? node.dependents : [],
+      resolvedSql,
+    },
+    live: {
+      displayState: runtimeLabel(status, 0),
+      currentState: status,
+      nodeRunStatus: status,
+      artifactName,
+      rows: node.row_count_out ?? null,
+      rowCountIn: node.row_count_in ?? null,
+      rowCountOut: node.row_count_out ?? null,
+      duration: timeLabel(node.started_at, node.finished_at),
+      startedAt: node.started_at || null,
+      finishedAt: node.finished_at || null,
+    },
+  };
+}
+
+function buildInspectPanelDataFromApi(payload) {
+  const selected = buildInspectEntryFromApi(payload?.selected, payload?.query?.resolved_sql || null);
+  return {
+    run: {
+      runId: payload?.run_id || null,
+      runLabel: payload?.run_label || null,
+      runStatus: payload?.run_status || null,
+      startedAt: selected?.live?.startedAt || null,
+      finishedAt: selected?.live?.finishedAt || null,
+      duration: timeLabel(selected?.live?.startedAt, selected?.live?.finishedAt),
+    },
+    selectedStatic: selected?.static || null,
+    selectedLive: selected?.live || null,
+    upstream: null,
+    downstream: null,
+    historyInitial: null,
+    historyLive: [],
+  };
+}
+
+function buildInspectItemsFromApi(items, selectedId) {
+  return Array.isArray(items)
+    ? items
+        .map((item) => buildInspectEntryFromApi(item))
+        .filter(Boolean)
+        .map((item) => ({ ...item.static, ...item.live }))
+        .filter((item) => item.id !== selectedId)
+    : [];
+}
+
+function buildInspectHistoryFromApi(payload) {
+  return Array.isArray(payload?.history?.states)
+    ? payload.history.states.map((item) => ({
+        state: String(item.state || "").toUpperCase() || "UNKNOWN",
+        trigger: String(item.trigger || "state_change"),
+        timestamp: item.created_at || null,
+      }))
+    : [];
+}
+
+function patchGraphDataWithEvent(current, event) {
+  if (!current || !event || event.type !== "runtime_log") return current;
+  const code = String(event.code || "").trim().toLowerCase();
+  const eventNodeName = String(event.node_name || event.node_id || "").trim();
+  const eventTimestamp = event.timestamp || null;
+  const eventArtifactName = event.artifact_name || null;
+  const details = event.details || {};
+  const successCodes = new Set([
+    "node_rows_written",
+    "node_artifact_created",
+    "node_egress_written",
+    "node_export_written",
+    "node_check_passed",
+  ]);
+
+  let next = current;
+
+  if (code === "pipeline_run_started" || code === "pipeline_execution_started") {
+    next = {
+      ...next,
+      run_id: event.run_id || next.run_id,
+      run_status: "running",
+      nodes: (Array.isArray(next.nodes) ? next.nodes : []).map((node) => ({
+        ...node,
+        current_state: "ready",
+        node_run_status: "ready",
+        started_at: null,
+        finished_at: null,
+        row_count_in: null,
+        row_count_out: null,
+      })),
+    };
+  } else if (code === "pipeline_execution_failed") {
+    next = {
+      ...next,
+      run_id: event.run_id || next.run_id,
+      run_status: "failed",
+    };
+  } else if (code === "pipeline_execution_finished") {
+    next = {
+      ...next,
+      run_id: event.run_id || next.run_id,
+      run_status: next.run_status === "success_with_warnings" ? "success_with_warnings" : "success",
+    };
+  }
+
+  if (!eventNodeName) return next;
+
+  const patchedNodes = (Array.isArray(next.nodes) ? next.nodes : []).map((node) => {
+    if (String(node.name || "") !== eventNodeName) return node;
+    const patched = { ...node };
+    if (code === "node_execution_started") {
+      patched.current_state = "running";
+      patched.node_run_status = "running";
+      patched.started_at = patched.started_at || eventTimestamp;
+      patched.finished_at = null;
+    } else if (code === "node_execution_failed") {
+      patched.current_state = "failed";
+      patched.node_run_status = "failed";
+      patched.finished_at = eventTimestamp;
+    } else if (code === "node_skipped") {
+      patched.current_state = "skipped";
+      patched.node_run_status = "skipped";
+      patched.finished_at = eventTimestamp;
+    } else if (code === "node_warning") {
+      patched.current_state = "complete_with_warnings";
+      patched.node_run_status = "complete_with_warnings";
+    } else if (successCodes.has(code)) {
+      const alreadyWarning =
+        String(patched.current_state || "").trim().toLowerCase() === "complete_with_warnings" ||
+        String(patched.node_run_status || "").trim().toLowerCase() === "complete_with_warnings";
+      patched.current_state = alreadyWarning ? "complete_with_warnings" : "complete";
+      patched.node_run_status = alreadyWarning ? "complete_with_warnings" : "complete";
+      patched.finished_at = eventTimestamp;
+      patched.artifact_name = eventArtifactName || patched.artifact_name;
+      if (details.row_count_out !== undefined) patched.row_count_out = details.row_count_out;
+      if (details.row_count !== undefined) patched.row_count_out = details.row_count;
+    }
+    return patched;
+  });
+
+  return {
+    ...next,
+    nodes: patchedNodes,
+  };
+}
+
+function patchPanelDataWithEvent(current, event, selectedNodeId) {
+  if (!current || !current.selectedStatic || !current.selectedLive || !event || event.type !== "runtime_log") return current;
+  const eventNodeName = String(event.node_name || event.node_id || "").trim();
+  if (!eventNodeName || eventNodeName !== selectedNodeId) {
+    if (String(event.code || "").trim().toLowerCase() === "pipeline_execution_started") {
+      return {
+        ...current,
+        run: {
+          ...current.run,
+          runId: event.run_id || current.run?.runId || null,
+          runStatus: "running",
+        },
+        selectedLive: {
+          ...current.selectedLive,
+          currentState: "ready",
+          nodeRunStatus: "ready",
+          displayState: runtimeLabel("ready", 0),
+          artifactName: null,
+          startedAt: null,
+          finishedAt: null,
+          duration: "-",
+          rowCountIn: null,
+          rowCountOut: null,
+          rows: null,
+        },
+        historyInitial: [],
+        historyLive: [],
+      };
+    }
+    if (String(event.code || "").trim().toLowerCase() === "pipeline_execution_failed") {
+      return {
+        ...current,
+        run: {
+          ...current.run,
+          runId: event.run_id || current.run?.runId || null,
+          runStatus: "failed",
+        },
+      };
+    }
+    return current;
+  }
+
+  const code = String(event.code || "").trim().toLowerCase();
+  const details = event.details || {};
+  const eventTimestamp = event.timestamp || null;
+  const eventArtifactName = event.artifact_name || null;
+  const nextSelected = { ...current.selectedLive };
+  const nextRun = { ...current.run, runId: event.run_id || current.run?.runId || null };
+  let historyState = null;
+
+  if (code === "node_execution_started") {
+    nextSelected.currentState = "running";
+    nextSelected.nodeRunStatus = "running";
+    nextSelected.displayState = runtimeLabel("running", 0);
+    nextSelected.startedAt = nextSelected.startedAt || eventTimestamp;
+    nextSelected.finishedAt = null;
+    historyState = "RUNNING";
+  } else if (code === "node_execution_failed") {
+    nextSelected.currentState = "failed";
+    nextSelected.nodeRunStatus = "failed";
+    nextSelected.displayState = runtimeLabel("failed", 0);
+    nextSelected.finishedAt = eventTimestamp;
+    historyState = "FAILED";
+  } else if (code === "node_skipped") {
+    nextSelected.currentState = "skipped";
+    nextSelected.nodeRunStatus = "skipped";
+    nextSelected.displayState = runtimeLabel("skipped", 0);
+    nextSelected.finishedAt = eventTimestamp;
+    historyState = "SKIPPED";
+  } else if (code === "node_warning") {
+    nextSelected.currentState = "complete_with_warnings";
+    nextSelected.nodeRunStatus = "complete_with_warnings";
+    nextSelected.displayState = runtimeLabel("complete_with_warnings", 1);
+  } else if (["node_rows_written", "node_artifact_created", "node_egress_written", "node_export_written", "node_check_passed"].includes(code)) {
+    const alreadyWarning =
+      String(nextSelected.currentState || "").trim().toLowerCase() === "complete_with_warnings" ||
+      String(nextSelected.nodeRunStatus || "").trim().toLowerCase() === "complete_with_warnings";
+    nextSelected.currentState = alreadyWarning ? "complete_with_warnings" : "complete";
+    nextSelected.nodeRunStatus = alreadyWarning ? "complete_with_warnings" : "complete";
+    nextSelected.displayState = runtimeLabel(alreadyWarning ? "complete_with_warnings" : "complete", alreadyWarning ? 1 : 0);
+    nextSelected.finishedAt = eventTimestamp;
+    nextSelected.artifactName = eventArtifactName || nextSelected.artifactName;
+    if (details.row_count_out !== undefined) nextSelected.rowCountOut = details.row_count_out;
+    if (details.row_count !== undefined) nextSelected.rowCountOut = details.row_count;
+    if (details.row_count !== undefined && nextSelected.rows == null) nextSelected.rows = details.row_count;
+    historyState = "COMPLETE";
+  }
+
+  nextSelected.duration = timeLabel(nextSelected.startedAt, nextSelected.finishedAt);
+  nextRun.startedAt = current.run?.startedAt || nextSelected.startedAt || null;
+  nextRun.finishedAt = nextSelected.finishedAt || current.run?.finishedAt || null;
+  nextRun.duration = timeLabel(nextRun.startedAt, nextRun.finishedAt);
+
+  const nextHistoryLive = historyState
+    ? [{ state: historyState, trigger: code, timestamp: eventTimestamp }, ...(Array.isArray(current.historyLive) ? current.historyLive : [])]
+    : current.historyLive;
+
+  return {
+    ...current,
+    run: nextRun,
+    selectedLive: nextSelected,
+    historyLive: nextHistoryLive,
   };
 }
 
@@ -870,6 +1105,7 @@ function HistoryTable({ items }) {
 }
 
 function FlatNodeTable({ items, selectedId }) {
+  const rows = Array.isArray(items) ? items : [];
   return (
     <div className="h-full min-h-0 overflow-y-scroll pr-2" style={{ scrollbarGutter: "stable" }}>
       <table className="w-full table-fixed border-collapse">
@@ -888,7 +1124,7 @@ function FlatNodeTable({ items, selectedId }) {
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => {
+          {rows.map((item) => {
             const badgeStyle = statusBadgeStyle(item.currentState);
             const dotStyle = kindDotStyle(item.tone);
             const active = item.id === selectedId;
@@ -966,16 +1202,16 @@ function QueryPanel({ resolvedSql }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden px-4 py-3">
-      <div className="relative min-h-0 flex-1 overflow-auto rounded-lg bg-slate-50">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="relative min-h-0 flex-1 overflow-auto">
         <button
           type="button"
           onClick={handleCopy}
-          className="absolute right-3 top-3 z-10 rounded-md border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-900"
+          className="absolute right-4 top-4 z-10 rounded-md border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-900"
         >
           {copied ? "Copied" : "Copy"}
         </button>
-        <pre className="min-h-full whitespace-pre-wrap break-words p-4 font-mono text-[12px] leading-5 text-slate-700">
+        <pre className="min-h-full whitespace-pre-wrap break-words px-4 py-4 font-mono text-[12px] leading-5 text-slate-700">
           {resolvedSql}
         </pre>
       </div>
@@ -983,10 +1219,32 @@ function QueryPanel({ resolvedSql }) {
   );
 }
 
-function ArtifactPreviewPanel({ artifactName, onOpenArtifact }) {
-  const table = artifactName ? RUN_ARTIFACT_TABLE_MAP[String(artifactName).toLowerCase()] : null;
+function ArtifactPreviewPanel({ preview, loading = false, error = "", onOpenArtifact, blocked = false, blockedMessage = "" }) {
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
+        Loading artifact preview...
+      </div>
+    );
+  }
 
-  if (!table) {
+  if (blocked) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
+        {blockedMessage || "Data preview is unavailable while the pipeline is running."}
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-rose-600">
+        {error}
+      </div>
+    );
+  }
+
+  if (!preview || !Array.isArray(preview.rows) || !preview.artifactName) {
     return (
       <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
         No local artifact preview is available for this node.
@@ -994,22 +1252,12 @@ function ArtifactPreviewPanel({ artifactName, onOpenArtifact }) {
     );
   }
 
-  const rowData = table.rows.slice(0, 5);
-  const columnDefs = createGridColumns(rowData.length ? Object.keys(rowData[0]) : []);
+  const rowData = preview.rows;
+  const columnDefs = createGridColumns(Array.isArray(preview.columns) ? preview.columns : (rowData.length ? Object.keys(rowData[0]) : []));
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden px-4 py-3">
-      <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
-        <span className="truncate">{table.tableName}</span>
-        <button
-          type="button"
-          onClick={() => onOpenArtifact(table.tableName)}
-          className="rounded-md border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
-        >
-          Open in explorer
-        </button>
-      </div>
-      <div className="ag-theme-quartz loom-grid min-h-0 flex-1 overflow-hidden rounded-lg border border-slate-200">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="ag-theme-quartz loom-grid min-h-0 flex-1 overflow-hidden">
         <AgGridReact
           rowData={rowData}
           columnDefs={columnDefs}
@@ -1028,12 +1276,38 @@ function ArtifactPreviewPanel({ artifactName, onOpenArtifact }) {
   );
 }
 
-function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpenArtifact }) {
-  if (!data || !data.selected) return null;
-  const { selected, upstream, downstream, history, run } = data;
-  const tabItems = activeTab === "downstream" ? downstream : upstream;
+function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpenArtifact, artifactPreview, artifactPreviewLoading = false, artifactPreviewError = "", loading = false, error = "", tabLoading = "", tabError = "" }) {
+  if (!open) return null;
+  if (loading) {
+    return (
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-slate-50/95">
+        <div className="pointer-events-auto flex h-[160px] w-full items-center justify-center px-6 text-[13px] text-slate-500">
+          Loading node details...
+        </div>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-slate-50/95">
+        <div className="pointer-events-auto flex h-[160px] w-full items-center justify-center px-6 text-[13px] text-rose-600">
+          {error}
+        </div>
+      </div>
+    );
+  }
+  if (!data || !data.selectedStatic || !data.selectedLive) return null;
+  const { upstream, downstream, run } = data;
+  const history = [
+    ...(Array.isArray(data.historyLive) ? data.historyLive : []),
+    ...(Array.isArray(data.historyInitial) ? data.historyInitial : []),
+  ];
+  const selected = { ...data.selectedStatic, ...data.selectedLive };
+  const tabItems = activeTab === "downstream" ? (downstream || []) : (upstream || []);
   const selectedTone = kindDotStyle(selected.tone);
   const selectedBadge = statusBadgeStyle(selected.currentState);
+  const runStatus = String(run?.runStatus || "").trim().toLowerCase();
+  const dataTabBlocked = runStatus === "running";
 
   return (
     <div
@@ -1052,10 +1326,10 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
         <span>Close</span>
       </button>
 
-      <div className="pointer-events-auto relative mx-auto flex h-[320px] w-full max-w-[1600px] flex-col overflow-visible px-4 py-3 md:h-[340px]">
-        <div className="grid h-full min-h-0 gap-4 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="pointer-events-auto relative flex h-[260px] w-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_12px_rgba(15,23,42,0.05)] md:h-[280px]">
+        <div className="grid h-full min-h-0 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)]">
           <aside
-            className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_12px_rgba(15,23,42,0.05)]"
+            className="flex min-h-0 flex-col overflow-hidden border-r border-slate-200 bg-white"
             style={{ borderLeftWidth: 6, borderLeftColor: selectedTone.bg }}
           >
             <div className="flex items-start justify-between px-4 py-3">
@@ -1063,10 +1337,10 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
                 <div className="truncate text-[14px] font-bold tracking-[-0.01em] text-slate-950">{selected.title}</div>
                 <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-slate-500">
                   <span className="shrink-0">{selected.id}</span>
-                  {selected.artifactName ? (
+                  {(selected.artifactName || selected.logicalArtifact) ? (
                     <>
                       <span className="text-slate-300">•</span>
-                      <span className="truncate">{selected.artifactName}</span>
+                      <span className="truncate">{selected.artifactName || selected.logicalArtifact}</span>
                     </>
                   ) : null}
                 </div>
@@ -1102,7 +1376,7 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
                 </div>
               </div>
 
-              <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50/40">
+              <div className="overflow-hidden border-t border-slate-200">
                 <div className="border-b border-slate-200 px-3 py-2">
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Run time</div>
@@ -1122,18 +1396,18 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
                 <div className="grid grid-cols-2">
                   <div className="border-r border-slate-200 px-3 py-2">
                     <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Downstream</div>
-                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{downstream.length}</div>
+                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{Array.isArray(downstream) ? downstream.length : "-"}</div>
                   </div>
                   <div className="px-3 py-2">
                     <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Upstream</div>
-                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{upstream.length}</div>
+                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{Array.isArray(upstream) ? upstream.length : "-"}</div>
                   </div>
                 </div>
               </div>
             </div>
           </aside>
 
-          <main className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_12px_rgba(15,23,42,0.05)]">
+          <main className="flex min-h-0 flex-col overflow-hidden bg-white">
             <div className="flex items-center gap-1.5 border-b border-slate-200 px-4 py-2">
               <button
                 type="button"
@@ -1149,13 +1423,30 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
               <button
                 type="button"
                 onClick={() => onTabChange("data")}
+                disabled={dataTabBlocked}
                 className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
                   activeTab === "data"
                     ? "bg-slate-900 text-white"
-                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                    : dataTabBlocked
+                      ? "cursor-not-allowed text-slate-300"
+                      : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
                 }`}
               >
                 Data
+              </button>
+              <button
+                type="button"
+                onClick={onOpenArtifact}
+                disabled={dataTabBlocked}
+                aria-label="Open artifact explorer"
+                title="Open artifact explorer"
+                className={`inline-flex h-7 w-7 items-center justify-center rounded-md border transition ${
+                  dataTabBlocked
+                    ? "cursor-not-allowed border-slate-200 text-slate-300"
+                    : "border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                }`}
+              >
+                <Database size={14} strokeWidth={1.9} />
               </button>
               <button
                 type="button"
@@ -1192,11 +1483,26 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-hidden px-2 pb-2">
-              {activeTab === "history" ? (
+            <div className="min-h-0 flex-1 overflow-hidden">
+              {tabError ? (
+                <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-rose-600">
+                  {tabError}
+                </div>
+              ) : tabLoading === activeTab ? (
+                <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
+                  Loading...
+                </div>
+              ) : activeTab === "history" ? (
                 <HistoryTable items={history} />
               ) : activeTab === "data" ? (
-                <ArtifactPreviewPanel artifactName={selected.artifactName} onOpenArtifact={onOpenArtifact} />
+                <ArtifactPreviewPanel
+                  preview={artifactPreview}
+                  loading={artifactPreviewLoading}
+                  error={artifactPreviewError}
+                  onOpenArtifact={onOpenArtifact}
+                  blocked={dataTabBlocked}
+                  blockedMessage="Data preview is unavailable while the pipeline is running."
+                />
               ) : activeTab === "query" ? (
                 <QueryPanel resolvedSql={selected.resolvedSql} />
               ) : (
@@ -1210,29 +1516,42 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
   );
 }
 
-function GraphCanvas({ onOpenArtifact }) {
-  const [selectedNodeId, setSelectedNodeId] = useState("sql_126");
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState("query");
-  const panelData = useMemo(
-    () => (selectedNodeId ? buildInspectPanelData(selectedNodeId) : null),
-    [selectedNodeId],
-  );
-
+function GraphCanvas({
+  graphData,
+  graphLoading,
+  graphError,
+  selectedNodeId,
+  onSelectNode,
+  sheetOpen,
+  onCloseSheet,
+  activeTab,
+  onTabChange,
+  panelData,
+  panelLoading,
+  panelError,
+  panelTabLoading,
+  panelTabError,
+  onOpenArtifact,
+  artifactPreview,
+  artifactPreviewLoading,
+  artifactPreviewError,
+}) {
   const { nodes, edges } = useMemo(() => {
-    const baseNodes = Object.entries(NODE_DETAILS).map(([id, details]) => ({
-      id,
+    const liveNodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+    const liveEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+    const nodeById = new Map(liveNodes.map((node) => [String(node.name || ""), node]));
+    const baseNodes = liveNodes.map((node) => ({
+      id: String(node.name || ""),
       type: "flowCard",
       position: { x: 0, y: 0 },
-      data: buildFlowNodeData(id, details),
-      selected: id === selectedNodeId,
+      data: buildFlowNodeDataFromApi(node),
+      selected: String(node.name || "") === selectedNodeId,
       draggable: false,
       selectable: true,
     }));
-
-    const baseEdges = EDGE_LIST.map(([source, target]) => buildFlowEdge(source, target));
+    const baseEdges = liveEdges.map(([source, target]) => buildFlowEdgeFromApi(source, target, nodeById));
     return layoutElements(baseNodes, baseEdges);
-  }, [selectedNodeId]);
+  }, [graphData, selectedNodeId]);
 
   return (
     <div className="relative h-full w-full overflow-hidden">
@@ -1240,11 +1559,7 @@ function GraphCanvas({ onOpenArtifact }) {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        onNodeClick={(_, node) => {
-          setSelectedNodeId(String(node.id));
-          setActiveTab("query");
-          setSheetOpen(true);
-        }}
+        onNodeClick={(_, node) => onSelectNode(String(node.id))}
         fitView
         fitViewOptions={FIT_OPTIONS}
         minZoom={0.15}
@@ -1258,13 +1573,28 @@ function GraphCanvas({ onOpenArtifact }) {
         <Controls showInteractive={false} fitViewOptions={FIT_OPTIONS} />
       </ReactFlow>
 
+      {(graphLoading || graphError) && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-white/75 px-6 text-center">
+          <div className={`rounded-lg border px-4 py-3 text-[13px] shadow-sm ${graphError ? "border-rose-200 bg-rose-50 text-rose-700" : "border-slate-200 bg-white text-slate-500"}`}>
+            {graphError || "Loading graph..."}
+          </div>
+        </div>
+      )}
+
       <InspectBottomSheet
         open={sheetOpen}
         data={panelData}
-        onClose={() => setSheetOpen(false)}
+        onClose={onCloseSheet}
         activeTab={activeTab}
-        onTabChange={setActiveTab}
+        onTabChange={onTabChange}
         onOpenArtifact={onOpenArtifact}
+        artifactPreview={artifactPreview}
+        artifactPreviewLoading={artifactPreviewLoading}
+        artifactPreviewError={artifactPreviewError}
+        loading={panelLoading}
+        error={panelError}
+        tabLoading={panelTabLoading}
+        tabError={panelTabError}
       />
     </div>
   );
@@ -1278,6 +1608,11 @@ function ArtifactExplorerPage({
   onExecute,
   result,
   error,
+  selectedNodeId,
+  selectedArtifactName,
+  artifacts,
+  artifactsLoading = false,
+  onSelectArtifact,
 }) {
   return (
     <div
@@ -1288,7 +1623,7 @@ function ArtifactExplorerPage({
       <div className="pointer-events-auto absolute inset-0 flex flex-col bg-white shadow-[-24px_0_80px_rgba(15,23,42,0.12)]">
         <div className="flex items-center justify-between border-b border-slate-200 px-6 py-3">
           <div className="text-[12px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-            {RUN_ARTIFACT_TABLES.length} local artifact table{RUN_ARTIFACT_TABLES.length === 1 ? "" : "s"}
+            {selectedArtifactName ? "Selected Artifact" : "Artifact Explorer"}
           </div>
 
           <div className="flex items-center gap-2">
@@ -1359,19 +1694,38 @@ function ArtifactExplorerPage({
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
               <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Available Tables</div>
               <div className="mt-4 space-y-3">
-                {RUN_ARTIFACT_TABLES.map((table) => (
-                  <button
-                    key={table.tableName}
-                    type="button"
-                    onClick={() => onQueryChange(`SELECT * FROM ${table.tableName} LIMIT 25`)}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-left transition hover:border-slate-300 hover:bg-slate-50"
-                  >
-                    <div className="truncate text-[13px] font-semibold text-slate-900">{table.tableName}</div>
-                    <div className="mt-1 truncate text-[11px] text-slate-500">
-                      {table.kind} · {table.rowCount} row{table.rowCount === 1 ? "" : "s"}
-                    </div>
-                  </button>
-                ))}
+                {artifactsLoading ? (
+                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[12px] text-slate-500">
+                    Loading artifacts...
+                  </div>
+                ) : Array.isArray(artifacts) && artifacts.length ? (
+                  artifacts.map((artifact) => {
+                    const active = artifact.artifactName === selectedArtifactName;
+                    return (
+                      <button
+                        key={artifact.artifactName}
+                        type="button"
+                        onClick={() => onSelectArtifact?.(artifact)}
+                        className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${
+                          active
+                            ? "border-slate-900 bg-slate-900 text-white"
+                            : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                        }`}
+                      >
+                        <div className={`truncate text-[13px] font-semibold ${active ? "text-white" : "text-slate-900"}`}>
+                          {artifact.artifactName}
+                        </div>
+                        <div className={`mt-1 truncate text-[11px] ${active ? "text-slate-200" : "text-slate-500"}`}>
+                          {artifact.nodeName || selectedNodeId || "selected run"}
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[12px] text-slate-500">
+                    No materialized artifacts are available for the selected run.
+                  </div>
+                )}
               </div>
             </div>
           </aside>
@@ -1381,13 +1735,15 @@ function ArtifactExplorerPage({
   );
 }
 
-function HeaderActionButton({ title, icon: Icon }) {
+function HeaderActionButton({ title, icon: Icon, onClick, disabled = false }) {
   return (
     <button
       type="button"
+      onClick={onClick}
+      disabled={disabled}
       title={title}
       aria-label={title}
-      className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
+      className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
     >
       <Icon size={17} strokeWidth={1.9} />
     </button>
@@ -1395,20 +1751,369 @@ function HeaderActionButton({ title, icon: Icon }) {
 }
 
 export default function App() {
+  const [graphData, setGraphData] = useState(null);
+  const [graphLoading, setGraphLoading] = useState(true);
+  const [graphError, setGraphError] = useState("");
+  const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [panelData, setPanelData] = useState(null);
+  const [panelLoading, setPanelLoading] = useState(false);
+  const [panelError, setPanelError] = useState("");
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("query");
+  const [panelTabLoading, setPanelTabLoading] = useState("");
+  const [panelTabError, setPanelTabError] = useState("");
+  const [pendingAction, setPendingAction] = useState("");
+  const [actionError, setActionError] = useState("");
   const [artifactPageOpen, setArtifactPageOpen] = useState(false);
   const [artifactQuery, setArtifactQuery] = useState("");
   const [artifactResult, setArtifactResult] = useState(null);
   const [artifactError, setArtifactError] = useState("");
+  const [artifactPreview, setArtifactPreview] = useState(null);
+  const [artifactPreviewLoading, setArtifactPreviewLoading] = useState(false);
+  const [artifactPreviewError, setArtifactPreviewError] = useState("");
+  const [artifactList, setArtifactList] = useState([]);
+  const [artifactListLoading, setArtifactListLoading] = useState(false);
+  const [isSynchronizedRefreshRunning, setIsSynchronizedRefreshRunning] = useState(false);
+  const selectedNodeIdRef = useRef("");
+  const sheetOpenRef = useRef(false);
+  const activeTabRef = useRef("query");
 
-  function openArtifactExplorerForTable(tableName) {
-    setArtifactQuery(`SELECT * FROM ${tableName} LIMIT 25`);
-    setArtifactPageOpen(true);
+  async function loadGraph() {
+    setGraphLoading(true);
+    try {
+      const response = await fetch("/api/graph");
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || "Failed to load graph.");
+      setGraphData(payload);
+      setGraphError("");
+    } catch (error) {
+      setGraphError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGraphLoading(false);
+    }
   }
 
-  const executeArtifactQuery = () => {
+  async function loadNodePanel(nodeId) {
+    if (!nodeId) return;
+    setPanelLoading(true);
     try {
-      const nextResult = runArtifactQuery(artifactQuery);
-      setArtifactResult(nextResult);
+      const response = await fetch(`/api/node?node_name=${encodeURIComponent(nodeId)}`);
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || "Failed to load node details.");
+      setPanelData(buildInspectPanelDataFromApi(payload));
+      setPanelError("");
+    } catch (error) {
+      setPanelData(null);
+      setPanelError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPanelLoading(false);
+    }
+  }
+
+  async function loadNodeTab(nodeId, tabName) {
+    if (!nodeId) return;
+    setPanelTabLoading(tabName);
+    setPanelTabError("");
+    try {
+      let endpoint = "";
+      if (tabName === "query") endpoint = `/api/node/query?node_name=${encodeURIComponent(nodeId)}`;
+      else if (tabName === "history") endpoint = `/api/node/history?node_name=${encodeURIComponent(nodeId)}`;
+      else if (tabName === "upstream") endpoint = `/api/node/upstream?node_name=${encodeURIComponent(nodeId)}`;
+      else if (tabName === "downstream") endpoint = `/api/node/downstream?node_name=${encodeURIComponent(nodeId)}`;
+      else return;
+      const response = await fetch(endpoint);
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || `Failed to load ${tabName}.`);
+      setPanelData((current) => {
+        if (!current) return current;
+        if (tabName === "query") {
+          return {
+            ...current,
+            selectedStatic: {
+              ...(current.selectedStatic || {}),
+              resolvedSql: payload?.query?.resolved_sql || null,
+            },
+          };
+        }
+        if (tabName === "history") {
+          const startedAt = payload?.history?.started_at || current.run?.startedAt || null;
+          const finishedAt = payload?.history?.finished_at || current.run?.finishedAt || null;
+          return {
+            ...current,
+            run: {
+              ...current.run,
+              startedAt,
+              finishedAt,
+              duration: timeLabel(startedAt, finishedAt),
+            },
+            historyInitial: buildInspectHistoryFromApi(payload),
+          };
+        }
+        if (tabName === "upstream") {
+          return {
+            ...current,
+            upstream: buildInspectItemsFromApi(payload?.nodes, current.selectedStatic?.id || ""),
+          };
+        }
+        if (tabName === "downstream") {
+          return {
+            ...current,
+            downstream: buildInspectItemsFromApi(payload?.nodes, current.selectedStatic?.id || ""),
+          };
+        }
+        return current;
+      });
+    } catch (error) {
+      setPanelTabError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPanelTabLoading("");
+    }
+  }
+
+  function currentRunIdForNodePanel() {
+    return panelData?.run?.runId || graphData?.run_id || null;
+  }
+
+  function isCurrentRunActive() {
+    const runStatus = String(panelData?.run?.runStatus || graphData?.run_status || "").trim().toLowerCase();
+    return runStatus === "running";
+  }
+
+  async function loadArtifactList() {
+    setArtifactListLoading(true);
+    try {
+      const params = new URLSearchParams();
+      const runId = currentRunIdForNodePanel();
+      if (runId) {
+        params.set("run_id", runId);
+      }
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      const response = await fetch(`/api/run/artifacts${suffix}`);
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || "Failed to load artifacts.");
+      }
+        setArtifactList(
+          Array.isArray(payload.artifacts)
+            ? payload.artifacts.map((item) => ({
+                artifactName: item.artifact_name || "",
+                logicalArtifact: item.logical_artifact || null,
+                nodeName: item.node_name || null,
+                nodeKind: item.node_kind || null,
+              }))
+            : [],
+      );
+    } catch (_error) {
+      setArtifactList([]);
+    } finally {
+      setArtifactListLoading(false);
+    }
+  }
+
+  async function refreshGraphAndDrawer({ refreshActiveTab = false } = {}) {
+    await loadGraph();
+    if (!sheetOpenRef.current || !selectedNodeIdRef.current) return;
+    await loadNodePanel(selectedNodeIdRef.current);
+    if (refreshActiveTab && activeTabRef.current) {
+      await ensurePanelTabLoaded(activeTabRef.current, selectedNodeIdRef.current, { force: true });
+    }
+  }
+
+  async function ensurePanelTabLoaded(tabName, nodeId = selectedNodeIdRef.current, options = {}) {
+    const force = Boolean(options?.force);
+    if (!nodeId) return;
+    if (isSynchronizedRefreshRunning && !force) return;
+    if (tabName === "data") {
+      if (isCurrentRunActive()) {
+        setArtifactPreview(null);
+        setArtifactPreviewError("");
+        setArtifactPreviewLoading(false);
+        return;
+      }
+      setArtifactPreviewLoading(true);
+      setArtifactPreviewError("");
+      try {
+        const params = new URLSearchParams({
+          node_name: nodeId,
+          limit: "5",
+        });
+        const runId = currentRunIdForNodePanel();
+        if (runId) {
+          params.set("run_id", runId);
+        }
+        const response = await fetch(`/api/node/artifact-preview?${params.toString()}`);
+        const payload = await response.json();
+        if (!response.ok || payload.ok === false) throw new Error(payload.error || "Failed to load data preview.");
+        setArtifactPreview({
+          artifactName: payload.artifact_name || null,
+          logicalArtifact: payload.logical_artifact || null,
+          columns: Array.isArray(payload.columns) ? payload.columns : [],
+          rows: Array.isArray(payload.rows) ? payload.rows : [],
+          runId: payload.run_id || null,
+        });
+      } catch (error) {
+        setArtifactPreview(null);
+        setArtifactPreviewError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setArtifactPreviewLoading(false);
+      }
+      return;
+    }
+    const current = panelData;
+    if (!current) return;
+    if (!force && tabName === "query" && current.selectedStatic?.resolvedSql) return;
+    if (!force && tabName === "history" && Array.isArray(current.historyInitial)) return;
+    if (!force && tabName === "upstream" && Array.isArray(current.upstream)) return;
+    if (!force && tabName === "downstream" && Array.isArray(current.downstream)) return;
+    await loadNodeTab(nodeId, tabName);
+  }
+
+  useEffect(() => {
+    loadGraph();
+  }, []);
+
+  useEffect(() => {
+    selectedNodeIdRef.current = selectedNodeId;
+  }, [selectedNodeId]);
+
+  useEffect(() => {
+    sheetOpenRef.current = sheetOpen;
+  }, [sheetOpen]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    const eventSource = new EventSource("/api/events");
+
+    eventSource.onmessage = (messageEvent) => {
+      try {
+        const payload = JSON.parse(messageEvent.data);
+        if (!payload || payload.type !== "runtime_log") return;
+
+        setGraphData((current) => patchGraphDataWithEvent(current, payload));
+        setPanelData((current) => patchPanelDataWithEvent(current, payload, selectedNodeIdRef.current));
+        if (String(payload.code || "").trim().toLowerCase() === "pipeline_execution_started") {
+          setArtifactPreview(null);
+          setArtifactPreviewError("");
+        }
+
+        const code = String(payload.code || "").trim().toLowerCase();
+        if (code === "pipeline_execution_finished" || code === "pipeline_execution_failed") {
+          window.setTimeout(() => {
+            setIsSynchronizedRefreshRunning(true);
+            void refreshGraphAndDrawer({ refreshActiveTab: true }).finally(() => {
+              setIsSynchronizedRefreshRunning(false);
+            });
+          }, 150);
+        }
+      } catch (_error) {
+        // Ignore malformed SSE payloads.
+      }
+    };
+
+    eventSource.onerror = () => {
+      // Native EventSource reconnect is good enough here.
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, []);
+
+  async function handleSelectNode(nodeId) {
+    setSelectedNodeId(nodeId);
+    setActiveTab("query");
+    setPanelTabError("");
+    setArtifactPreview(null);
+    setArtifactPreviewError("");
+    setSheetOpen(true);
+    await loadNodePanel(nodeId);
+    void loadNodeTab(nodeId, "query");
+  }
+
+  async function handleTabChange(nextTab) {
+    setActiveTab(nextTab);
+    setPanelTabError("");
+    if (isSynchronizedRefreshRunning) return;
+    await ensurePanelTabLoaded(nextTab);
+  }
+
+  async function runAction(endpoint, nodeName = "") {
+    setPendingAction(endpoint);
+    setActionError("");
+    try {
+      const requestBody = nodeName ? { node_name: nodeName } : {};
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) {
+        if (endpoint === "/api/run" && requiresCleanExistingPrompt(payload)) {
+          const shouldClean = window.confirm(
+            "This run is blocked because local artifact tables already exist. Selecting OK will remove the current local artifacts for this pipeline and run it again."
+          );
+          if (!shouldClean) {
+            return;
+          }
+          const cleanResponse = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ clean_existing: true }),
+          });
+          const cleanPayload = await cleanResponse.json();
+          if (!cleanResponse.ok || cleanPayload.ok === false) {
+            throw new Error(cleanPayload.error || "Action failed.");
+          }
+        } else {
+          throw new Error(payload.error || "Action failed.");
+        }
+      }
+      await refreshGraphAndDrawer();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPendingAction("");
+    }
+  }
+
+  function openArtifactExplorerForTable() {
+    setArtifactQuery("SELECT * FROM {{artifact}} LIMIT 25");
+    setArtifactPageOpen(true);
+    void loadArtifactList();
+  }
+
+  function handleSelectArtifact(artifact) {
+    setArtifactQuery("SELECT * FROM {{artifact}} LIMIT 25");
+    if (artifact?.nodeName) {
+      setSelectedNodeId(artifact.nodeName);
+      selectedNodeIdRef.current = artifact.nodeName;
+    }
+  }
+
+  const executeArtifactQuery = async () => {
+    if (!selectedNodeId) {
+      setArtifactResult(null);
+      setArtifactError("Select a node with a materialized artifact first.");
+      return;
+    }
+    try {
+      const runId = currentRunIdForNodePanel();
+      const response = await fetch("/api/node/artifact-query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_name: selectedNodeId, sql: artifactQuery, run_id: runId }),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || "Artifact query failed.");
+      setArtifactResult({
+        rowData: Array.isArray(payload.rows) ? payload.rows : [],
+        columnDefs: createGridColumns(Array.isArray(payload.columns) ? payload.columns : []),
+        summary: `${Number(payload.row_count || 0)} row${Number(payload.row_count || 0) === 1 ? "" : "s"} returned`,
+      });
       setArtifactError("");
     } catch (error) {
       setArtifactResult(null);
@@ -1423,11 +2128,11 @@ export default function App() {
           <div className="flex items-center gap-5">
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Pipeline ID</div>
-              <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-slate-950">{PIPELINE_META.pipelineId}</div>
+              <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-slate-950">{graphData?.pipeline_id || "-"}</div>
             </div>
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Node Count</div>
-              <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-slate-950">{NODE_ORDER.length}</div>
+              <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-slate-950">{graphData?.node_count ?? "-"}</div>
             </div>
           </div>
 
@@ -1435,23 +2140,26 @@ export default function App() {
             <div className="flex items-center gap-4">
               <div className="max-w-[240px] text-right">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run ID</div>
-                <div className="mt-1 truncate text-[13px] font-medium text-slate-700">{RUN_SNAPSHOT.runId}</div>
+                <div className="mt-1 truncate text-[13px] font-medium text-slate-700">{graphData?.run_id || "-"}</div>
               </div>
               <div className="max-w-[220px] text-right">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run Label</div>
-                <div className="mt-1 truncate text-[13px] font-medium text-slate-700">{RUN_SNAPSHOT.runLabel}</div>
+                <div className="mt-1 truncate text-[13px] font-medium text-slate-700">{graphData?.run_label || "-"}</div>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              <HeaderActionButton title="Run" icon={CirclePlay} />
-              <HeaderActionButton title="Resume" icon={SkipForward} />
-              <HeaderActionButton title="Reset All" icon={RefreshCw} />
-              <HeaderActionButton title="Reset Node" icon={RotateCcw} />
-              <HeaderActionButton title="Reset Upstream" icon={History} />
+              <HeaderActionButton title="Run" icon={CirclePlay} onClick={() => runAction("/api/run")} disabled={Boolean(pendingAction)} />
+              <HeaderActionButton title="Resume" icon={SkipForward} onClick={() => runAction("/api/resume")} disabled={Boolean(pendingAction)} />
+              <HeaderActionButton title="Reset All" icon={RefreshCw} onClick={() => runAction("/api/reset-all")} disabled={Boolean(pendingAction)} />
+              <HeaderActionButton title="Reset Node" icon={RotateCcw} onClick={() => runAction("/api/reset-node", selectedNodeId)} disabled={Boolean(pendingAction) || !selectedNodeId} />
+              <HeaderActionButton title="Reset Upstream" icon={History} onClick={() => runAction("/api/reset-upstream", selectedNodeId)} disabled={Boolean(pendingAction) || !selectedNodeId} />
               <button
                 type="button"
-                onClick={() => setArtifactPageOpen(true)}
+                onClick={() => {
+                  setArtifactPageOpen(true);
+                  void loadArtifactList();
+                }}
                 className="inline-flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-[13px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
               >
                 <Database size={16} strokeWidth={1.9} />
@@ -1461,9 +2169,32 @@ export default function App() {
           </div>
         </header>
 
+        {actionError ? (
+          <div className="border-b border-rose-200 bg-rose-50 px-4 py-2 text-[13px] text-rose-700">{actionError}</div>
+        ) : null}
+
         <div className="min-h-0 flex-1">
         <ReactFlowProvider>
-          <GraphCanvas onOpenArtifact={openArtifactExplorerForTable} />
+          <GraphCanvas
+            graphData={graphData}
+            graphLoading={graphLoading}
+            graphError={graphError}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={handleSelectNode}
+            sheetOpen={sheetOpen}
+            onCloseSheet={() => setSheetOpen(false)}
+            activeTab={activeTab}
+            onTabChange={handleTabChange}
+            panelData={panelData}
+            panelLoading={panelLoading}
+            panelError={panelError}
+            panelTabLoading={panelTabLoading}
+            panelTabError={panelTabError}
+            onOpenArtifact={openArtifactExplorerForTable}
+            artifactPreview={artifactPreview}
+            artifactPreviewLoading={artifactPreviewLoading}
+            artifactPreviewError={artifactPreviewError}
+          />
         </ReactFlowProvider>
         </div>
       </div>
@@ -1476,6 +2207,11 @@ export default function App() {
         onExecute={executeArtifactQuery}
         result={artifactResult}
         error={artifactError}
+        selectedNodeId={selectedNodeId}
+        selectedArtifactName={artifactPreview?.artifactName || ""}
+        artifacts={artifactList}
+        artifactsLoading={artifactListLoading}
+        onSelectArtifact={handleSelectArtifact}
       />
     </div>
   );

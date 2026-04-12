@@ -34,6 +34,9 @@ class LogCode:
     PIPELINE_COMPILE_STARTED = "pipeline_compile_started"
     PIPELINE_COMPILE_SUCCEEDED = "pipeline_compile_succeeded"
     PIPELINE_COMPILE_FAILED = "pipeline_compile_failed"
+    PIPELINE_RESET_STARTED = "pipeline_reset_started"
+    PIPELINE_RESET_FINISHED = "pipeline_reset_finished"
+    PIPELINE_RESET_FAILED = "pipeline_reset_failed"
     PIPELINE_PURGE_CONFIRMATION_REQUIRED = "pipeline_purge_confirmation_required"
     PIPELINE_TARGET_SELECTED = "pipeline_target_selected"
     PIPELINE_ARCHIVE_STARTED = "pipeline_archive_started"
@@ -55,6 +58,7 @@ class LogCode:
     NODE_EGRESS_WRITTEN = "node_egress_written"
     NODE_EXPORT_WRITTEN = "node_export_written"
     NODE_WARNING = "node_warning"
+    NODE_RESET = "node_reset"
 
 
 class PipelineLogEvent(BaseModel):

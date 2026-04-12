@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from .api import (
     resume_pipeline,
     run_pipeline,
 )
+from .graph_live import build_graph_live_server, resolve_graph_live_context
 from .runtime_models import format_log_event
 
 
@@ -67,12 +69,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--clean-existing",
         action="store_true",
         help="Drop existing pipeline output tables before execution.",
-    )
-    run_parser.add_argument(
-        "--yes",
-        action="store_true",
-        dest="confirm_purge",
-        help="Confirm purging existing pipeline outputs before execution.",
     )
     run_parser.add_argument(
         "--stream-logs",
@@ -262,6 +258,33 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Unique run label to inspect within this pipeline.",
     )
     inspect_node_query_parser.set_defaults(handler=_handle_inspect_node_query)
+
+    open_graph_parser = subparsers.add_parser(
+        "open_graph",
+        help="Launch the local graph UI for one compiled pipeline.",
+    )
+    open_graph_parser.add_argument("pipeline", help="Path to the compiled OSS pipeline Python file.")
+    open_graph_parser.add_argument(
+        "--host",
+        dest="host",
+        default="127.0.0.1",
+        help="Host interface to bind the graph server to.",
+    )
+    open_graph_parser.add_argument(
+        "--port",
+        dest="port",
+        type=int,
+        default=8890,
+        help="Port to bind the graph server to.",
+    )
+    open_graph_parser.add_argument(
+        "--no-browser",
+        dest="no_browser",
+        action="store_true",
+        help="Start the server without opening a browser window.",
+    )
+    open_graph_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
+    open_graph_parser.set_defaults(handler=_handle_open_graph)
     return parser
 
 
@@ -433,7 +456,7 @@ def _handle_run(args: argparse.Namespace) -> int:
         sys.stderr.flush()
 
     requires_full_purge = args.target_node is None
-    if requires_full_purge and not bool(getattr(args, "confirm_purge", False)):
+    if requires_full_purge and not bool(getattr(args, "clean_existing", False)):
         compiled, existing_outputs, artifact_path = list_existing_outputs_for_file(
             args.pipeline,
             config_path=args.config_path,
@@ -454,11 +477,11 @@ def _handle_run(args: argparse.Namespace) -> int:
         if existing_outputs:
             warning_message = (
                 f"Run will purge {len(existing_outputs)} existing output table"
-                f"{'' if len(existing_outputs) == 1 else 's'} before execution. Re-run with --yes to confirm."
+                f"{'' if len(existing_outputs) == 1 else 's'} before execution. Re-run with --clean-existing to continue."
             )
             if not args.json_output and _can_prompt_for_confirmation():
                 if _prompt_for_purge_confirmation(warning_message, existing_outputs):
-                    args.confirm_purge = True
+                    args.clean_existing = True
                 else:
                     print("[pipeline] Run cancelled.", file=sys.stderr)
                     return 0
@@ -466,11 +489,11 @@ def _handle_run(args: argparse.Namespace) -> int:
                 action_label="Run",
                 warning_message=warning_message,
                 purge_targets=existing_outputs,
-                confirmed_command=f"queron run {Path(args.pipeline).expanduser().resolve()} --yes",
+                confirmed_command=f"queron run {Path(args.pipeline).expanduser().resolve()} --clean-existing",
             )
             if args.json_output:
                 return _emit_json(payload)
-            if not bool(getattr(args, "confirm_purge", False)):
+            if not bool(getattr(args, "clean_existing", False)):
                 print(f"[pipeline] {warning_message}", file=sys.stderr)
                 for table in existing_outputs:
                     print(f"[pipeline]   - {table}", file=sys.stderr)
@@ -843,6 +866,52 @@ def _handle_inspect_node_query(args: argparse.Namespace) -> int:
     print("")
     print("Resolved SQL")
     print(result.resolved_sql or "-")
+    return 0
+
+
+def _handle_open_graph(args: argparse.Namespace) -> int:
+    try:
+        context = resolve_graph_live_context(args.pipeline)
+        server = build_graph_live_server(
+            context,
+            host=args.host,
+            port=int(args.port),
+        )
+    except Exception as exc:
+        if args.json_output:
+            return _emit_json({"ok": False, "error": str(exc)})
+        print(f"Open-graph failed: {exc}", file=sys.stderr)
+        return 1
+
+    bound_host, bound_port = server.server_address[:2]
+    url = f"http://{bound_host}:{bound_port}"
+    payload = {
+        "ok": True,
+        "pipeline_path": context.pipeline_path,
+        "artifact_path": context.artifact_path,
+        "pipeline_id": context.pipeline_id,
+        "host": bound_host,
+        "port": bound_port,
+        "url": url,
+    }
+    if args.json_output:
+        server.server_close()
+        return _emit_json(payload)
+
+    print(f"Pipeline: {context.pipeline_path}")
+    print(f"Artifact DB: {context.artifact_path}")
+    print(f"Pipeline ID: {context.pipeline_id}")
+    print(f"Graph UI: {url}")
+
+    if not bool(args.no_browser):
+        webbrowser.open(url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
     return 0
 
 

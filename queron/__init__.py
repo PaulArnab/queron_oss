@@ -63,17 +63,18 @@ class _PostgresNamespace:
         table: str,
         sql: str,
         mode: str = "replace",
+        out: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        return _node_decorator(
-            "postgres.egress",
-            {
-                "config": _require_non_empty_string("config", config),
-                "name": _require_non_empty_string("name", name),
-                "table": _require_non_empty_string("table", table),
-                "sql": _require_non_empty_string("sql", sql),
-                "mode": _require_non_empty_string("mode", mode),
-            },
-        )
+        payload = {
+            "config": _require_non_empty_string("config", config),
+            "name": _require_non_empty_string("name", name),
+            "table": _require_non_empty_string("table", table),
+            "sql": _require_non_empty_string("sql", sql),
+            "mode": _require_non_empty_string("mode", mode),
+        }
+        if out is not None:
+            payload["out"] = _require_non_empty_string("out", out)
+        return _node_decorator("postgres.egress", payload)
 
 
 class _Db2Namespace:
@@ -96,17 +97,18 @@ class _Db2Namespace:
         table: str,
         sql: str,
         mode: str = "replace",
+        out: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        return _node_decorator(
-            "db2.egress",
-            {
-                "config": _require_non_empty_string("config", config),
-                "name": _require_non_empty_string("name", name),
-                "table": _require_non_empty_string("table", table),
-                "sql": _require_non_empty_string("sql", sql),
-                "mode": _require_non_empty_string("mode", mode),
-            },
-        )
+        payload = {
+            "config": _require_non_empty_string("config", config),
+            "name": _require_non_empty_string("name", name),
+            "table": _require_non_empty_string("table", table),
+            "sql": _require_non_empty_string("sql", sql),
+            "mode": _require_non_empty_string("mode", mode),
+        }
+        if out is not None:
+            payload["out"] = _require_non_empty_string("out", out)
+        return _node_decorator("db2.egress", payload)
 
 
 class _ModelNamespace:
@@ -199,18 +201,19 @@ class _CsvNamespace:
         overwrite: bool = False,
         header: bool = True,
         delimiter: str = ",",
+        out: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        return _node_decorator(
-            "csv.egress",
-            {
-                "name": _require_non_empty_string("name", name),
-                "path": _require_non_empty_string("path", path),
-                "sql": _require_non_empty_string("sql", sql),
-                "overwrite": bool(overwrite),
-                "header": bool(header),
-                "delimiter": _require_non_empty_string("delimiter", delimiter),
-            },
-        )
+        payload = {
+            "name": _require_non_empty_string("name", name),
+            "path": _require_non_empty_string("path", path),
+            "sql": _require_non_empty_string("sql", sql),
+            "overwrite": bool(overwrite),
+            "header": bool(header),
+            "delimiter": _require_non_empty_string("delimiter", delimiter),
+        }
+        if out is not None:
+            payload["out"] = _require_non_empty_string("out", out)
+        return _node_decorator("csv.egress", payload)
 
 
 class _JsonlNamespace:
@@ -238,16 +241,17 @@ class _JsonlNamespace:
         path: str,
         sql: str,
         overwrite: bool = False,
+        out: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        return _node_decorator(
-            "jsonl.egress",
-            {
-                "name": _require_non_empty_string("name", name),
-                "path": _require_non_empty_string("path", path),
-                "sql": _require_non_empty_string("sql", sql),
-                "overwrite": bool(overwrite),
-            },
-        )
+        payload = {
+            "name": _require_non_empty_string("name", name),
+            "path": _require_non_empty_string("path", path),
+            "sql": _require_non_empty_string("sql", sql),
+            "overwrite": bool(overwrite),
+        }
+        if out is not None:
+            payload["out"] = _require_non_empty_string("out", out)
+        return _node_decorator("jsonl.egress", payload)
 
 
 class _ParquetNamespace:
@@ -276,6 +280,7 @@ class _ParquetNamespace:
         sql: str,
         overwrite: bool = False,
         compression: str | None = None,
+        out: str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload: dict[str, Any] = {
             "name": _require_non_empty_string("name", name),
@@ -283,6 +288,8 @@ class _ParquetNamespace:
             "sql": _require_non_empty_string("sql", sql),
             "overwrite": bool(overwrite),
         }
+        if out is not None:
+            payload["out"] = _require_non_empty_string("out", out)
         if compression is not None:
             payload["compression"] = _require_non_empty_string("compression", compression)
         return _node_decorator("parquet.egress", payload)
