@@ -1267,8 +1267,8 @@ function ArtifactPreviewPanel({ preview, loading = false, error = "", onOpenArti
             resizable: true,
             minWidth: 120,
           }}
-          headerHeight={32}
-          rowHeight={32}
+          headerHeight={28}
+          rowHeight={26}
           domLayout="normal"
         />
       </div>
@@ -1276,9 +1276,24 @@ function ArtifactPreviewPanel({ preview, loading = false, error = "", onOpenArti
   );
 }
 
-function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpenArtifact, artifactPreview, artifactPreviewLoading = false, artifactPreviewError = "", loading = false, error = "", tabLoading = "", tabError = "" }) {
+function InspectBottomSheet({
+  open,
+  data,
+  onClose,
+  activeTab,
+  onTabChange,
+  onOpenArtifact,
+  artifactPreview,
+  artifactPreviewLoading = false,
+  artifactPreviewError = "",
+  loading = false,
+  error = "",
+  tabLoading = "",
+  tabError = "",
+  suppressLoadingOverlay = false,
+}) {
   if (!open) return null;
-  if (loading) {
+  if (loading && !suppressLoadingOverlay) {
     return (
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-slate-50/95">
         <div className="pointer-events-auto flex h-[160px] w-full items-center justify-center px-6 text-[13px] text-slate-500">
@@ -1287,7 +1302,7 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
       </div>
     );
   }
-  if (error) {
+  if (error && !suppressLoadingOverlay) {
     return (
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-slate-50/95">
         <div className="pointer-events-auto flex h-[160px] w-full items-center justify-center px-6 text-[13px] text-rose-600">
@@ -1326,7 +1341,7 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
         <span>Close</span>
       </button>
 
-      <div className="pointer-events-auto relative flex h-[260px] w-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_12px_rgba(15,23,42,0.05)] md:h-[280px]">
+      <div className="pointer-events-auto relative flex h-[245px] w-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_12px_rgba(15,23,42,0.05)] md:h-[245px]">
         <div className="grid h-full min-h-0 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)]">
           <aside
             className="flex min-h-0 flex-col overflow-hidden border-r border-slate-200 bg-white"
@@ -1365,17 +1380,6 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
             </div>
 
             <div className="min-h-0 overflow-y-auto px-4 pb-3">
-              <div className="mb-3 grid grid-cols-2 gap-x-6 gap-y-2">
-                <div>
-                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Node status</div>
-                  <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{selected.currentState}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Cell type</div>
-                  <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{selected.kind}</div>
-                </div>
-              </div>
-
               <div className="overflow-hidden border-t border-slate-200">
                 <div className="border-b border-slate-200 px-3 py-2">
                   <div>
@@ -1384,6 +1388,20 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
                   </div>
                 </div>
                 <div className="grid grid-cols-2 border-b border-slate-200">
+                  <div className="min-w-0 border-r border-slate-200 px-3 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Node status</div>
+                    <div className="mt-0.5 break-words text-[12px] font-semibold leading-snug text-slate-950">
+                      {selected.currentState}
+                    </div>
+                  </div>
+                  <div className="min-w-0 px-3 py-2">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Cell type</div>
+                    <div className="mt-0.5 break-words text-[12px] font-semibold leading-snug text-slate-950">
+                      {selected.kind}
+                    </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2">
                   <div className="border-r border-slate-200 px-3 py-2">
                     <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Start time</div>
                     <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{clockLabel(run.startedAt)}</div>
@@ -1391,16 +1409,6 @@ function InspectBottomSheet({ open, data, onClose, activeTab, onTabChange, onOpe
                   <div className="px-3 py-2">
                     <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">End time</div>
                     <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{clockLabel(run.finishedAt)}</div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2">
-                  <div className="border-r border-slate-200 px-3 py-2">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Downstream</div>
-                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{Array.isArray(downstream) ? downstream.length : "-"}</div>
-                  </div>
-                  <div className="px-3 py-2">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Upstream</div>
-                    <div className="mt-0.5 text-[12px] font-semibold text-slate-950">{Array.isArray(upstream) ? upstream.length : "-"}</div>
                   </div>
                 </div>
               </div>
@@ -1535,6 +1543,7 @@ function GraphCanvas({
   artifactPreview,
   artifactPreviewLoading,
   artifactPreviewError,
+  suppressLoadingOverlay = false,
 }) {
   const { nodes, edges } = useMemo(() => {
     const liveNodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
@@ -1573,7 +1582,7 @@ function GraphCanvas({
         <Controls showInteractive={false} fitViewOptions={FIT_OPTIONS} />
       </ReactFlow>
 
-      {(graphLoading || graphError) && (
+      {(graphLoading || graphError) && !suppressLoadingOverlay && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-white/75 px-6 text-center">
           <div className={`rounded-lg border px-4 py-3 text-[13px] shadow-sm ${graphError ? "border-rose-200 bg-rose-50 text-rose-700" : "border-slate-200 bg-white text-slate-500"}`}>
             {graphError || "Loading graph..."}
@@ -1595,6 +1604,7 @@ function GraphCanvas({
         error={panelError}
         tabLoading={panelTabLoading}
         tabError={panelTabError}
+        suppressLoadingOverlay={suppressLoadingOverlay}
       />
     </div>
   );
@@ -1680,8 +1690,8 @@ function ArtifactExplorerPage({
                     resizable: true,
                     minWidth: 120,
                   }}
-                  headerHeight={36}
-                  rowHeight={36}
+                  headerHeight={30}
+                  rowHeight={28}
                   animateRows
                   rowSelection="single"
                   suppressCellFocus
@@ -1743,9 +1753,9 @@ function HeaderActionButton({ title, icon: Icon, onClick, disabled = false }) {
       disabled={disabled}
       title={title}
       aria-label={title}
-      className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
     >
-      <Icon size={17} strokeWidth={1.9} />
+      <Icon size={16} strokeWidth={1.9} />
     </button>
   );
 }
@@ -1774,6 +1784,17 @@ export default function App() {
   const [artifactList, setArtifactList] = useState([]);
   const [artifactListLoading, setArtifactListLoading] = useState(false);
   const [isSynchronizedRefreshRunning, setIsSynchronizedRefreshRunning] = useState(false);
+  const [pageRefreshActive, setPageRefreshActive] = useState(false);
+  const runStatus = String(graphData?.run_status || "").trim().toLowerCase();
+  const hasSelectedNode = Boolean(selectedNodeId);
+  const isRunning = runStatus === "running";
+  const isFailed = runStatus === "failed";
+  const canRun = !isRunning;
+  const canResume = isFailed;
+  const canResetAll = isFailed;
+  const canResetNode = isFailed && hasSelectedNode;
+  const canResetUpstream = isFailed && hasSelectedNode;
+  const controlsDisabled = Boolean(pendingAction) || isRunning;
   const selectedNodeIdRef = useRef("");
   const sheetOpenRef = useRef(false);
   const activeTabRef = useRef("query");
@@ -1910,12 +1931,23 @@ export default function App() {
     }
   }
 
-  async function refreshGraphAndDrawer({ refreshActiveTab = false } = {}) {
-    await loadGraph();
-    if (!sheetOpenRef.current || !selectedNodeIdRef.current) return;
-    await loadNodePanel(selectedNodeIdRef.current);
-    if (refreshActiveTab && activeTabRef.current) {
-      await ensurePanelTabLoaded(activeTabRef.current, selectedNodeIdRef.current, { force: true });
+  async function refreshGraphAndDrawer({ refreshActiveTab = false, showPageRefresh = false } = {}) {
+    if (showPageRefresh) {
+      setPageRefreshActive(true);
+    }
+    setIsSynchronizedRefreshRunning(true);
+    try {
+      await loadGraph();
+      if (!sheetOpenRef.current || !selectedNodeIdRef.current) return;
+      await loadNodePanel(selectedNodeIdRef.current);
+      if (refreshActiveTab && activeTabRef.current) {
+        await ensurePanelTabLoaded(activeTabRef.current, selectedNodeIdRef.current, { force: true });
+      }
+    } finally {
+      setIsSynchronizedRefreshRunning(false);
+      if (showPageRefresh) {
+        setPageRefreshActive(false);
+      }
     }
   }
 
@@ -2002,10 +2034,7 @@ export default function App() {
         const code = String(payload.code || "").trim().toLowerCase();
         if (code === "pipeline_execution_finished" || code === "pipeline_execution_failed") {
           window.setTimeout(() => {
-            setIsSynchronizedRefreshRunning(true);
-            void refreshGraphAndDrawer({ refreshActiveTab: true }).finally(() => {
-              setIsSynchronizedRefreshRunning(false);
-            });
+            void refreshGraphAndDrawer({ refreshActiveTab: true, showPageRefresh: true });
           }, 150);
         }
       } catch (_error) {
@@ -2124,45 +2153,70 @@ export default function App() {
   return (
     <div className="relative h-screen w-full overflow-hidden bg-slate-100">
       <div className="flex h-full w-full min-h-0 flex-col bg-white">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
-          <div className="flex items-center gap-5">
+        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-2">
+          <div className="flex items-center gap-4">
             <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Pipeline ID</div>
-              <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-slate-950">{graphData?.pipeline_id || "-"}</div>
+              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Pipeline ID</div>
+              <div className="mt-0.5 text-[14px] font-semibold tracking-[-0.02em] text-slate-950">{graphData?.pipeline_id || "-"}</div>
             </div>
             <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Node Count</div>
-              <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-slate-950">{graphData?.node_count ?? "-"}</div>
+              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Node Count</div>
+              <div className="mt-0.5 text-[14px] font-semibold tracking-[-0.02em] text-slate-950">{graphData?.node_count ?? "-"}</div>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-4">
-              <div className="max-w-[240px] text-right">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run ID</div>
-                <div className="mt-1 truncate text-[13px] font-medium text-slate-700">{graphData?.run_id || "-"}</div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3">
+              <div className="max-w-[200px] text-right">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run ID</div>
+                <div className="mt-0.5 truncate text-[12px] font-medium text-slate-700">{graphData?.run_id || "-"}</div>
               </div>
-              <div className="max-w-[220px] text-right">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run Label</div>
-                <div className="mt-1 truncate text-[13px] font-medium text-slate-700">{graphData?.run_label || "-"}</div>
+              <div className="max-w-[180px] text-right">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run Label</div>
+                <div className="mt-0.5 truncate text-[12px] font-medium text-slate-700">{graphData?.run_label || "-"}</div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <HeaderActionButton title="Run" icon={CirclePlay} onClick={() => runAction("/api/run")} disabled={Boolean(pendingAction)} />
-              <HeaderActionButton title="Resume" icon={SkipForward} onClick={() => runAction("/api/resume")} disabled={Boolean(pendingAction)} />
-              <HeaderActionButton title="Reset All" icon={RefreshCw} onClick={() => runAction("/api/reset-all")} disabled={Boolean(pendingAction)} />
-              <HeaderActionButton title="Reset Node" icon={RotateCcw} onClick={() => runAction("/api/reset-node", selectedNodeId)} disabled={Boolean(pendingAction) || !selectedNodeId} />
-              <HeaderActionButton title="Reset Upstream" icon={History} onClick={() => runAction("/api/reset-upstream", selectedNodeId)} disabled={Boolean(pendingAction) || !selectedNodeId} />
+            <div className="flex items-center gap-1.5">
+              <HeaderActionButton
+                title="Run"
+                icon={CirclePlay}
+                onClick={() => runAction("/api/run")}
+                disabled={controlsDisabled || !canRun}
+              />
+              <HeaderActionButton
+                title="Resume"
+                icon={SkipForward}
+                onClick={() => runAction("/api/resume")}
+                disabled={controlsDisabled || !canResume}
+              />
+              <HeaderActionButton
+                title="Reset All"
+                icon={RefreshCw}
+                onClick={() => runAction("/api/reset-all")}
+                disabled={controlsDisabled || !canResetAll}
+              />
+              <HeaderActionButton
+                title="Reset Node"
+                icon={RotateCcw}
+                onClick={() => runAction("/api/reset-node", selectedNodeId)}
+                disabled={controlsDisabled || !canResetNode}
+              />
+              <HeaderActionButton
+                title="Reset Upstream"
+                icon={History}
+                onClick={() => runAction("/api/reset-upstream", selectedNodeId)}
+                disabled={controlsDisabled || !canResetUpstream}
+              />
               <button
                 type="button"
                 onClick={() => {
                   setArtifactPageOpen(true);
                   void loadArtifactList();
                 }}
-                className="inline-flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-[13px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+                className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-[12px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
               >
-                <Database size={16} strokeWidth={1.9} />
+                <Database size={15} strokeWidth={1.9} />
                 <span>Artifacts</span>
               </button>
             </div>
@@ -2194,10 +2248,19 @@ export default function App() {
             artifactPreview={artifactPreview}
             artifactPreviewLoading={artifactPreviewLoading}
             artifactPreviewError={artifactPreviewError}
+            suppressLoadingOverlay={pageRefreshActive}
           />
         </ReactFlowProvider>
         </div>
       </div>
+
+      {pageRefreshActive ? (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-white/70">
+          <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-[13px] text-slate-600 shadow-sm">
+            Refreshing pipeline state...
+          </div>
+        </div>
+      ) : null}
 
       <ArtifactExplorerPage
         open={artifactPageOpen}

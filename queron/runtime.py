@@ -5,7 +5,10 @@ from pathlib import Path
 import uuid
 from typing import Any, Callable
 
-from duckdb_driver import connect_duckdb
+try:
+    from .duckdb_driver import connect_duckdb
+except ImportError:
+    from duckdb_driver import connect_duckdb
 
 from . import adapters
 from .bindings import resolve_runtime_binding_value
@@ -1243,6 +1246,7 @@ class PipelineRuntime:
                 node=node,
                 details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
             )
+        local_artifact_name = str(node.target_table or "").strip() or None
         source_connection_id = self._resolve_postgres_source_connection_id(node, binding)
         response = postgres_core.egress_query_from_duckdb(
             target_connection_id=source_connection_id,
@@ -1250,18 +1254,19 @@ class PipelineRuntime:
             sql=sql,
             target_table=str(node.target_relation or ""),
             mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
         )
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
             message=f"Wrote {response.row_count} row(s) to PostgreSQL target {response.target_name}.",
             node=node,
-            artifact_name=response.target_name,
+            artifact_name=local_artifact_name or response.target_name,
             details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower()},
         )
         return NodeExecutionResult(
             node_name=node.name,
             node_kind=node.kind,
-            artifact_name=response.target_name,
+            artifact_name=local_artifact_name or response.target_name,
             row_count_in=int(response.row_count),
             row_count_out=int(response.row_count),
             warnings=self._normalize_runtime_warnings(
@@ -1286,6 +1291,7 @@ class PipelineRuntime:
                 node=node,
                 details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
             )
+        local_artifact_name = str(node.target_table or "").strip() or None
         source_connection_id = self._resolve_db2_source_connection_id(node, binding)
         response = db2_core.egress_query_from_duckdb(
             target_connection_id=source_connection_id,
@@ -1293,18 +1299,19 @@ class PipelineRuntime:
             sql=sql,
             target_table=str(node.target_relation or ""),
             mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
         )
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
             message=f"Wrote {response.row_count} row(s) to DB2 target {response.target_name}.",
             node=node,
-            artifact_name=response.target_name,
+            artifact_name=local_artifact_name or response.target_name,
             details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower()},
         )
         return NodeExecutionResult(
             node_name=node.name,
             node_kind=node.kind,
-            artifact_name=response.target_name,
+            artifact_name=local_artifact_name or response.target_name,
             row_count_in=int(response.row_count),
             row_count_out=int(response.row_count),
             warnings=self._normalize_runtime_warnings(
@@ -1328,25 +1335,41 @@ class PipelineRuntime:
                 node=node,
                 details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
             )
-        response = duckdb_core.export_query_to_parquet(
-            database=self.duckdb_path,
-            sql=sql,
-            output_path=str(node.output_path or ""),
-            overwrite=bool(node.overwrite),
-            compression=str(node.compression or "").strip() or None,
-            working_dir=self.working_dir,
-        )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        if local_artifact_name:
+            response = duckdb_core.export_query_to_parquet_with_artifact(
+                database=self.duckdb_path,
+                sql=sql,
+                output_path=str(node.output_path or ""),
+                target_table=local_artifact_name,
+                overwrite=bool(node.overwrite),
+                compression=str(node.compression or "").strip() or None,
+                working_dir=self.working_dir,
+            )
+        else:
+            response = duckdb_core.export_query_to_parquet(
+                database=self.duckdb_path,
+                sql=sql,
+                output_path=str(node.output_path or ""),
+                overwrite=bool(node.overwrite),
+                compression=str(node.compression or "").strip() or None,
+                working_dir=self.working_dir,
+            )
         self._log_event(
             code=LogCode.NODE_EXPORT_WRITTEN,
             message=f"Exported {response.row_count} row(s) to {response.output_path}.",
             node=node,
-            artifact_name=response.output_path,
-            details={"row_count": int(response.row_count), "format": response.export_format},
+            artifact_name=local_artifact_name or response.output_path,
+            details={
+                "row_count": int(response.row_count),
+                "format": response.export_format,
+                "output_path": response.output_path,
+            },
         )
         return NodeExecutionResult(
             node_name=node.name,
             node_kind=node.kind,
-            artifact_name=response.output_path,
+            artifact_name=local_artifact_name or response.output_path,
             row_count_in=int(response.row_count),
             row_count_out=int(response.row_count),
             artifact_size_bytes=response.file_size_bytes,
@@ -1355,7 +1378,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EXPORT_WARNING,
                 default_source="connector",
             ),
-            details={"format": response.export_format},
+            details={"format": response.export_format, "output_path": response.output_path},
         )
 
     def _execute_csv_egress(self, node: NodeSpec) -> NodeExecutionResult:
@@ -1371,26 +1394,43 @@ class PipelineRuntime:
                 node=node,
                 details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
             )
-        response = duckdb_core.export_query_to_csv(
-            database=self.duckdb_path,
-            sql=sql,
-            output_path=str(node.output_path or ""),
-            overwrite=bool(node.overwrite),
-            header=bool(node.header if node.header is not None else True),
-            delimiter=str(node.delimiter or ","),
-            working_dir=self.working_dir,
-        )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        if local_artifact_name:
+            response = duckdb_core.export_query_to_csv_with_artifact(
+                database=self.duckdb_path,
+                sql=sql,
+                output_path=str(node.output_path or ""),
+                target_table=local_artifact_name,
+                overwrite=bool(node.overwrite),
+                header=bool(node.header if node.header is not None else True),
+                delimiter=str(node.delimiter or ","),
+                working_dir=self.working_dir,
+            )
+        else:
+            response = duckdb_core.export_query_to_csv(
+                database=self.duckdb_path,
+                sql=sql,
+                output_path=str(node.output_path or ""),
+                overwrite=bool(node.overwrite),
+                header=bool(node.header if node.header is not None else True),
+                delimiter=str(node.delimiter or ","),
+                working_dir=self.working_dir,
+            )
         self._log_event(
             code=LogCode.NODE_EXPORT_WRITTEN,
             message=f"Exported {response.row_count} row(s) to {response.output_path}.",
             node=node,
-            artifact_name=response.output_path,
-            details={"row_count": int(response.row_count), "format": response.export_format},
+            artifact_name=local_artifact_name or response.output_path,
+            details={
+                "row_count": int(response.row_count),
+                "format": response.export_format,
+                "output_path": response.output_path,
+            },
         )
         return NodeExecutionResult(
             node_name=node.name,
             node_kind=node.kind,
-            artifact_name=response.output_path,
+            artifact_name=local_artifact_name or response.output_path,
             row_count_in=int(response.row_count),
             row_count_out=int(response.row_count),
             artifact_size_bytes=response.file_size_bytes,
@@ -1399,7 +1439,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EXPORT_WARNING,
                 default_source="connector",
             ),
-            details={"format": response.export_format},
+            details={"format": response.export_format, "output_path": response.output_path},
         )
 
     def _execute_jsonl_egress(self, node: NodeSpec) -> NodeExecutionResult:
@@ -1415,24 +1455,39 @@ class PipelineRuntime:
                 node=node,
                 details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
             )
-        response = duckdb_core.export_query_to_jsonl(
-            database=self.duckdb_path,
-            sql=sql,
-            output_path=str(node.output_path or ""),
-            overwrite=bool(node.overwrite),
-            working_dir=self.working_dir,
-        )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        if local_artifact_name:
+            response = duckdb_core.export_query_to_jsonl_with_artifact(
+                database=self.duckdb_path,
+                sql=sql,
+                output_path=str(node.output_path or ""),
+                target_table=local_artifact_name,
+                overwrite=bool(node.overwrite),
+                working_dir=self.working_dir,
+            )
+        else:
+            response = duckdb_core.export_query_to_jsonl(
+                database=self.duckdb_path,
+                sql=sql,
+                output_path=str(node.output_path or ""),
+                overwrite=bool(node.overwrite),
+                working_dir=self.working_dir,
+            )
         self._log_event(
             code=LogCode.NODE_EXPORT_WRITTEN,
             message=f"Exported {response.row_count} row(s) to {response.output_path}.",
             node=node,
-            artifact_name=response.output_path,
-            details={"row_count": int(response.row_count), "format": response.export_format},
+            artifact_name=local_artifact_name or response.output_path,
+            details={
+                "row_count": int(response.row_count),
+                "format": response.export_format,
+                "output_path": response.output_path,
+            },
         )
         return NodeExecutionResult(
             node_name=node.name,
             node_kind=node.kind,
-            artifact_name=response.output_path,
+            artifact_name=local_artifact_name or response.output_path,
             row_count_in=int(response.row_count),
             row_count_out=int(response.row_count),
             artifact_size_bytes=response.file_size_bytes,
@@ -1441,7 +1496,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EXPORT_WARNING,
                 default_source="connector",
             ),
-            details={"format": response.export_format},
+            details={"format": response.export_format, "output_path": response.output_path},
         )
 
     def _execute_scalar_duckdb_query(self, node: NodeSpec) -> Any:

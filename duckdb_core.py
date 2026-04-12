@@ -2012,6 +2012,111 @@ def get_table_artifact_size_bytes(
         conn.close()
 
 
+def materialize_egress_artifact(
+    *,
+    database: str,
+    sql: str,
+    target_table: str,
+    replace: bool = True,
+) -> int:
+    normalized_target = str(target_table or "").strip()
+    if not normalized_target:
+        raise RuntimeError("Egress artifact target table is required.")
+    conn = _duckdb_connection(str(database))
+    try:
+        schema, _table = _split_target_table_name(normalized_target)
+        conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(schema)}")
+        target_ident = _quote_compound_identifier(normalized_target)
+        if replace:
+            conn.execute(f"DROP TABLE IF EXISTS {target_ident}")
+        conn.execute(f"CREATE TABLE {target_ident} AS {_strip_sql_terminator(sql)}")
+        row = conn.execute(f"SELECT COUNT(*) FROM {target_ident}").fetchone()
+    finally:
+        conn.close()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def export_query_to_parquet_with_artifact(
+    *,
+    database: str,
+    sql: str,
+    output_path: str,
+    target_table: str,
+    overwrite: bool = False,
+    compression: str | None = None,
+    working_dir: str | None = None,
+) -> DuckDbExportResponse:
+    materialize_egress_artifact(
+        database=database,
+        sql=sql,
+        target_table=target_table,
+        replace=True,
+    )
+    target_ident = _quote_compound_identifier(target_table)
+    return export_query_to_parquet(
+        database=database,
+        sql=f"SELECT * FROM {target_ident}",
+        output_path=output_path,
+        overwrite=overwrite,
+        compression=compression,
+        working_dir=working_dir,
+    )
+
+
+def export_query_to_csv_with_artifact(
+    *,
+    database: str,
+    sql: str,
+    output_path: str,
+    target_table: str,
+    overwrite: bool = False,
+    header: bool = True,
+    delimiter: str = ",",
+    working_dir: str | None = None,
+) -> DuckDbExportResponse:
+    materialize_egress_artifact(
+        database=database,
+        sql=sql,
+        target_table=target_table,
+        replace=True,
+    )
+    target_ident = _quote_compound_identifier(target_table)
+    return export_query_to_csv(
+        database=database,
+        sql=f"SELECT * FROM {target_ident}",
+        output_path=output_path,
+        overwrite=overwrite,
+        header=header,
+        delimiter=delimiter,
+        working_dir=working_dir,
+    )
+
+
+def export_query_to_jsonl_with_artifact(
+    *,
+    database: str,
+    sql: str,
+    output_path: str,
+    target_table: str,
+    overwrite: bool = False,
+    working_dir: str | None = None,
+) -> DuckDbExportResponse:
+    materialize_egress_artifact(
+        database=database,
+        sql=sql,
+        target_table=target_table,
+        replace=True,
+    )
+    target_ident = _quote_compound_identifier(target_table)
+    return export_query_to_jsonl(
+        database=database,
+        sql=f"SELECT * FROM {target_ident}",
+        output_path=output_path,
+        overwrite=overwrite,
+        working_dir=working_dir,
+    )
+
+
 def export_query_to_parquet(
     *,
     database: str,

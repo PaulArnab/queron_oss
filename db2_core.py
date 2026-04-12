@@ -725,6 +725,7 @@ def egress_query_from_duckdb(
     target_table: str,
     mode: str = "replace",
     chunk_size: int = 1000,
+    artifact_table: str | None = None,
 ) -> ConnectorEgressResponse:
     normalized_mode = str(mode or "replace").strip().lower()
     if normalized_mode not in {"replace", "append", "create", "create_append"}:
@@ -742,6 +743,19 @@ def egress_query_from_duckdb(
     schema_name, table_name, normalized_target_table = _normalize_db2_target_relation(target_table)
     quoted_target_table = _quote_compound_identifier(normalized_target_table)
     try:
+        if artifact_table:
+            try:
+                from . import duckdb_core
+            except ImportError:
+                import duckdb_core
+            duckdb_core.materialize_egress_artifact(
+                database=str(duckdb_database),
+                sql=sql,
+                target_table=str(artifact_table),
+                replace=True,
+            )
+            sql = f"SELECT * FROM {duckdb_core._quote_compound_identifier(str(artifact_table))}"
+
         duck_conn = connect_duckdb(str(duckdb_database))
         duck_cur = duck_conn.cursor()
         duck_cur.execute(_strip_sql_terminator(sql))

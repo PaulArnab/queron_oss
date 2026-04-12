@@ -558,17 +558,19 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
     node_names: set[str] = set()
     out_producers: dict[str, NodeSpec] = {}
     normalized_out_producers: dict[str, tuple[str, NodeSpec]] = {}
-    artifact_node_kinds = {"postgres.ingress", "db2.ingress", "python.ingress", *list(_ALL_FILE_INGRESS_KINDS), "model.sql"}
-    query_node_kinds = {
+    artifact_node_kinds = {
+        "postgres.ingress",
+        "db2.ingress",
+        "python.ingress",
+        *list(_ALL_FILE_INGRESS_KINDS),
         "model.sql",
-        "check.count",
-        "check.boolean",
         "postgres.egress",
         "db2.egress",
         "parquet.egress",
         "csv.egress",
         "jsonl.egress",
     }
+    query_node_kinds = {"model.sql", "check.count", "check.boolean", *list(artifact_node_kinds)}
     supported_kinds = artifact_node_kinds | query_node_kinds
     valid_count_operators = {"=", "==", "!=", ">", ">=", "<", "<="}
     valid_egress_modes = {"replace", "append", "create", "create_append"}
