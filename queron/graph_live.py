@@ -17,6 +17,7 @@ from .api import (
     inspect_dag,
     inspect_node,
     inspect_node_history,
+    inspect_node_logs,
     inspect_node_query,
     list_existing_outputs_for_file,
     reset_all,
@@ -322,6 +323,32 @@ def get_node_history_panel(
             "error_message": history.error_message,
             "states": history.states,
         },
+    }
+
+
+def get_node_logs_panel(
+    artifact_path: str | Path,
+    node_name: str,
+    *,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    tail: int | None = None,
+) -> dict[str, Any]:
+    normalized_run_id, normalized_run_label = _normalized_selection(run_id, run_label)
+    logs = inspect_node_logs(
+        artifact_path,
+        node_name,
+        run_id=normalized_run_id,
+        run_label=normalized_run_label,
+        tail=tail,
+    )
+    return {
+        "ok": True,
+        "node_name": node_name,
+        "run_id": logs.run_id,
+        "run_label": logs.run_label,
+        "run_status": logs.run_status,
+        "logs": logs.logs,
     }
 
 
@@ -718,6 +745,7 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
         if parsed.path in {
             "/api/node/query",
             "/api/node/history",
+            "/api/node/logs",
             "/api/node/upstream",
             "/api/node/downstream",
             "/api/node/artifact-preview",
@@ -734,6 +762,15 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
                     payload = get_node_query_panel(self._graph_context().artifact_path, node_name, run_id=run_id, run_label=run_label)
                 elif parsed.path == "/api/node/history":
                     payload = get_node_history_panel(self._graph_context().artifact_path, node_name, run_id=run_id, run_label=run_label)
+                elif parsed.path == "/api/node/logs":
+                    tail = int(str((params.get("tail") or [200])[0] or "200").strip() or "200")
+                    payload = get_node_logs_panel(
+                        self._graph_context().artifact_path,
+                        node_name,
+                        run_id=run_id,
+                        run_label=run_label,
+                        tail=tail,
+                    )
                 elif parsed.path == "/api/node/upstream":
                     payload = get_node_upstream_panel(self._graph_context().artifact_path, node_name, run_id=run_id, run_label=run_label)
                 elif parsed.path == "/api/node/artifact-preview":

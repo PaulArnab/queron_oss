@@ -551,6 +551,8 @@ function buildInspectPanelDataFromApi(payload) {
     downstream: null,
     historyInitial: null,
     historyLive: [],
+    logsInitial: null,
+    logsLive: [],
   };
 }
 
@@ -664,6 +666,18 @@ function patchGraphDataWithEvent(current, event) {
 function patchPanelDataWithEvent(current, event, selectedNodeId) {
   if (!current || !current.selectedStatic || !current.selectedLive || !event || event.type !== "runtime_log") return current;
   const eventNodeName = String(event.node_name || event.node_id || "").trim();
+  const logEvent =
+    eventNodeName && eventNodeName === selectedNodeId
+      ? {
+          timestamp: event.timestamp || null,
+          code: event.code || null,
+          severity: event.severity || null,
+          message: event.message || null,
+        }
+      : null;
+  const nextLogsLive = logEvent
+    ? [logEvent, ...(Array.isArray(current.logsLive) ? current.logsLive : [])]
+    : current.logsLive;
   if (!eventNodeName || eventNodeName !== selectedNodeId) {
     if (String(event.code || "").trim().toLowerCase() === "pipeline_execution_started") {
       return {
@@ -688,6 +702,8 @@ function patchPanelDataWithEvent(current, event, selectedNodeId) {
         },
         historyInitial: [],
         historyLive: [],
+        logsInitial: [],
+        logsLive: nextLogsLive || [],
       };
     }
     if (String(event.code || "").trim().toLowerCase() === "pipeline_execution_failed") {
@@ -698,6 +714,7 @@ function patchPanelDataWithEvent(current, event, selectedNodeId) {
           runId: event.run_id || current.run?.runId || null,
           runStatus: "failed",
         },
+        logsLive: nextLogsLive,
       };
     }
     return current;
@@ -763,6 +780,7 @@ function patchPanelDataWithEvent(current, event, selectedNodeId) {
     run: nextRun,
     selectedLive: nextSelected,
     historyLive: nextHistoryLive,
+    logsLive: nextLogsLive,
   };
 }
 
@@ -1317,6 +1335,10 @@ function InspectBottomSheet({
     ...(Array.isArray(data.historyLive) ? data.historyLive : []),
     ...(Array.isArray(data.historyInitial) ? data.historyInitial : []),
   ];
+  const logs = [
+    ...(Array.isArray(data.logsLive) ? data.logsLive : []),
+    ...(Array.isArray(data.logsInitial) ? data.logsInitial : []),
+  ];
   const selected = { ...data.selectedStatic, ...data.selectedLive };
   const tabItems = activeTab === "downstream" ? (downstream || []) : (upstream || []);
   const selectedTone = kindDotStyle(selected.tone);
@@ -1469,6 +1491,17 @@ function InspectBottomSheet({
               </button>
               <button
                 type="button"
+                onClick={() => onTabChange("logs")}
+                className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
+                  activeTab === "logs"
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                }`}
+              >
+                Logs
+              </button>
+              <button
+                type="button"
                 onClick={() => onTabChange("upstream")}
                 className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
                   activeTab === "upstream"
@@ -1511,6 +1544,50 @@ function InspectBottomSheet({
                   blocked={dataTabBlocked}
                   blockedMessage="Data preview is unavailable while the pipeline is running."
                 />
+              ) : activeTab === "logs" ? (
+                logs.length ? (
+                  <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto px-2 py-1 text-[12px] text-slate-600">
+                    {logs.map((entry, index) => (
+                      <div
+                        key={`${entry.timestamp || ""}-${index}`}
+                        className={`rounded-md border px-3 py-2 ${
+                          String(entry.severity || "").toLowerCase() === "error"
+                            ? "border-rose-200 bg-rose-50"
+                            : String(entry.severity || "").toLowerCase() === "warning"
+                              ? "border-amber-200 bg-amber-50"
+                              : "border-slate-200 bg-white"
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                          <span>{entry.severity || "info"}</span>
+                          <span className="text-slate-300">•</span>
+                          <span>{entry.code || "log"}</span>
+                          {entry.timestamp ? (
+                            <>
+                              <span className="text-slate-300">•</span>
+                              <span>{entry.timestamp}</span>
+                            </>
+                          ) : null}
+                        </div>
+                        <div
+                          className={`mt-1 text-[12px] font-medium ${
+                            String(entry.severity || "").toLowerCase() === "error"
+                              ? "text-rose-700"
+                              : String(entry.severity || "").toLowerCase() === "warning"
+                                ? "text-amber-800"
+                                : "text-slate-700"
+                          }`}
+                        >
+                          {entry.message || "-"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
+                    No log entries are available for this node.
+                  </div>
+                )
               ) : activeTab === "query" ? (
                 <QueryPanel resolvedSql={selected.resolvedSql} />
               ) : (
@@ -1839,6 +1916,7 @@ export default function App() {
       let endpoint = "";
       if (tabName === "query") endpoint = `/api/node/query?node_name=${encodeURIComponent(nodeId)}`;
       else if (tabName === "history") endpoint = `/api/node/history?node_name=${encodeURIComponent(nodeId)}`;
+      else if (tabName === "logs") endpoint = `/api/node/logs?node_name=${encodeURIComponent(nodeId)}&tail=200`;
       else if (tabName === "upstream") endpoint = `/api/node/upstream?node_name=${encodeURIComponent(nodeId)}`;
       else if (tabName === "downstream") endpoint = `/api/node/downstream?node_name=${encodeURIComponent(nodeId)}`;
       else return;
@@ -1854,6 +1932,12 @@ export default function App() {
               ...(current.selectedStatic || {}),
               resolvedSql: payload?.query?.resolved_sql || null,
             },
+          };
+        }
+        if (tabName === "logs") {
+          return {
+            ...current,
+            logsInitial: Array.isArray(payload?.logs) ? payload.logs : [],
           };
         }
         if (tabName === "history") {
@@ -1995,6 +2079,7 @@ export default function App() {
     if (!current) return;
     if (!force && tabName === "query" && current.selectedStatic?.resolvedSql) return;
     if (!force && tabName === "history" && Array.isArray(current.historyInitial)) return;
+    if (!force && tabName === "logs" && Array.isArray(current.logsInitial)) return;
     if (!force && tabName === "upstream" && Array.isArray(current.upstream)) return;
     if (!force && tabName === "downstream" && Array.isArray(current.downstream)) return;
     await loadNodeTab(nodeId, tabName);

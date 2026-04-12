@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -8,7 +9,7 @@ from typing import Any, Callable
 from .compiler import CompiledPipeline, compile_pipeline_code
 from .executor import _select_downstream_nodes, _select_upstream_nodes, execute_pipeline, execute_selected_nodes
 from .runtime import PipelineRuntime
-from .runtime_models import LogCode, PipelineLogEvent, build_log_event
+from .runtime_models import LogCode, PipelineLogEvent, build_log_event, normalize_log_event
 from .specs import PipelineSpec
 from .templates import build_init_config_text, build_init_gitignore_text, build_init_pipeline_text
 
@@ -82,6 +83,19 @@ class InspectNodeHistoryResult:
     finished_at: str | None = None
     error_message: str | None = None
     states: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class InspectNodeLogResult:
+    pipeline_path: str
+    artifact_path: str
+    compile_id: str | None = None
+    run_id: str | None = None
+    run_label: str | None = None
+    run_status: str | None = None
+    node_name: str | None = None
+    node_kind: str | None = None
+    logs: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -1125,6 +1139,90 @@ def inspect_node_history(
         finished_at=str(node_run.get("finished_at") or "").strip() or None,
         error_message=str(node_run.get("error_message") or "").strip() or None,
         states=states,
+    )
+
+
+def inspect_node_logs(
+    artifact_path: str | Path,
+    node_name: str,
+    *,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    tail: int | None = None,
+) -> InspectNodeLogResult:
+    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
+        artifact_path,
+        limit=None,
+    )
+    if tail is not None and int(tail) <= 0:
+        raise RuntimeError("tail must be a positive integer.")
+
+    selected_run = _select_pipeline_run_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        run_id=run_id,
+        run_label=run_label,
+        default_to_latest=True,
+    )
+    if selected_run is None:
+        raise RuntimeError("No runs were found for this pipeline.")
+
+    contract = _load_compiled_contract_for_inspection(
+        resolved_artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+    )
+    raw_nodes, _edges = _contract_nodes_and_edges(contract)
+    nodes_by_name: dict[str, dict[str, Any]] = {}
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        name = str(raw_node.get("name") or "").strip()
+        if name:
+            nodes_by_name[name] = raw_node
+
+    normalized_node_name = str(node_name or "").strip()
+    if not normalized_node_name:
+        raise RuntimeError("node_name is required.")
+    if normalized_node_name not in nodes_by_name:
+        raise RuntimeError(f"Node '{normalized_node_name}' was not found in the compiled pipeline.")
+
+    log_path_text = str(selected_run.get("log_path") or "").strip()
+    if not log_path_text:
+        raise RuntimeError("The selected run does not have a persisted log file.")
+    resolved_log_path = Path(log_path_text).expanduser().resolve()
+    if not resolved_log_path.exists() or not resolved_log_path.is_file():
+        raise RuntimeError(f"Log file '{resolved_log_path}' was not found.")
+
+    logs: list[dict[str, Any]] = []
+    lines = resolved_log_path.read_text(encoding="utf-8").splitlines()
+    if tail is not None:
+        lines = lines[-int(tail) :]
+    for line in lines:
+        text = str(line or "").strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except Exception:
+            continue
+        try:
+            event = normalize_log_event(payload)
+        except Exception:
+            continue
+        if str(event.node_name or "").strip() != normalized_node_name:
+            continue
+        logs.append(event.model_dump())
+
+    node_payload = nodes_by_name[normalized_node_name]
+    return InspectNodeLogResult(
+        pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
+        artifact_path=str(resolved_artifact_path),
+        compile_id=contract.compile_id,
+        run_id=str(selected_run.get("run_id") or "").strip() or None,
+        run_label=str(selected_run.get("run_label") or "").strip() or None,
+        run_status=str(selected_run.get("status") or "").strip() or None,
+        node_name=normalized_node_name,
+        node_kind=str(node_payload.get("kind") or "").strip() or None,
+        logs=logs,
     )
 
 
