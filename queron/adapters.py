@@ -42,6 +42,8 @@ def ensure_postgres_binding(binding: dict[str, Any], config_name: str) -> str:
         "username": binding.get("username", "postgres"),
         "password": binding.get("password", ""),
         "url": binding.get("url"),
+        "connect_timeout_seconds": binding.get("connect_timeout_seconds"),
+        "statement_timeout_ms": binding.get("statement_timeout_ms"),
         "save_password": False,
     }
     postgres_core.connect(PgConnectRequest(**payload))
@@ -65,6 +67,7 @@ def ensure_db2_binding(binding: dict[str, Any], config_name: str) -> str:
         "username": binding.get("username", "db2inst1"),
         "password": binding.get("password", ""),
         "url": binding.get("url"),
+        "connect_timeout_seconds": binding.get("connect_timeout_seconds"),
         "save_password": False,
     }
     db2_core.connect(Db2ConnectRequest(**payload))

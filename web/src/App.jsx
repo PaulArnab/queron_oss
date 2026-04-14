@@ -1705,6 +1705,7 @@ function ArtifactExplorerPage({
   onClose,
   onExecute,
   result,
+  loading = false,
   error,
   selectedNodeId,
   selectedArtifactName,
@@ -1714,6 +1715,15 @@ function ArtifactExplorerPage({
   runId,
 }) {
   const artifactBlocked = !artifactsLoading && (!artifacts || artifacts.length === 0);
+  const selectedArtifact = Array.isArray(artifacts)
+    ? artifacts.find((artifact) => artifact.artifactName === selectedArtifactName) || null
+    : null;
+  const selectedArtifactLabel = String(selectedArtifactName || "").trim()
+    .replace(/^"+|"+$/g, "")
+    .split(".")
+    .slice(-1)[0];
+  const hasRows = Array.isArray(result?.rowData) && result.rowData.length > 0;
+  const hasQueryResult = Boolean(result);
   return (
     <div
       className={`pointer-events-none absolute inset-0 z-40 transform-gpu bg-white/80 transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
@@ -1749,10 +1759,76 @@ function ArtifactExplorerPage({
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[280px_minmax(0,1fr)]">
+          <aside className="flex min-h-0 flex-col border-r border-slate-200 bg-slate-50">
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Available Tables</div>
+              <div className="mt-3 space-y-2">
+                {artifactsLoading ? (
+                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[12px] text-slate-500 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+                    Loading artifacts...
+                  </div>
+                ) : artifactBlocked ? (
+                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[12px] text-slate-500 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+                    Artifacts are available after the run finishes.
+                  </div>
+                ) : Array.isArray(artifacts) && artifacts.length ? (
+                  [...artifacts]
+                    .sort((left, right) => {
+                      const leftName = String(left?.artifactName || "")
+                        .replace(/^"+|"+$/g, "")
+                        .split(".")
+                        .slice(-1)[0]
+                        .toLowerCase();
+                      const rightName = String(right?.artifactName || "")
+                        .replace(/^"+|"+$/g, "")
+                        .split(".")
+                        .slice(-1)[0]
+                        .toLowerCase();
+                      return leftName.localeCompare(rightName);
+                    })
+                    .map((artifact) => {
+                    const displayName = String(artifact.artifactName || "")
+                      .replace(/^"+|"+$/g, "")
+                      .split(".")
+                      .slice(-1)[0];
+                    const tone = normalizeTone(artifact.nodeKind || "", artifact.nodeName || "");
+                    const dotStyle = kindDotStyle(tone);
+                    return (
+                      <button
+                        key={artifact.artifactName}
+                        type="button"
+                        onClick={() => onSelectArtifact?.(artifact)}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left shadow-[0_1px_3px_rgba(15,23,42,0.04)] transition-transform transition-colors duration-150 hover:border-slate-300 hover:bg-slate-50 active:scale-[0.985] active:bg-slate-100"
+                      >
+                        <div className="flex items-start gap-2">
+                          <span
+                            className="mt-[6px] h-2 w-2 shrink-0 rounded-full"
+                            style={{ backgroundColor: dotStyle.bg }}
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-[12px] font-semibold text-slate-900">
+                              {displayName || artifact.artifactName}
+                            </div>
+                            <div className="mt-0.5 truncate text-[10px] text-slate-500">
+                              {artifact.nodeName || selectedNodeId || "selected run"}
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[12px] text-slate-500 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
+                    No materialized artifacts are available for the selected run.
+                  </div>
+                )}
+              </div>
+            </div>
+          </aside>
+
           <main className="flex min-h-0 flex-col bg-white">
             <div className="border-b border-slate-200 px-6 py-5">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">SQL</div>
               <textarea
                 value={query}
                 onChange={(event) => onQueryChange(event.target.value)}
@@ -1763,7 +1839,7 @@ function ArtifactExplorerPage({
                   }
                 }}
                 placeholder={"SHOW TABLES\nSELECT * FROM main.policy_core LIMIT 25\nSELECT * FROM main.policy_core WHERE category = 'policy' ORDER BY metric_value DESC\nSELECT entity_key, metric_value FROM main.policy_core WHERE metric_value > 50 LIMIT 5"}
-                className="mt-3 h-28 w-full resize-none bg-transparent px-0 py-0 text-[14px] leading-6 text-slate-800 outline-none placeholder:text-slate-300"
+                className="h-48 w-full resize-none bg-transparent px-0 py-0 text-[12px] leading-6 text-slate-800 outline-none placeholder:text-slate-300"
                 spellCheck={false}
               />
               {error ? <div className="mt-3 text-[13px] text-rose-600">{error}</div> : null}
@@ -1774,75 +1850,48 @@ function ArtifactExplorerPage({
               <div className="h-full p-4">
                 <div className="relative flex h-full w-full flex-col overflow-hidden bg-white">
                   <div className="min-h-0 flex-1 overflow-hidden">
-                    <div className="ag-theme-quartz loom-grid min-h-0 h-full flex-1 overflow-hidden">
-                      <AgGridReact
-                        rowData={result?.rowData || []}
-                        columnDefs={result?.columnDefs || []}
-                        defaultColDef={{
-                          sortable: true,
-                          filter: true,
-                          resizable: true,
-                          minWidth: 120,
-                        }}
-                        headerHeight={30}
-                        rowHeight={28}
-                        animateRows
-                        rowSelection="single"
-                        suppressCellFocus
-                      />
-                    </div>
+                    {loading ? (
+                      <div className="flex h-full items-center justify-center px-8 text-center">
+                        <div className="flex max-w-[280px] flex-col items-center">
+                          <div className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-slate-500" />
+                          <div className="mt-3 text-[13px] font-medium text-slate-400">
+                            Running query...
+                          </div>
+                        </div>
+                      </div>
+                    ) : hasQueryResult && hasRows ? (
+                      <div className="ag-theme-quartz loom-grid min-h-0 h-full flex-1 overflow-hidden">
+                        <AgGridReact
+                          rowData={result?.rowData || []}
+                          columnDefs={result?.columnDefs || []}
+                          defaultColDef={{
+                            sortable: true,
+                            filter: true,
+                            resizable: true,
+                            minWidth: 120,
+                          }}
+                          headerHeight={30}
+                          rowHeight={28}
+                          animateRows
+                          rowSelection="single"
+                          suppressCellFocus
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex h-full items-center justify-center px-8 text-center">
+                        <div className="flex max-w-[280px] flex-col items-center">
+                          <Database size={24} strokeWidth={1.7} className="text-slate-300" />
+                          <div className="mt-3 text-[13px] font-medium text-slate-400">
+                            {hasQueryResult ? "No rows to show" : "Run a query to see results"}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             </div>
           </main>
-
-          <aside className="flex min-h-0 flex-col border-l border-slate-200 bg-slate-50">
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Available Tables</div>
-              <div className="mt-4 space-y-2">
-                {artifactsLoading ? (
-                  <div className="rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-[12px] text-slate-500">
-                    Loading artifacts...
-                  </div>
-                ) : artifactBlocked ? (
-                  <div className="rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-[12px] text-slate-500">
-                    Artifacts are available after the run finishes.
-                  </div>
-                ) : Array.isArray(artifacts) && artifacts.length ? (
-                  artifacts.map((artifact) => {
-                    const active = artifact.artifactName === selectedArtifactName;
-                    const displayName = String(artifact.artifactName || "")
-                      .split(".")
-                      .slice(-1)[0];
-                    return (
-                      <button
-                        key={artifact.artifactName}
-                        type="button"
-                        onClick={() => onSelectArtifact?.(artifact)}
-                        className={`w-full rounded-lg border px-3 py-2 text-left transition ${
-                          active
-                            ? "border-slate-900 bg-slate-900 text-white"
-                            : "border-slate-200/80 bg-white/75 hover:border-slate-300 hover:bg-white"
-                        }`}
-                      >
-                        <div className={`truncate text-[13px] font-semibold ${active ? "text-white" : "text-slate-900"}`}>
-                          {displayName || artifact.artifactName}
-                        </div>
-                        <div className={`mt-0.5 truncate text-[11px] ${active ? "text-slate-200" : "text-slate-500"}`}>
-                          {artifact.nodeName || selectedNodeId || "selected run"}
-                        </div>
-                      </button>
-                    );
-                  })
-                ) : (
-                  <div className="rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-[12px] text-slate-500">
-                    No materialized artifacts are available for the selected run.
-                  </div>
-                )}
-              </div>
-            </div>
-          </aside>
         </div>
       </div>
     </div>
@@ -1881,6 +1930,8 @@ export default function App() {
   const [artifactPageOpen, setArtifactPageOpen] = useState(false);
   const [artifactQuery, setArtifactQuery] = useState("");
   const [artifactResult, setArtifactResult] = useState(null);
+  const [artifactQueryLoading, setArtifactQueryLoading] = useState(false);
+  const [artifactResultUpdatedAt, setArtifactResultUpdatedAt] = useState(null);
   const [artifactError, setArtifactError] = useState("");
   const [selectedArtifactName, setSelectedArtifactName] = useState("");
   const [artifactPreview, setArtifactPreview] = useState(null);
@@ -2230,9 +2281,27 @@ export default function App() {
   function buildArtifactQuery(artifactName) {
     const text = String(artifactName || "").trim();
     if (text) {
-      return `SELECT * FROM ${text} LIMIT 25`;
+      return `SELECT * FROM ${text} LIMIT 25;`;
     }
-    return "SELECT * FROM {{artifact}} LIMIT 25";
+    return "SELECT * FROM {{artifact}} LIMIT 25;";
+  }
+
+  function lastArtifactQueryStatement(text) {
+    const statements = String(text || "")
+      .split(";")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return statements.length ? statements[statements.length - 1] : "";
+  }
+
+  function appendArtifactQueryLine(currentQuery, artifactName) {
+    const nextQuery = buildArtifactQuery(artifactName);
+    const current = String(currentQuery || "").trimEnd();
+    if (!current) {
+      return nextQuery;
+    }
+    const separator = current.endsWith(";") ? "\n" : ";\n";
+    return `${current}${separator}${nextQuery}`;
   }
 
   function openArtifactExplorerForTable() {
@@ -2245,7 +2314,7 @@ export default function App() {
   function handleSelectArtifact(artifact) {
     const nextName = artifact?.artifactName || "";
     setSelectedArtifactName(nextName);
-    setArtifactQuery(buildArtifactQuery(nextName));
+    setArtifactQuery((current) => appendArtifactQueryLine(current, nextName));
     if (artifact?.nodeName) {
       setSelectedNodeId(artifact.nodeName);
       selectedNodeIdRef.current = artifact.nodeName;
@@ -2264,15 +2333,21 @@ export default function App() {
   const executeArtifactQuery = async () => {
     if (!selectedNodeId) {
       setArtifactResult(null);
+      setArtifactResultUpdatedAt(null);
       setArtifactError("Select a node with a materialized artifact first.");
       return;
     }
     try {
+      setArtifactQueryLoading(true);
+      const sqlToExecute = lastArtifactQueryStatement(artifactQuery);
+      if (!sqlToExecute) {
+        throw new Error("Write a query first.");
+      }
       const runId = currentRunIdForNodePanel();
       const response = await fetch("/api/node/artifact-query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ node_name: selectedNodeId, sql: artifactQuery, run_id: runId }),
+        body: JSON.stringify({ node_name: selectedNodeId, sql: sqlToExecute, run_id: runId }),
       });
       const payload = await response.json();
       if (!response.ok || payload.ok === false) throw new Error(payload.error || "Artifact query failed.");
@@ -2281,10 +2356,14 @@ export default function App() {
         columnDefs: createGridColumns(Array.isArray(payload.columns) ? payload.columns : []),
         summary: `${Number(payload.row_count || 0)} row${Number(payload.row_count || 0) === 1 ? "" : "s"} returned`,
       });
+      setArtifactResultUpdatedAt(new Date().toISOString());
       setArtifactError("");
     } catch (error) {
       setArtifactResult(null);
+      setArtifactResultUpdatedAt(null);
       setArtifactError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setArtifactQueryLoading(false);
     }
   };
 
@@ -2407,6 +2486,7 @@ export default function App() {
           onClose={() => setArtifactPageOpen(false)}
           onExecute={executeArtifactQuery}
           result={artifactResult}
+          loading={artifactQueryLoading}
           error={artifactError}
           selectedNodeId={selectedNodeId}
           selectedArtifactName={selectedArtifactName || artifactPreview?.artifactName || ""}

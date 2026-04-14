@@ -18,6 +18,8 @@ class PgConnectRequest(BaseModel):
     username: str = "postgres"
     password: str = ""
     url: str | None = None
+    connect_timeout_seconds: int | None = None
+    statement_timeout_ms: int | None = None
     save_password: bool = True
 
 
@@ -30,6 +32,7 @@ class Db2ConnectRequest(BaseModel):
     username: str = "db2inst1"
     password: str = ""
     url: str | None = None
+    connect_timeout_seconds: int | None = None
     save_password: bool = True
 
 

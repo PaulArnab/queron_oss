@@ -61,6 +61,8 @@ def resolve_runtime_binding_payload(config_name: str, payload: Mapping[str, Any]
             "username": payload.get("username"),
             "password": payload.get("password"),
             "url": payload.get("url"),
+            "connect_timeout_seconds": payload.get("connect_timeout_seconds"),
+            "statement_timeout_ms": payload.get("statement_timeout_ms"),
         }
     )
     return resolved

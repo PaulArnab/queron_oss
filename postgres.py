@@ -82,7 +82,7 @@ _PG_TYPE_NAMES: dict[int, str] = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _dsn_from_config(cfg: PgConnectRequest) -> tuple[str, dict[str, str]]:
+def _dsn_from_config(cfg: PgConnectRequest) -> tuple[str, dict[str, Any]]:
     """Build a libpq DSN + optional kwargs from the request payload.
 
     Returns (dsn, extra_kwargs) where extra_kwargs may contain
@@ -93,16 +93,25 @@ def _dsn_from_config(cfg: PgConnectRequest) -> tuple[str, dict[str, str]]:
         raw = cfg.url
         if raw.startswith("jdbc:"):
             raw = raw[len("jdbc:"):]
-        kwargs: dict[str, str] = {}
+        kwargs: dict[str, Any] = {}
         if cfg.username:
             kwargs["user"] = cfg.username
         if cfg.password:
             kwargs["password"] = cfg.password
+        if cfg.connect_timeout_seconds is not None:
+            kwargs["connect_timeout"] = int(cfg.connect_timeout_seconds)
+        if cfg.statement_timeout_ms is not None:
+            kwargs["options"] = f"-c statement_timeout={int(cfg.statement_timeout_ms)}"
         return raw, kwargs
+    kwargs: dict[str, Any] = {}
+    if cfg.connect_timeout_seconds is not None:
+        kwargs["connect_timeout"] = int(cfg.connect_timeout_seconds)
+    if cfg.statement_timeout_ms is not None:
+        kwargs["options"] = f"-c statement_timeout={int(cfg.statement_timeout_ms)}"
     return (
         f"host={cfg.host} port={cfg.port} dbname={cfg.database} "
         f"user={cfg.username} password={cfg.password}"
-    ), {}
+    ), kwargs
 
 
 @contextmanager

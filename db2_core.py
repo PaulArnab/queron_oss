@@ -133,6 +133,7 @@ def _conn_str_from_parts(
     database: str,
     username: str,
     password: str,
+    connect_timeout_seconds: int | None = None,
 ) -> str:
     parts = [
         f"DATABASE={_sanitize_conn_value(database)}",
@@ -140,6 +141,8 @@ def _conn_str_from_parts(
         f"PORT={int(port)}",
         "PROTOCOL=TCPIP",
     ]
+    if connect_timeout_seconds is not None:
+        parts.append(f"CONNECTTIMEOUT={int(connect_timeout_seconds)}")
     if username:
         parts.append(f"UID={_sanitize_conn_value(username)}")
     if password:
@@ -187,6 +190,10 @@ def _dsn_from_config(cfg: Db2ConnectRequest) -> str:
                 if not conn_str.endswith(";"):
                     conn_str += ";"
                 conn_str += ";".join(suffix) + ";"
+        if cfg.connect_timeout_seconds is not None and "CONNECTTIMEOUT=" not in conn_str.upper():
+            if not conn_str.endswith(";"):
+                conn_str += ";"
+            conn_str += f"CONNECTTIMEOUT={int(cfg.connect_timeout_seconds)};"
         return conn_str
 
     return _conn_str_from_parts(
@@ -195,6 +202,7 @@ def _dsn_from_config(cfg: Db2ConnectRequest) -> str:
         database=cfg.database,
         username=cfg.username,
         password=cfg.password,
+        connect_timeout_seconds=cfg.connect_timeout_seconds,
     )
 
 

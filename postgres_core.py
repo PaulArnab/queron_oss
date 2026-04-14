@@ -133,16 +133,32 @@ def _build_connection_uri(raw_url: str, username: str | None, password: str | No
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
-def _config_from_request(req: PgConnectRequest) -> dict[str, str]:
+def _config_from_request(req: PgConnectRequest) -> dict[str, Any]:
     if req.url:
         uri = _build_connection_uri(req.url, req.username or None, req.password or None)
-        return {"uri": uri}
+        return {
+            "uri": uri,
+            "connect_timeout": int(req.connect_timeout_seconds) if req.connect_timeout_seconds is not None else None,
+            "options": (
+                f"-c statement_timeout={int(req.statement_timeout_ms)}"
+                if req.statement_timeout_ms is not None
+                else None
+            ),
+        }
     raw = f"postgresql://{req.host}:{req.port}/{req.database}"
     uri = _build_connection_uri(raw, req.username or None, req.password or None)
-    return {"uri": uri}
+    return {
+        "uri": uri,
+        "connect_timeout": int(req.connect_timeout_seconds) if req.connect_timeout_seconds is not None else None,
+        "options": (
+            f"-c statement_timeout={int(req.statement_timeout_ms)}"
+            if req.statement_timeout_ms is not None
+            else None
+        ),
+    }
 
 
-def _config_from_connection_id(connection_id: str) -> dict[str, str]:
+def _config_from_connection_id(connection_id: str) -> dict[str, Any]:
     cfg_dict = _connections.get(connection_id)
     if cfg_dict is None:
         raise LookupError("Connection not found. Please connect first.")
@@ -156,8 +172,17 @@ def _request_from_connection_id(connection_id: str) -> PgConnectRequest:
     return PgConnectRequest(**cfg_dict)
 
 
-def _pg_connection(uri: str):
-    return psycopg.connect(uri)
+def _pg_connect_kwargs(config: dict[str, Any]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if config.get("connect_timeout") is not None:
+        kwargs["connect_timeout"] = int(config["connect_timeout"])
+    if config.get("options"):
+        kwargs["options"] = str(config["options"])
+    return kwargs
+
+
+def _pg_connection(uri: str, **kwargs):
+    return psycopg.connect(uri, **kwargs)
 
 
 def _table_from_rows(columns: list[str], rows: list[tuple[Any, ...]]) -> pa.Table:
@@ -483,8 +508,8 @@ def _collect_mapping_warnings(mapped_columns: list[_MappedPostgresColumn], share
     return warnings
 
 
-def _inspect_postgres_result_columns(uri: str, sql: str) -> list[ColumnMeta]:
-    conn = _pg_connection(uri)
+def _inspect_postgres_result_columns(uri: str, sql: str, **connect_kwargs) -> list[ColumnMeta]:
+    conn = _pg_connection(uri, **connect_kwargs)
     cur = None
     probe_name = f"loom_probe_{uuid.uuid4().hex[:12]}"
     probe_ident = _quote_identifier(probe_name)
@@ -625,8 +650,8 @@ def _build_column_mappings(
     return mappings
 
 
-def _execute_query_arrow_table(uri: str, sql: str) -> tuple[pa.Table | None, int]:
-    conn = _pg_connection(uri)
+def _execute_query_arrow_table(uri: str, sql: str, **connect_kwargs) -> tuple[pa.Table | None, int]:
+    conn = _pg_connection(uri, **connect_kwargs)
     cur = None
     try:
         cur = conn.cursor()
@@ -808,20 +833,21 @@ def ingest_query_to_duckdb(
     pipeline_id: str,
 ) -> DuckDbIngestQueryResponse:
     cfg = _config_from_connection_id(source_connection_id)
+    connect_kwargs = _pg_connect_kwargs(cfg)
     source_conn = None
     source_cur = None
     duck_conn = None
     inserted = 0
     warnings: list[str] = []
     try:
-        source_conn = _pg_connection(cfg["uri"])
+        source_conn = _pg_connection(cfg["uri"], **connect_kwargs)
         source_cur = source_conn.cursor()
         source_cur.execute(_strip_sql_terminator(sql))
         if source_cur.description is None:
             raise RuntimeError("Source query did not return a result set.")
 
         try:
-            source_columns = _inspect_postgres_result_columns(cfg["uri"], sql)
+            source_columns = _inspect_postgres_result_columns(cfg["uri"], sql, **connect_kwargs)
         except Exception:
             source_columns = _column_meta_from_cursor(source_conn, source_cur)
             warnings.append("Fell back to cursor metadata while inspecting PostgreSQL result metadata.")
@@ -905,6 +931,7 @@ def egress_query_from_duckdb(
     artifact_table: str | None = None,
 ) -> ConnectorEgressResponse:
     cfg = _config_from_connection_id(target_connection_id)
+    connect_kwargs = _pg_connect_kwargs(cfg)
     normalized_mode = str(mode or "replace").strip().lower()
     if normalized_mode not in {"replace", "append", "create", "create_append"}:
         raise RuntimeError(
@@ -940,7 +967,7 @@ def egress_query_from_duckdb(
         if not column_meta:
             raise RuntimeError("DuckDB egress query did not return any columns.")
 
-        target_conn = _pg_connection(cfg["uri"])
+        target_conn = _pg_connection(cfg["uri"], **connect_kwargs)
         target_cur = target_conn.cursor()
         current_database, current_schema = _current_postgres_database_and_schema(target_cur)
         schema_name, table_name, normalized_target_table, quoted_target_table = _normalize_postgres_target_relation(
