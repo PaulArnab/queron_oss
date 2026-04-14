@@ -992,6 +992,9 @@ def inspect_node(
     node_runs_by_name: dict[str, dict[str, Any]] = {}
     active_states_by_name: dict[str, dict[str, Any]] = {}
     selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    selected_status = str(selected_run.get("status") or "").strip().lower() if selected_run is not None else ""
+    selected_status = str(selected_run.get("status") or "").strip().lower() if selected_run is not None else ""
+    selected_status = str(selected_run.get("status") or "").strip().lower() if selected_run is not None else ""
     if selected_run_id:
         import duckdb_core
 
@@ -1314,6 +1317,7 @@ def inspect_dag(
     node_runs_by_name: dict[str, dict[str, Any]] = {}
     active_states_by_name: dict[str, dict[str, Any]] = {}
     selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    selected_status = str(selected_run.get("status") or "").strip().lower() if selected_run is not None else ""
     if selected_run_id:
         import duckdb_core
 
@@ -1349,17 +1353,21 @@ def inspect_dag(
             continue
         node_run = node_runs_by_name.get(name, {})
         active_state = active_states_by_name.get(name, {})
+        logical_artifact = _inspect_node_artifact_name(raw_node)
+        run_artifact = str(node_run.get("artifact_name") or "").strip() or None
+        use_run_artifact = bool(run_artifact) and selected_status in {"success", "success_with_warnings", "failed"}
         nodes.append(
             {
                 "name": name,
                 "kind": str(raw_node.get("kind") or "").strip() or None,
-                "artifact_name": _inspect_node_artifact_name(raw_node),
+                "artifact_name": run_artifact if use_run_artifact else logical_artifact,
+                "logical_artifact": logical_artifact,
                 "current_state": str(active_state.get("state") or "").strip() or None,
                 "node_run_status": str(node_run.get("status") or "").strip() or None,
                 "started_at": str(node_run.get("started_at") or "").strip() or None,
-                    "finished_at": str(node_run.get("finished_at") or "").strip() or None,
-                }
-            )
+                "finished_at": str(node_run.get("finished_at") or "").strip() or None,
+            }
+        )
 
     return InspectDagResult(
         pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),

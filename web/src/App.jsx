@@ -140,29 +140,31 @@ function humanize(text) {
     .replace(/^main\./, "")
     .replace(/^exports\//, "")
     .replace(/^"+|"+$/g, "")
-    .replace(/_/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+    .trim();
 }
 
-function titleForNode(id, details) {
-  if (id === "sql_103") return "Boolean Check";
-  if (id === "sql_105") return "Count Check";
-  if (id === "python_113") return "Service Playbook";
-  if (details.artifact) {
-    const artifact = String(details.artifact);
-    if (artifact.startsWith("main.") || artifact.startsWith("exports/")) {
-      return artifact
-        .replace(/^main\./, "")
-        .replace(/^exports\//, "")
-        .replace(/^"+|"+$/g, "")
-        .trim();
+  function titleForNode(id, details) {
+    if (id === "sql_103") return "Boolean Check";
+    if (id === "sql_105") return "Count Check";
+    if (id === "python_113") return "Service Playbook";
+    if (details.artifact) {
+      const artifact = String(details.artifact);
+      if (artifact.startsWith("main.") || artifact.startsWith("exports/")) {
+        return artifact
+          .replace(/^main\./, "")
+          .replace(/^exports\//, "")
+          .replace(/^"+|"+$/g, "")
+          .trim();
+      }
+      const cleaned = artifact.replace(/^"+|"+$/g, "").trim();
+      if (cleaned.includes(".")) {
+        const lastSegment = cleaned.split(".").slice(-1)[0].replace(/^"+|"+$/g, "").trim();
+        if (lastSegment) return lastSegment;
+      }
+      return humanize(artifact);
     }
-    return humanize(artifact);
+    return humanize(id);
   }
-  return humanize(id);
-}
 
 function normalizeTone(kind, nodeId) {
   const lowered = String(kind || "").trim().toLowerCase();
@@ -1285,7 +1287,7 @@ function ArtifactPreviewPanel({ preview, loading = false, error = "", onOpenArti
             resizable: true,
             minWidth: 120,
           }}
-          headerHeight={28}
+          headerHeight={26}
           rowHeight={26}
           domLayout="normal"
         />
@@ -1363,12 +1365,16 @@ function InspectBottomSheet({
         <span>Close</span>
       </button>
 
-      <div className="pointer-events-auto relative flex h-[245px] w-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_12px_rgba(15,23,42,0.05)] md:h-[245px]">
+      <div className="pointer-events-auto relative flex h-[245px] w-full flex-col overflow-hidden bg-white md:h-[245px]">
         <div className="grid h-full min-h-0 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)]">
           <aside
-            className="flex min-h-0 flex-col overflow-hidden border-r border-slate-200 bg-white"
-            style={{ borderLeftWidth: 6, borderLeftColor: selectedTone.bg }}
+            className="relative flex min-h-0 flex-col overflow-hidden border-r border-slate-200 bg-white"
           >
+            <div
+              aria-hidden="true"
+              className="absolute inset-y-0 left-0 w-[6px]"
+              style={{ backgroundColor: selectedTone.bg }}
+            />
             <div className="flex items-start justify-between px-4 py-3">
               <div className="min-w-0">
                 <div className="truncate text-[14px] font-bold tracking-[-0.01em] text-slate-950">{selected.title}</div>
@@ -1377,7 +1383,12 @@ function InspectBottomSheet({
                   {(selected.artifactName || selected.logicalArtifact) ? (
                     <>
                       <span className="text-slate-300">•</span>
-                      <span className="truncate">{selected.artifactName || selected.logicalArtifact}</span>
+                      <span className="truncate">
+                        {String(selected.artifactName || selected.logicalArtifact || "")
+                          .replace(/^"+|"+$/g, "")
+                          .split(".")
+                          .slice(-1)[0]}
+                      </span>
                     </>
                   ) : null}
                 </div>
@@ -1700,7 +1711,9 @@ function ArtifactExplorerPage({
   artifacts,
   artifactsLoading = false,
   onSelectArtifact,
+  runId,
 }) {
+  const artifactBlocked = !artifactsLoading && (!artifacts || artifacts.length === 0);
   return (
     <div
       className={`pointer-events-none absolute inset-0 z-40 transform-gpu bg-white/80 transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
@@ -1708,9 +1721,10 @@ function ArtifactExplorerPage({
       }`}
     >
       <div className="pointer-events-auto absolute inset-0 flex flex-col bg-white shadow-[-24px_0_80px_rgba(15,23,42,0.12)]">
-        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-3">
-          <div className="text-[12px] font-semibold uppercase tracking-[0.16em] text-slate-500">
-            {selectedArtifactName ? "Selected Artifact" : "Artifact Explorer"}
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-1.5">
+          <div>
+            <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Run ID</div>
+            <div className="mt-0.5 text-[12px] font-medium text-slate-700">{runId || "-"}</div>
           </div>
 
           <div className="flex items-center gap-2">
@@ -1719,18 +1733,18 @@ function ArtifactExplorerPage({
               onClick={onExecute}
               title="Execute query"
               aria-label="Execute query"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
             >
-              <Play size={17} strokeWidth={1.9} />
+              <Play size={16} strokeWidth={1.9} />
             </button>
             <button
               type="button"
               onClick={onClose}
               title="Close artifacts"
               aria-label="Close artifacts"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
             >
-              <X size={17} strokeWidth={1.9} />
+              <X size={16} strokeWidth={1.9} />
             </button>
           </div>
         </div>
@@ -1756,23 +1770,29 @@ function ArtifactExplorerPage({
               {result?.summary ? <div className="mt-3 text-[13px] text-slate-500">{result.summary}</div> : null}
             </div>
 
-            <div className="min-h-0 flex-1 px-6 pb-6 pt-4">
-              <div className="ag-theme-quartz loom-grid h-full w-full overflow-hidden rounded-xl border border-slate-200">
-                <AgGridReact
-                  rowData={result?.rowData || []}
-                  columnDefs={result?.columnDefs || []}
-                  defaultColDef={{
-                    sortable: true,
-                    filter: true,
-                    resizable: true,
-                    minWidth: 120,
-                  }}
-                  headerHeight={30}
-                  rowHeight={28}
-                  animateRows
-                  rowSelection="single"
-                  suppressCellFocus
-                />
+            <div className="min-h-0 flex-1 border-t border-slate-200 bg-slate-50/95">
+              <div className="h-full p-4">
+                <div className="relative flex h-full w-full flex-col overflow-hidden bg-white">
+                  <div className="min-h-0 flex-1 overflow-hidden">
+                    <div className="ag-theme-quartz loom-grid min-h-0 h-full flex-1 overflow-hidden">
+                      <AgGridReact
+                        rowData={result?.rowData || []}
+                        columnDefs={result?.columnDefs || []}
+                        defaultColDef={{
+                          sortable: true,
+                          filter: true,
+                          resizable: true,
+                          minWidth: 120,
+                        }}
+                        headerHeight={30}
+                        rowHeight={28}
+                        animateRows
+                        rowSelection="single"
+                        suppressCellFocus
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </main>
@@ -1780,36 +1800,43 @@ function ArtifactExplorerPage({
           <aside className="flex min-h-0 flex-col border-l border-slate-200 bg-slate-50">
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
               <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Available Tables</div>
-              <div className="mt-4 space-y-3">
+              <div className="mt-4 space-y-2">
                 {artifactsLoading ? (
-                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[12px] text-slate-500">
+                  <div className="rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-[12px] text-slate-500">
                     Loading artifacts...
+                  </div>
+                ) : artifactBlocked ? (
+                  <div className="rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-[12px] text-slate-500">
+                    Artifacts are available after the run finishes.
                   </div>
                 ) : Array.isArray(artifacts) && artifacts.length ? (
                   artifacts.map((artifact) => {
                     const active = artifact.artifactName === selectedArtifactName;
+                    const displayName = String(artifact.artifactName || "")
+                      .split(".")
+                      .slice(-1)[0];
                     return (
                       <button
                         key={artifact.artifactName}
                         type="button"
                         onClick={() => onSelectArtifact?.(artifact)}
-                        className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${
+                        className={`w-full rounded-lg border px-3 py-2 text-left transition ${
                           active
                             ? "border-slate-900 bg-slate-900 text-white"
-                            : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                            : "border-slate-200/80 bg-white/75 hover:border-slate-300 hover:bg-white"
                         }`}
                       >
                         <div className={`truncate text-[13px] font-semibold ${active ? "text-white" : "text-slate-900"}`}>
-                          {artifact.artifactName}
+                          {displayName || artifact.artifactName}
                         </div>
-                        <div className={`mt-1 truncate text-[11px] ${active ? "text-slate-200" : "text-slate-500"}`}>
+                        <div className={`mt-0.5 truncate text-[11px] ${active ? "text-slate-200" : "text-slate-500"}`}>
                           {artifact.nodeName || selectedNodeId || "selected run"}
                         </div>
                       </button>
                     );
                   })
                 ) : (
-                  <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-[12px] text-slate-500">
+                  <div className="rounded-lg border border-slate-200/80 bg-white/80 px-3 py-2 text-[12px] text-slate-500">
                     No materialized artifacts are available for the selected run.
                   </div>
                 )}
@@ -1855,6 +1882,7 @@ export default function App() {
   const [artifactQuery, setArtifactQuery] = useState("");
   const [artifactResult, setArtifactResult] = useState(null);
   const [artifactError, setArtifactError] = useState("");
+  const [selectedArtifactName, setSelectedArtifactName] = useState("");
   const [artifactPreview, setArtifactPreview] = useState(null);
   const [artifactPreviewLoading, setArtifactPreviewLoading] = useState(false);
   const [artifactPreviewError, setArtifactPreviewError] = useState("");
@@ -1997,6 +2025,11 @@ export default function App() {
       const payload = await response.json();
       if (!response.ok || payload.ok === false) {
         throw new Error(payload.error || "Failed to load artifacts.");
+      }
+      if (payload.blocked) {
+        setArtifactList([]);
+        setArtifactListLoading(false);
+        return;
       }
         setArtifactList(
           Array.isArray(payload.artifacts)
@@ -2194,19 +2227,39 @@ export default function App() {
     }
   }
 
+  function buildArtifactQuery(artifactName) {
+    const text = String(artifactName || "").trim();
+    if (text) {
+      return `SELECT * FROM ${text} LIMIT 25`;
+    }
+    return "SELECT * FROM {{artifact}} LIMIT 25";
+  }
+
   function openArtifactExplorerForTable() {
-    setArtifactQuery("SELECT * FROM {{artifact}} LIMIT 25");
+    const preferred = artifactPreview?.artifactName || selectedArtifactName;
+    setArtifactQuery(buildArtifactQuery(preferred));
     setArtifactPageOpen(true);
     void loadArtifactList();
   }
 
   function handleSelectArtifact(artifact) {
-    setArtifactQuery("SELECT * FROM {{artifact}} LIMIT 25");
+    const nextName = artifact?.artifactName || "";
+    setSelectedArtifactName(nextName);
+    setArtifactQuery(buildArtifactQuery(nextName));
     if (artifact?.nodeName) {
       setSelectedNodeId(artifact.nodeName);
       selectedNodeIdRef.current = artifact.nodeName;
     }
   }
+
+  useEffect(() => {
+    if (!artifactPageOpen) return;
+    const desired = selectedArtifactName || artifactPreview?.artifactName;
+    if (!desired) return;
+    if (artifactQuery.includes("{{artifact}}")) {
+      setArtifactQuery(buildArtifactQuery(desired));
+    }
+  }, [artifactPageOpen, selectedArtifactName, artifactPreview?.artifactName]);
 
   const executeArtifactQuery = async () => {
     if (!selectedNodeId) {
@@ -2238,26 +2291,26 @@ export default function App() {
   return (
     <div className="relative h-screen w-full overflow-hidden bg-slate-100">
       <div className="flex h-full w-full min-h-0 flex-col bg-white">
-        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-2">
+        <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-1.5">
           <div className="flex items-center gap-4">
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Pipeline ID</div>
-              <div className="mt-0.5 text-[14px] font-semibold tracking-[-0.02em] text-slate-950">{graphData?.pipeline_id || "-"}</div>
+              <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Pipeline ID</div>
+              <div className="mt-0.5 text-[12px] font-semibold tracking-[-0.01em] text-slate-950">{graphData?.pipeline_id || "-"}</div>
             </div>
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Node Count</div>
-              <div className="mt-0.5 text-[14px] font-semibold tracking-[-0.02em] text-slate-950">{graphData?.node_count ?? "-"}</div>
+              <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Node Count</div>
+              <div className="mt-0.5 text-[12px] font-semibold tracking-[-0.01em] text-slate-950">{graphData?.node_count ?? "-"}</div>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-3">
               <div className="max-w-[200px] text-right">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run ID</div>
+                <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Run ID</div>
                 <div className="mt-0.5 truncate text-[12px] font-medium text-slate-700">{graphData?.run_id || "-"}</div>
               </div>
               <div className="max-w-[180px] text-right">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Run Label</div>
+                <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Run Label</div>
                 <div className="mt-0.5 truncate text-[12px] font-medium text-slate-700">{graphData?.run_label || "-"}</div>
               </div>
             </div>
@@ -2347,20 +2400,21 @@ export default function App() {
         </div>
       ) : null}
 
-      <ArtifactExplorerPage
-        open={artifactPageOpen}
-        query={artifactQuery}
-        onQueryChange={setArtifactQuery}
-        onClose={() => setArtifactPageOpen(false)}
-        onExecute={executeArtifactQuery}
-        result={artifactResult}
-        error={artifactError}
-        selectedNodeId={selectedNodeId}
-        selectedArtifactName={artifactPreview?.artifactName || ""}
-        artifacts={artifactList}
-        artifactsLoading={artifactListLoading}
-        onSelectArtifact={handleSelectArtifact}
-      />
+        <ArtifactExplorerPage
+          open={artifactPageOpen}
+          query={artifactQuery}
+          onQueryChange={setArtifactQuery}
+          onClose={() => setArtifactPageOpen(false)}
+          onExecute={executeArtifactQuery}
+          result={artifactResult}
+          error={artifactError}
+          selectedNodeId={selectedNodeId}
+          selectedArtifactName={selectedArtifactName || artifactPreview?.artifactName || ""}
+          artifacts={artifactList}
+          artifactsLoading={artifactListLoading}
+          onSelectArtifact={handleSelectArtifact}
+          runId={graphData?.run_id || null}
+        />
     </div>
   );
 }

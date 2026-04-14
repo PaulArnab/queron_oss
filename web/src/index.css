@@ -23,6 +23,8 @@ body {
   --ag-foreground-color: #334155;
   --ag-font-family: 'DM Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
   --ag-font-size: 11.5px;
+  --ag-header-height: 26px;
+  --ag-row-height: 26px;
   --ag-border-color: transparent;
   --ag-wrapper-border-radius: 12px;
   --ag-header-background-color: transparent;
@@ -56,8 +58,9 @@ body {
 }
 
 .loom-grid .ag-header-cell {
-  padding-top: 6px;
-  padding-bottom: 6px;
+  padding-top: 0;
+  padding-bottom: 0;
+  align-items: center;
 }
 
 .loom-grid .ag-row {
@@ -71,6 +74,11 @@ body {
 .loom-grid .ag-cell {
   display: flex;
   align-items: center;
+}
+
+.loom-grid .ag-header-cell-label {
+  align-items: center;
+  line-height: 1.2;
 }
 
 .loom-grid .loom-grid-cell {

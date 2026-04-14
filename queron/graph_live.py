@@ -459,29 +459,32 @@ def get_run_artifacts_panel(
     run_label: str | None = None,
 ) -> dict[str, Any]:
     graph = inspect_dag(artifact_path, run_id=run_id, run_label=run_label)
+    run_status = str(graph.run_status or "").strip().lower()
+    if run_status not in {"success", "success_with_warnings", "failed"}:
+        return {
+            "ok": True,
+            "run_id": graph.run_id,
+            "run_label": graph.run_label,
+            "run_status": graph.run_status,
+            "blocked": True,
+            "blocked_message": "Artifacts are available after the run finishes.",
+            "artifacts": [],
+        }
     artifacts: list[dict[str, Any]] = []
     seen: set[str] = set()
     for node in graph.nodes:
         node_name = str(node.get("name") or "").strip()
         if not node_name:
             continue
-        try:
-            selected = _selected_node_artifact_record(
-                artifact_path,
-                node_name,
-                run_id=graph.run_id,
-                run_label=graph.run_label,
-            )
-        except Exception:
-            continue
-        artifact_name = str(selected.get("artifact_name") or "").strip()
+        artifact_name = str(node.get("artifact_name") or "").strip()
+        logical_artifact = str(node.get("logical_artifact") or "").strip() or None
         if not artifact_name or artifact_name in seen:
             continue
         seen.add(artifact_name)
         artifacts.append(
             {
                 "artifact_name": artifact_name,
-                "logical_artifact": str(selected.get("logical_artifact") or "").strip() or None,
+                "logical_artifact": logical_artifact,
                 "node_name": node_name,
                 "node_kind": str(node.get("kind") or "").strip() or None,
                 "current_state": str(node.get("current_state") or "").strip() or None,
