@@ -3,6 +3,8 @@ import json
 import pathlib
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
@@ -31,6 +33,7 @@ class VerifyQueronCliTests(unittest.TestCase):
             "reset_downstream",
             "reset_upstream",
             "reset_all",
+            "stop_pipeline",
             "postgres",
             "db2",
             "file",
@@ -455,6 +458,241 @@ def seed():
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             exit_code = queron.cli.main(args)
         self.assertEqual(exit_code, 0)
+
+    def _wait_for_running_run_id(self, artifact_path: pathlib.Path, *, timeout_seconds: float = 10.0) -> str:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            try:
+                conn = load_duckdb().connect(str(artifact_path))
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT run_id
+                        FROM "_queron_meta"."pipeline_runs"
+                        WHERE status = 'running'
+                        ORDER BY COALESCE(finished_at, started_at) DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                finally:
+                    conn.close()
+            except Exception:
+                row = None
+            if row is not None and str(row[0] or "").strip():
+                return str(row[0]).strip()
+            time.sleep(0.05)
+        self.fail("Timed out waiting for a running pipeline run.")
+
+    def _wait_for_node_status(
+        self,
+        artifact_path: pathlib.Path,
+        *,
+        run_id: str,
+        node_name: str,
+        expected_status: str,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            try:
+                conn = load_duckdb().connect(str(artifact_path))
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT status
+                        FROM "_queron_meta"."node_runs"
+                        WHERE run_id = ? AND node_name = ?
+                        ORDER BY COALESCE(finished_at, started_at) DESC
+                        LIMIT 1
+                        """,
+                        (run_id, node_name),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            except Exception:
+                row = None
+            if row is not None and str(row[0] or "").strip().lower() == str(expected_status).strip().lower():
+                return
+            time.sleep(0.05)
+        self.fail(f"Timed out waiting for node '{node_name}' to reach status '{expected_status}'.")
+
+    def test_stop_pipeline_gracefully_stops_after_current_node_and_resume_completes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / ".queron" / "policy123.duckdb"
+            pipeline_path.write_text(
+                """import time
+import pyarrow as pa
+import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.python.ingress(
+    name='slow_seed',
+    out='slow_seed',
+)
+def slow_seed():
+    time.sleep(0.6)
+    return pa.table({"id": [1, 2]})
+
+@queron.model.sql(
+    name='mid',
+    out='mid',
+    query=\"\"\"
+SELECT id + 1 AS id
+FROM {{ queron.ref("slow_seed") }}
+\"\"\",
+)
+def mid():
+    pass
+
+@queron.model.sql(
+    name='leaf',
+    out='leaf',
+    query=\"\"\"
+SELECT id + 1 AS id
+FROM {{ queron.ref("mid") }}
+\"\"\",
+)
+def leaf():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path)
+
+            captured: dict[str, object] = {}
+
+            def _run_pipeline() -> None:
+                try:
+                    captured["result"] = queron.run_pipeline(pipeline_path)
+                except Exception as exc:  # pragma: no cover - asserted below
+                    captured["error"] = exc
+
+            worker = threading.Thread(target=_run_pipeline, daemon=True)
+            worker.start()
+
+            running_run_id = self._wait_for_running_run_id(artifact_path)
+            self._wait_for_node_status(
+                artifact_path,
+                run_id=running_run_id,
+                node_name="slow_seed",
+                expected_status="running",
+            )
+            stop_result = queron.stop_pipeline(pipeline_path, run_id=running_run_id)
+
+            self.assertTrue(stop_result.stop_requested)
+            self.assertEqual(stop_result.run_id, running_run_id)
+
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive(), msg="pipeline run did not finish after graceful stop")
+            self.assertNotIn("result", captured)
+            self.assertIn("error", captured)
+            self.assertIn("Pipeline stop requested by user.", str(captured["error"]))
+
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                run_row = conn.execute(
+                    """
+                    SELECT status, error_message
+                    FROM "_queron_meta"."pipeline_runs"
+                    WHERE run_id = ?
+                    """,
+                    (running_run_id,),
+                ).fetchone()
+                node_rows = conn.execute(
+                    """
+                    SELECT node_name, status
+                    FROM "_queron_meta"."node_runs"
+                    WHERE run_id = ?
+                    ORDER BY node_name
+                    """,
+                    (running_run_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertEqual(run_row[0], "failed")
+            self.assertIn("Pipeline stop requested by user.", str(run_row[1] or ""))
+            self.assertEqual(
+                {str(name): str(status) for name, status in node_rows},
+                {
+                    "leaf": "ready",
+                    "mid": "ready",
+                    "slow_seed": "complete",
+                },
+            )
+            self.assertIsNotNone(stop_result.request_path)
+            self.assertFalse(pathlib.Path(str(stop_result.request_path)).exists())
+
+            resume_result = queron.resume_pipeline(pipeline_path)
+            self.assertEqual(resume_result.executed_nodes, ["mid", "leaf"])
+
+    def test_cli_stop_without_run_id_targets_latest_running_run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / ".queron" / "policy123.duckdb"
+            pipeline_path.write_text(
+                """import time
+import pyarrow as pa
+import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.python.ingress(
+    name='slow_seed',
+    out='slow_seed',
+)
+def slow_seed():
+    time.sleep(0.6)
+    return pa.table({"id": [1]})
+
+@queron.model.sql(
+    name='leaf',
+    out='leaf',
+    query=\"\"\"
+SELECT id
+FROM {{ queron.ref("slow_seed") }}
+\"\"\",
+)
+def leaf():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path)
+
+            exit_codes: dict[str, int] = {}
+
+            def _run_cli() -> None:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    exit_codes["run"] = queron.cli.main(["run", str(pipeline_path)])
+
+            worker = threading.Thread(target=_run_cli, daemon=True)
+            worker.start()
+
+            running_run_id = self._wait_for_running_run_id(artifact_path)
+            self._wait_for_node_status(
+                artifact_path,
+                run_id=running_run_id,
+                node_name="slow_seed",
+                expected_status="running",
+            )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                stop_exit = queron.cli.main(["stop", str(pipeline_path)])
+
+            self.assertEqual(stop_exit, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn(running_run_id, stdout.getvalue())
+
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive(), msg="cli pipeline run did not finish after graceful stop")
+            self.assertEqual(exit_codes.get("run"), 1)
 
     def test_init_command_creates_starter_scaffold(self):
         with tempfile.TemporaryDirectory() as tmpdir:

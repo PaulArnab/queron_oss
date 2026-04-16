@@ -106,6 +106,13 @@ def execute_selected_nodes(spec: PipelineSpec, *, runtime, selected_node_names: 
         if node_name not in selected:
             continue
         node = nodes[node_name]
+        if hasattr(runtime, "raise_if_stop_requested"):
+            try:
+                runtime.raise_if_stop_requested(node=node, boundary="before_node")
+            except Exception as exc:
+                if run_policy.persist_node_outcomes and hasattr(runtime, "mark_run_failed"):
+                    runtime.mark_run_failed(exc)
+                raise
         if run_policy.persist_node_outcomes and hasattr(runtime, "mark_node_running"):
             runtime.mark_node_running(node)
         try:
@@ -137,6 +144,13 @@ def execute_selected_nodes(spec: PipelineSpec, *, runtime, selected_node_names: 
         if run_policy.persist_node_outcomes and hasattr(runtime, "mark_node_success"):
             runtime.mark_node_success(node, result)
         executed.append(node_name)
+        if hasattr(runtime, "raise_if_stop_requested"):
+            try:
+                runtime.raise_if_stop_requested(node=node, boundary="after_node")
+            except Exception as exc:
+                if run_policy.persist_node_outcomes and hasattr(runtime, "mark_run_failed"):
+                    runtime.mark_run_failed(exc)
+                raise
 
     if run_policy.persist_node_outcomes and hasattr(runtime, "mark_run_success"):
         runtime.mark_run_success()

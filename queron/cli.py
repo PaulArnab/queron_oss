@@ -25,6 +25,7 @@ from .api import (
     reset_node,
     resume_pipeline,
     run_pipeline,
+    stop_pipeline,
 )
 from .runtime_models import format_log_event
 
@@ -124,6 +125,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     resume_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     resume_parser.set_defaults(handler=_handle_resume)
+
+    stop_parser = subparsers.add_parser(
+        "stop",
+        help="Request stop for a running Queron pipeline.",
+    )
+    stop_parser.add_argument("pipeline", help="Path to the compiled OSS pipeline Python file.")
+    stop_parser.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=None,
+        help="Running pipeline run ID to stop. Defaults to the latest running run.",
+    )
+    stop_parser.add_argument(
+        "--reason",
+        dest="reason",
+        default=None,
+        help="Optional reason to record with the stop request.",
+    )
+    stop_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
+    stop_parser.set_defaults(handler=_handle_stop)
 
     reset_node_parser = subparsers.add_parser("reset-node", help="Drop the output table for one pipeline node.")
     _add_common_compile_flags(reset_node_parser)
@@ -646,6 +667,43 @@ def _handle_resume(args: argparse.Namespace) -> int:
 
     _print_diagnostics(result.compiled)
     return 1
+
+
+def _handle_stop(args: argparse.Namespace) -> int:
+    try:
+        result = stop_pipeline(
+            args.pipeline,
+            run_id=args.run_id,
+            reason=args.reason,
+        )
+    except Exception as exc:
+        if args.json_output:
+            return _emit_json({"ok": False, "error": str(exc)})
+        print(f"Stop failed: {exc}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "artifact_path": result.artifact_path,
+        "run_id": result.run_id,
+        "run_label": result.run_label,
+        "stop_requested": result.stop_requested,
+        "request_path": result.request_path,
+        "message": result.message,
+    }
+    if args.json_output:
+        return _emit_json(payload)
+
+    print(f"Pipeline: {Path(args.pipeline).expanduser().resolve()}")
+    print(f"Artifact DB: {result.artifact_path}")
+    if result.run_id:
+        print(f"Run ID: {result.run_id}")
+    if result.run_label:
+        print(f"Run label: {result.run_label}")
+    if result.request_path:
+        print(f"Stop request: {result.request_path}")
+    print(result.message)
+    return 0
 
 
 def _emit_reset_result(args: argparse.Namespace, action_label: str, result) -> int:

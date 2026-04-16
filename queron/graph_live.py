@@ -25,6 +25,7 @@ from .api import (
     reset_upstream,
     resume_pipeline,
     run_pipeline,
+    stop_pipeline,
 )
 from .cli import _load_pipeline_namespace, _pipeline_id_from_file, _runtime_bindings_from_file
 from .runtime_models import LogCode, PipelineLogEvent
@@ -610,6 +611,23 @@ def reset_graph_upstream(pipeline_path: str | Path, node_name: str, *, on_log: A
     }
 
 
+def stop_graph_pipeline(pipeline_path: str | Path, *, reason: str | None = None) -> dict[str, Any]:
+    result = stop_pipeline(
+        pipeline_path,
+        run_id=None,
+        reason=reason,
+    )
+    return {
+        "ok": True,
+        "artifact_path": result.artifact_path,
+        "run_id": result.run_id,
+        "run_label": result.run_label,
+        "stop_requested": result.stop_requested,
+        "request_path": result.request_path,
+        "message": result.message,
+    }
+
+
 def resolve_graph_live_web_root(web_root: str | Path | None = None) -> Path:
     resolved = ((Path(__file__).resolve().parents[1] / "web" / "dist") if web_root is None else Path(web_root)).resolve()
     if not resolved.exists() or not resolved.is_dir():
@@ -834,6 +852,10 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == "/api/resume":
                 self._write_json(resume_graph_pipeline(context.pipeline_path, on_log=self._emit_runtime_log))
+                return
+            if parsed.path == "/api/stop":
+                reason = str(payload.get("reason") or "").strip() or None
+                self._write_json(stop_graph_pipeline(context.pipeline_path, reason=reason))
                 return
             if parsed.path == "/api/reset-all":
                 self._write_json(reset_graph_all(context.pipeline_path, on_log=self._emit_runtime_log))

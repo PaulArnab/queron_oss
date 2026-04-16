@@ -9,7 +9,7 @@ from typing import Any, Callable
 from .compiler import CompiledPipeline, compile_pipeline_code
 from .executor import _select_downstream_nodes, _select_upstream_nodes, execute_pipeline, execute_selected_nodes
 from .runtime import PipelineRuntime
-from .runtime_models import LogCode, PipelineLogEvent, build_log_event, normalize_log_event
+from .runtime_models import LogCode, PipelineLogEvent, build_log_event, normalize_log_event, utc_now_timestamp
 from .specs import PipelineSpec
 from .templates import build_init_config_text, build_init_gitignore_text, build_init_pipeline_text
 
@@ -29,6 +29,16 @@ class ResetPipelineResult:
     artifact_path: str
     reset_nodes: list[str]
     reset_tables: list[str]
+
+
+@dataclass
+class StopPipelineResult:
+    artifact_path: str
+    run_id: str | None = None
+    run_label: str | None = None
+    stop_requested: bool = False
+    request_path: str | None = None
+    message: str = ""
 
 
 @dataclass
@@ -240,6 +250,11 @@ def _default_artifact_path(pipeline_path: Path, *, pipeline_id: str) -> Path:
 def _normalize_run_label(run_label: str | None) -> str | None:
     text = str(run_label or "").strip()
     return text or None
+
+
+def _normalize_stop_reason(reason: str | None) -> str:
+    text = str(reason or "").strip()
+    return text or "Pipeline stop requested by user."
 
 
 def load_pipeline_code_from_file(path: str | Path) -> tuple[Path, str]:
@@ -623,6 +638,12 @@ def _resolve_artifact_path(
     return resolved
 
 
+def _stop_request_path(*, artifact_path: Path, pipeline_id: str, run_id: str) -> Path:
+    root = artifact_path.parent / "stop_requests" / str(pipeline_id).strip()
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{str(run_id).strip()}.json"
+
+
 def _resolve_connections_path(pipeline_path: Path, connections_path: str | Path | None) -> str | None:
     if connections_path is not None:
         return str(Path(connections_path).expanduser().resolve())
@@ -756,6 +777,38 @@ def _select_pipeline_run_for_inspection(
     if not latest_runs:
         return None
     return latest_runs[0]
+
+
+def _select_pipeline_run_for_stop(
+    resolved_artifact_path: Path,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    import duckdb_core
+
+    if run_id is not None:
+        selected_run = _select_pipeline_run_for_inspection(
+            resolved_artifact_path=resolved_artifact_path,
+            run_id=run_id,
+            run_label=None,
+            default_to_latest=False,
+        )
+        if selected_run is None:
+            raise RuntimeError(f"Run '{run_id}' was not found for this pipeline.")
+    else:
+        runs = duckdb_core.list_pipeline_runs(database_path=str(resolved_artifact_path))
+        selected_run = next(
+            (item for item in runs if str(item.get("status") or "").strip().lower() == "running"),
+            None,
+        )
+        if selected_run is None:
+            raise RuntimeError("No running pipeline run was found to stop.")
+
+    selected_status = str(selected_run.get("status") or "").strip().lower()
+    if selected_status != "running":
+        selected_run_id = str(selected_run.get("run_id") or "").strip() or "-"
+        raise RuntimeError(f"Run '{selected_run_id}' is not running, so there is nothing to stop.")
+    return selected_run
 
 
 def _inspect_pipeline_logs(
@@ -1934,6 +1987,59 @@ def reset_downstream(
         target=target,
         artifact_path=None,
         on_log=on_log,
+    )
+
+
+def stop_pipeline(
+    pipeline_path: str | Path,
+    *,
+    run_id: str | None = None,
+    reason: str | None = None,
+) -> StopPipelineResult:
+    resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
+    resolved_artifact_path = _resolve_inspect_artifact_path(
+        _resolve_artifact_path(
+            resolved_pipeline_path,
+            artifact_path=None,
+            compiled=None,
+            config_path=None,
+            target=None,
+        )
+    )
+    selected_run = _select_pipeline_run_for_stop(
+        resolved_artifact_path,
+        run_id=run_id,
+    )
+    resolved_run_id = str(selected_run.get("run_id") or "").strip()
+    if not resolved_run_id:
+        raise RuntimeError("The selected running pipeline is missing a run_id.")
+    pipeline_id = str(selected_run.get("pipeline_id") or "").strip()
+    if not pipeline_id:
+        raise RuntimeError("The selected running pipeline is missing a pipeline_id.")
+
+    request_path = _stop_request_path(
+        artifact_path=resolved_artifact_path,
+        pipeline_id=pipeline_id,
+        run_id=resolved_run_id,
+    )
+    request_payload = {
+        "pipeline_id": pipeline_id,
+        "pipeline_path": str(resolved_pipeline_path),
+        "artifact_path": str(resolved_artifact_path),
+        "run_id": resolved_run_id,
+        "run_label": str(selected_run.get("run_label") or "").strip() or None,
+        "requested_at": utc_now_timestamp(),
+        "reason": _normalize_stop_reason(reason),
+        "status": "requested",
+    }
+    request_path.write_text(json.dumps(request_payload, indent=2) + "\n", encoding="utf-8")
+    return StopPipelineResult(
+        artifact_path=str(resolved_artifact_path),
+        run_id=resolved_run_id,
+        run_label=request_payload["run_label"],
+        stop_requested=True,
+        request_path=str(request_path),
+        message=f"Stop requested for run '{resolved_run_id}'.",
     )
 
 

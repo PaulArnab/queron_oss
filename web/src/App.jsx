@@ -10,7 +10,7 @@ import {
 } from "@xyflow/react";
 import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown } from "lucide-react";
+import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown, Square } from "lucide-react";
 import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
 import "ag-grid-community/styles/ag-grid.css";
@@ -1946,11 +1946,13 @@ export default function App() {
   const isRunning = runStatus === "running";
   const isFailed = runStatus === "failed";
   const canRun = !isRunning;
+  const canStop = isRunning;
   const canResume = isFailed;
   const canResetAll = isFailed;
   const canResetNode = isFailed && hasSelectedNode;
   const canResetUpstream = isFailed && hasSelectedNode;
   const controlsDisabled = Boolean(pendingAction) || isRunning;
+  const stopDisabled = pendingAction === "/api/stop" || !isRunning;
   const selectedNodeIdRef = useRef("");
   const sheetOpenRef = useRef(false);
   const activeTabRef = useRef("query");
@@ -2406,6 +2408,12 @@ export default function App() {
                 icon={SkipForward}
                 onClick={() => runAction("/api/resume")}
                 disabled={controlsDisabled || !canResume}
+              />
+              <HeaderActionButton
+                title="Stop"
+                icon={Square}
+                onClick={() => runAction("/api/stop")}
+                disabled={stopDisabled}
               />
               <HeaderActionButton
                 title="Reset All"

@@ -115,6 +115,10 @@ def _build_check_failure(message: str, *, details: dict[str, Any]) -> RuntimeErr
     return exc
 
 
+class GracefulStopRequested(RuntimeError):
+    pass
+
+
 def _node_log_id(node: NodeSpec | None) -> str | None:
     if node is None:
         return None
@@ -164,9 +168,13 @@ class PipelineRuntime:
         self._node_run_ids: dict[str, str] = {}
         self._node_active_state_ids: dict[str, str] = {}
         self._pipeline_started_at: str | None = None
+        self._stop_request_handled = False
 
     def _resolve_log_path(self) -> Path:
         return Path(self.duckdb_path).resolve().parent / "logs" / str(self.pipeline_id) / f"{self.run_id}.jsonl"
+
+    def _resolve_stop_request_path(self) -> Path:
+        return Path(self.duckdb_path).resolve().parent / "stop_requests" / str(self.pipeline_id) / f"{self.run_id}.json"
 
     def _refresh_log_path(self) -> None:
         self.log_path = str(self._resolve_log_path())
@@ -194,6 +202,47 @@ class PipelineRuntime:
         if not resolved.is_file():
             raise RuntimeError(f"File '{resolved}' is not a file.")
         return resolved
+
+    def _consume_stop_request_payload(self) -> dict[str, Any] | None:
+        if self._stop_request_handled:
+            return None
+        request_path = self._resolve_stop_request_path()
+        if not request_path.exists() or not request_path.is_file():
+            return None
+        payload: dict[str, Any] = {}
+        try:
+            raw = json.loads(request_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                payload = {str(key): value for key, value in raw.items()}
+        except Exception:
+            payload = {}
+        finally:
+            try:
+                request_path.unlink()
+            except Exception:
+                pass
+        self._stop_request_handled = True
+        return payload
+
+    def raise_if_stop_requested(self, *, node: NodeSpec | None = None, boundary: str) -> None:
+        payload = self._consume_stop_request_payload()
+        if payload is None:
+            return
+        reason = str(payload.get("reason") or "").strip() or "Pipeline stop requested by user."
+        exc = GracefulStopRequested(reason)
+        setattr(
+            exc,
+            "queron_details",
+            {
+                "stop_requested": True,
+                "stop_mode": "graceful",
+                "boundary": str(boundary or "").strip() or "unknown",
+                "requested_at": str(payload.get("requested_at") or "").strip() or None,
+                "request_path": str(self._resolve_stop_request_path()),
+                "node_name": node.name if node is not None else None,
+            },
+        )
+        raise exc
 
     def _node_artifact_name(self, node: NodeSpec) -> str | None:
         for candidate in (node.target_table, node.target_relation, node.output_path):
