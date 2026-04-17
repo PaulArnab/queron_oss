@@ -618,8 +618,8 @@ def leaf():
             self.assertEqual(
                 {str(name): str(status) for name, status in node_rows},
                 {
-                    "leaf": "ready",
-                    "mid": "ready",
+                    "leaf": "skipped",
+                    "mid": "skipped",
                     "slow_seed": "complete",
                 },
             )

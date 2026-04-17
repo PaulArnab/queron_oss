@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .specs import PipelineSpec
+from .runtime_models import LogCode
 from .runtime_models import RunPolicy
 
 
@@ -99,6 +100,39 @@ def execute_selected_nodes(spec: PipelineSpec, *, runtime, selected_node_names: 
     nodes = spec.node_by_name()
     executed: list[str] = []
     run_policy = getattr(runtime, "run_policy", RunPolicy())
+
+    def _handle_interrupted_run(exc: Exception, *, failed_node=None) -> None:
+        if run_policy.on_exception != "stop":
+            raise RuntimeError(f"Unsupported run policy on_exception='{run_policy.on_exception}'.")
+        if failed_node is not None and hasattr(runtime, "_log_event"):
+            runtime._log_event(
+                code=LogCode.PIPELINE_EXECUTION_FAILED,
+                message=f"Execution failed: {exc}",
+                severity="error",
+                details={"exception_type": type(exc).__name__, "phase": "executor"},
+            )
+        remaining = [
+            nodes[name]
+            for name in ordered
+            if name in selected and name not in executed and (failed_node is None or name != failed_node.name)
+        ]
+        if failed_node is not None and run_policy.persist_node_outcomes and hasattr(runtime, "mark_node_failed"):
+            runtime.mark_node_failed(failed_node, exc)
+        if (
+            remaining
+            and run_policy.persist_node_outcomes
+            and run_policy.downstream_on_hard_failure == "skip"
+            and hasattr(runtime, "mark_nodes_skipped")
+        ):
+            if failed_node is None:
+                reason = f"Skipped because pipeline stop was requested before node execution continued: {exc}"
+            else:
+                reason = f"Skipped because node '{failed_node.name}' failed earlier in the run."
+            runtime.mark_nodes_skipped(remaining, reason=reason)
+        if run_policy.persist_node_outcomes and hasattr(runtime, "mark_run_failed"):
+            runtime.mark_run_failed(exc)
+        raise exc
+
     if run_policy.persist_node_outcomes and hasattr(runtime, "begin_run"):
         runtime.begin_run(selected_node_names=selected)
 
@@ -110,35 +144,13 @@ def execute_selected_nodes(spec: PipelineSpec, *, runtime, selected_node_names: 
             try:
                 runtime.raise_if_stop_requested(node=node, boundary="before_node")
             except Exception as exc:
-                if run_policy.persist_node_outcomes and hasattr(runtime, "mark_run_failed"):
-                    runtime.mark_run_failed(exc)
-                raise
+                _handle_interrupted_run(exc, failed_node=None)
         if run_policy.persist_node_outcomes and hasattr(runtime, "mark_node_running"):
             runtime.mark_node_running(node)
         try:
             result = runtime.execute_node(node)
         except Exception as exc:
-            if run_policy.on_exception != "stop":
-                raise RuntimeError(f"Unsupported run policy on_exception='{run_policy.on_exception}'.")
-            if run_policy.persist_node_outcomes and hasattr(runtime, "mark_node_failed"):
-                runtime.mark_node_failed(node, exc)
-            remaining = [
-                nodes[name]
-                for name in ordered
-                if name in selected and name not in executed and name != node_name
-            ]
-            if (
-                run_policy.persist_node_outcomes
-                and run_policy.downstream_on_hard_failure == "skip"
-                and hasattr(runtime, "mark_nodes_skipped")
-            ):
-                runtime.mark_nodes_skipped(
-                    remaining,
-                    reason=f"Skipped because node '{node_name}' failed earlier in the run.",
-                )
-            if run_policy.persist_node_outcomes and hasattr(runtime, "mark_run_failed"):
-                runtime.mark_run_failed(exc)
-            raise
+            _handle_interrupted_run(exc, failed_node=node)
         if run_policy.on_warning != "continue":
             raise RuntimeError(f"Unsupported run policy on_warning='{run_policy.on_warning}'.")
         if run_policy.persist_node_outcomes and hasattr(runtime, "mark_node_success"):
@@ -148,9 +160,7 @@ def execute_selected_nodes(spec: PipelineSpec, *, runtime, selected_node_names: 
             try:
                 runtime.raise_if_stop_requested(node=node, boundary="after_node")
             except Exception as exc:
-                if run_policy.persist_node_outcomes and hasattr(runtime, "mark_run_failed"):
-                    runtime.mark_run_failed(exc)
-                raise
+                _handle_interrupted_run(exc, failed_node=None)
 
     if run_policy.persist_node_outcomes and hasattr(runtime, "mark_run_success"):
         runtime.mark_run_success()

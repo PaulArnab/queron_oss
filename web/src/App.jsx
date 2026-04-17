@@ -1870,8 +1870,8 @@ function ArtifactExplorerPage({
                             resizable: true,
                             minWidth: 120,
                           }}
-                          headerHeight={30}
-                          rowHeight={28}
+                          headerHeight={26}
+                          rowHeight={26}
                           animateRows
                           rowSelection="single"
                           suppressCellFocus
@@ -2272,7 +2272,12 @@ export default function App() {
           throw new Error(payload.error || "Action failed.");
         }
       }
-      await refreshGraphAndDrawer();
+      if (endpoint === "/api/stop") {
+        setActionError("Stop requested.");
+      }
+      if (endpoint !== "/api/stop") {
+        await refreshGraphAndDrawer();
+      }
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -2398,7 +2403,7 @@ export default function App() {
 
             <div className="flex items-center gap-1.5">
               <HeaderActionButton
-                title="Run"
+                title="Run from Scratch"
                 icon={CirclePlay}
                 onClick={() => runAction("/api/run")}
                 disabled={controlsDisabled || !canRun}

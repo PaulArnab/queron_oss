@@ -743,6 +743,7 @@ def _select_pipeline_run_for_inspection(
     run_id: str | None = None,
     run_label: str | None = None,
     default_to_latest: bool = True,
+    available_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     if run_id is not None and run_label is not None:
         raise RuntimeError("Use either run_id or run_label, not both.")
@@ -769,6 +770,9 @@ def _select_pipeline_run_for_inspection(
 
     if not default_to_latest:
         return None
+
+    if available_runs is not None:
+        return available_runs[0] if available_runs else None
 
     latest_runs = duckdb_core.list_pipeline_runs(
         database_path=str(resolved_artifact_path),
@@ -1352,7 +1356,7 @@ def inspect_dag(
     run_id: str | None = None,
     run_label: str | None = None,
 ) -> InspectDagResult:
-    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
+    resolved_artifact_path, _active_contract, runs = _inspect_pipeline_runs(
         artifact_path,
         limit=None,
     )
@@ -1361,6 +1365,7 @@ def inspect_dag(
         run_id=run_id,
         run_label=run_label,
         default_to_latest=True,
+        available_runs=runs,
     )
     contract = _load_compiled_contract_for_inspection(
         resolved_artifact_path=resolved_artifact_path,
@@ -1419,6 +1424,8 @@ def inspect_dag(
                 "node_run_status": str(node_run.get("status") or "").strip() or None,
                 "started_at": str(node_run.get("started_at") or "").strip() or None,
                 "finished_at": str(node_run.get("finished_at") or "").strip() or None,
+                "row_count_in": node_run.get("row_count_in"),
+                "row_count_out": node_run.get("row_count_out"),
             }
         )
 
@@ -1562,7 +1569,7 @@ def _resume_selected_nodes(
         return {
             node.name
             for node in spec.nodes
-            if active_state_by_name.get(node.name, "ready") in {"ready", "running", "failed", "cleared"}
+            if active_state_by_name.get(node.name, "ready") in {"ready", "running", "failed", "cleared", "skipped"}
         }
 
     fallback_status_by_name = {

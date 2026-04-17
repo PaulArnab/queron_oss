@@ -79,6 +79,8 @@ body {
 .loom-grid .ag-header-cell-label {
   align-items: center;
   line-height: 1.2;
+  font-size: 11.5px;
+  font-weight: 500;
 }
 
 .loom-grid .loom-grid-cell {
