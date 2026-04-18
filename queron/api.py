@@ -58,6 +58,7 @@ class InspectDagResult:
     run_id: str | None = None
     run_label: str | None = None
     run_status: str | None = None
+    is_final: bool = False
     nodes: list[dict[str, Any]] = field(default_factory=list)
     edges: list[list[str]] = field(default_factory=list)
 
@@ -70,6 +71,7 @@ class InspectNodeResult:
     run_id: str | None = None
     run_label: str | None = None
     run_status: str | None = None
+    is_final: bool = False
     selection: str = "node"
     requested_node: str | None = None
     nodes: list[dict[str, Any]] = field(default_factory=list)
@@ -83,6 +85,7 @@ class InspectNodeHistoryResult:
     run_id: str | None = None
     run_label: str | None = None
     run_status: str | None = None
+    is_final: bool = False
     node_name: str | None = None
     node_kind: str | None = None
     node_run_id: str | None = None
@@ -103,6 +106,7 @@ class InspectNodeLogResult:
     run_id: str | None = None
     run_label: str | None = None
     run_status: str | None = None
+    is_final: bool = False
     node_name: str | None = None
     node_kind: str | None = None
     logs: list[dict[str, Any]] = field(default_factory=list)
@@ -117,6 +121,7 @@ class InspectNodeQueryResult:
     run_id: str | None = None
     run_label: str | None = None
     run_status: str | None = None
+    is_final: bool = False
     node_name: str | None = None
     node_kind: str | None = None
     logical_artifact: str | None = None
@@ -257,6 +262,10 @@ def _normalize_stop_reason(reason: str | None) -> str:
     return text or "Pipeline stop requested by user."
 
 
+def _selected_run_is_final(selected_run: dict[str, Any] | None) -> bool:
+    return bool(selected_run.get("is_final")) if isinstance(selected_run, dict) else False
+
+
 def load_pipeline_code_from_file(path: str | Path) -> tuple[Path, str]:
     resolved = Path(path).expanduser().resolve()
     if not resolved.exists() or not resolved.is_file():
@@ -304,6 +313,7 @@ def _compile_pipeline_impl(
         database_path=str(resolved_artifact_path),
         record=compiled.contract,
     )
+    duckdb_core.finalize_latest_failed_run(database_path=str(resolved_artifact_path))
     return compiled
 
 
@@ -1119,6 +1129,7 @@ def inspect_node(
         run_id=selected_run_id or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
         run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        is_final=_selected_run_is_final(selected_run),
         selection=selection,
         requested_node=str(node_name).strip(),
         nodes=nodes,
@@ -1189,6 +1200,7 @@ def inspect_node_history(
         run_id=selected_run_id or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
         run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        is_final=_selected_run_is_final(selected_run),
         node_name=normalized_node_name,
         node_kind=str(node_payload.get("kind") or "").strip() or None,
         node_run_id=str(node_run.get("node_run_id") or "").strip() or None,
@@ -1280,6 +1292,7 @@ def inspect_node_logs(
         run_id=str(selected_run.get("run_id") or "").strip() or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None,
         run_status=str(selected_run.get("status") or "").strip() or None,
+        is_final=_selected_run_is_final(selected_run),
         node_name=normalized_node_name,
         node_kind=str(node_payload.get("kind") or "").strip() or None,
         logs=logs,
@@ -1337,6 +1350,7 @@ def inspect_node_query(
         run_id=selected_run_id or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
         run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        is_final=_selected_run_is_final(selected_run),
         node_name=normalized_node_name,
         node_kind=str(node_payload.get("kind") or "").strip() or None,
         logical_artifact=_inspect_node_artifact_name(node_payload),
@@ -1437,6 +1451,7 @@ def inspect_dag(
         run_id=selected_run_id or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
         run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        is_final=_selected_run_is_final(selected_run),
         nodes=nodes,
         edges=edges,
     )
@@ -1532,6 +1547,8 @@ def _current_failed_run_context(
         raise RuntimeError("No pipeline run was found to resume or reset.")
     if str(latest_run.get("status") or "").strip().lower() != "failed":
         raise RuntimeError("The latest pipeline run is not failed, so there is nothing to resume or reset.")
+    if bool(latest_run.get("is_final")):
+        raise RuntimeError("The latest failed pipeline run is final, so it cannot be resumed or reset.")
     if expected_compile_id is not None:
         latest_compile_id = str(latest_run.get("compile_id") or "").strip() or None
         if latest_compile_id is not None and latest_compile_id != expected_compile_id:
@@ -1651,6 +1668,9 @@ def _run_pipeline_impl(
         connections_path=connections_path,
         on_log=on_log,
     )
+    import duckdb_core
+
+    duckdb_core.finalize_latest_failed_run(database_path=str(resolved_artifact_path))
     if clean_existing:
         _preserve_latest_incomplete_run_outputs_before_purge(compiled, runtime=runtime)
         runtime.clear_pipeline_outputs()

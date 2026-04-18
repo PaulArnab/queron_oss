@@ -446,6 +446,7 @@ class PipelineRuntime:
                 started_at=self._pipeline_started_at,
                 finished_at=None,
                 status="running",
+                is_final=False,
             )
         )
         if self._node_run_ids:
@@ -752,6 +753,7 @@ class PipelineRuntime:
                     finished_at=utc_now_timestamp(),
                     status="failed",
                     error_message=f"Artifact archive failed: {exc}",
+                    is_final=False,
                 )
             )
             raise
@@ -767,6 +769,7 @@ class PipelineRuntime:
                 started_at=self._pipeline_started_at,
                 finished_at=utc_now_timestamp(),
                 status=status,
+                is_final=False,
             )
         )
 
@@ -784,6 +787,7 @@ class PipelineRuntime:
                 finished_at=utc_now_timestamp(),
                 status="failed",
                 error_message=str(exc),
+                is_final=False,
             )
         )
 

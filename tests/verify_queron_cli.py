@@ -15,6 +15,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 import queron
 import queron.cli
+import duckdb_core
 from duckdb_driver import load_duckdb
 
 
@@ -1254,6 +1255,157 @@ def leaf():
 
             self.assertEqual(active_states, [("broken", "failed"), ("leaf", "skipped"), ("seed", "complete")])
             self.assertEqual(node_runs, [("broken", "failed"), ("leaf", "skipped"), ("seed", "complete")])
+
+    def test_failed_run_defaults_non_final(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / ".queron" / "policy_non_final.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy_non_final"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='broken',
+    out='broken',
+    query=\"\"\"
+SELECT CAST('bad' AS INTEGER) AS id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def broken():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                failed_exit = queron.cli.main(["run", str(pipeline_path)])
+            self.assertEqual(failed_exit, 1)
+
+            runs = duckdb_core.list_pipeline_runs(database_path=str(artifact_path), limit=1)
+            self.assertEqual(len(runs), 1)
+            self.assertFalse(bool(runs[0].get("is_final")))
+
+    def test_fresh_run_marks_previous_failed_run_final(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / ".queron" / "policy_fresh_run.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy_fresh_run"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='broken',
+    out='broken',
+    query=\"\"\"
+SELECT CAST('bad' AS INTEGER) AS id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def broken():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                first_exit = queron.cli.main(["run", str(pipeline_path)])
+            self.assertEqual(first_exit, 1)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                second_exit = queron.cli.main(["run", str(pipeline_path), "--clean-existing"])
+            self.assertEqual(second_exit, 1)
+
+            runs = duckdb_core.list_pipeline_runs(database_path=str(artifact_path), limit=2)
+            self.assertEqual(len(runs), 2)
+            self.assertFalse(bool(runs[0].get("is_final")))
+            self.assertTrue(bool(runs[1].get("is_final")))
+
+    def test_compile_marks_failed_run_final_and_blocks_resume_reset(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            artifact_path = root / ".queron" / "policy_compile_final.duckdb"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy_compile_final"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.model.sql(
+    name='broken',
+    out='broken',
+    query=\"\"\"
+SELECT CAST('bad' AS INTEGER) AS id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+)
+def broken():
+    pass
+""",
+                encoding="utf-8",
+            )
+            self._compile_pipeline(pipeline_path)
+
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                failed_exit = queron.cli.main(["run", str(pipeline_path)])
+            self.assertEqual(failed_exit, 1)
+
+            self._compile_pipeline(pipeline_path)
+
+            runs = duckdb_core.list_pipeline_runs(database_path=str(artifact_path), limit=1)
+            self.assertEqual(len(runs), 1)
+            self.assertTrue(bool(runs[0].get("is_final")))
+
+            dag = queron.inspect_dag(artifact_path)
+            node = queron.inspect_node(artifact_path, "seed")
+            history = queron.inspect_node_history(artifact_path, "seed")
+            logs = queron.inspect_node_logs(artifact_path, "seed")
+            query = queron.inspect_node_query(artifact_path, "seed")
+            self.assertTrue(dag.is_final)
+            self.assertTrue(node.is_final)
+            self.assertTrue(history.is_final)
+            self.assertTrue(logs.is_final)
+            self.assertTrue(query.is_final)
+
+            with self.assertRaisesRegex(RuntimeError, "final"):
+                queron.resume_pipeline(pipeline_path)
+            with self.assertRaisesRegex(RuntimeError, "final"):
+                queron.reset_all(pipeline_path)
 
     def test_reset_commands_drop_expected_tables(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -751,7 +751,8 @@ def _handle_inspect_runs(args: argparse.Namespace) -> int:
         finished_at = str(item.get("finished_at") or "").strip() or "-"
         status = str(item.get("status") or "").strip() or "-"
         run_id = str(item.get("run_id") or "").strip() or "-"
-        print(f"- {run_id}  {run_label}  {status}  {started_at} -> {finished_at}")
+        is_final = "true" if bool(item.get("is_final")) else "false"
+        print(f"- {run_id}  {run_label}  {status}  final={is_final}  {started_at} -> {finished_at}")
     return 0
 
 
@@ -773,6 +774,7 @@ def _handle_inspect_logs(args: argparse.Namespace) -> int:
     run_label = str(selected_run.get("run_label") or "").strip()
     if run_label:
         print(f"Run label: {run_label}")
+    print(f"Final: {'true' if bool(selected_run.get('is_final')) else 'false'}")
     log_path = str(selected_run.get("log_path") or "").strip()
     if log_path:
         print(f"Log file: {log_path}")
@@ -807,6 +809,7 @@ def _handle_inspect_dag(args: argparse.Namespace) -> int:
         print(f"Run label: {result.run_label}")
     if result.run_status:
         print(f"Run status: {result.run_status}")
+    print(f"Final: {'true' if result.is_final else 'false'}")
 
     print("")
     print("Nodes")
@@ -854,6 +857,7 @@ def _handle_inspect_node(args: argparse.Namespace) -> int:
         print(f"Run label: {result.run_label}")
     if result.run_status:
         print(f"Run status: {result.run_status}")
+    print(f"Final: {'true' if result.is_final else 'false'}")
 
     print("")
     print(f"Selection: {result.selection}")
@@ -911,6 +915,7 @@ def _handle_inspect_node_history(args: argparse.Namespace) -> int:
         print(f"Run label: {result.run_label}")
     if result.run_status:
         print(f"Run status: {result.run_status}")
+    print(f"Final: {'true' if result.is_final else 'false'}")
     if result.node_name:
         print(f"Node: {result.node_name}")
     if result.node_kind:
@@ -966,6 +971,7 @@ def _handle_inspect_node_query(args: argparse.Namespace) -> int:
         print(f"Run label: {result.run_label}")
     if result.run_status:
         print(f"Run status: {result.run_status}")
+    print(f"Final: {'true' if result.is_final else 'false'}")
     if result.node_name:
         print(f"Node: {result.node_name}")
     if result.node_kind:
@@ -1007,6 +1013,7 @@ def _handle_inspect_node_logs(args: argparse.Namespace) -> int:
         print(f"Run label: {result.run_label}")
     if result.run_status:
         print(f"Run status: {result.run_status}")
+    print(f"Final: {'true' if result.is_final else 'false'}")
     if result.node_name:
         print(f"Node: {result.node_name}")
     if result.node_kind:

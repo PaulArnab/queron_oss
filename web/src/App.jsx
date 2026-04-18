@@ -600,6 +600,7 @@ function patchGraphDataWithEvent(current, event) {
       ...next,
       run_id: event.run_id || next.run_id,
       run_status: "running",
+      is_final: false,
       nodes: (Array.isArray(next.nodes) ? next.nodes : []).map((node) => ({
         ...node,
         current_state: "ready",
@@ -615,12 +616,14 @@ function patchGraphDataWithEvent(current, event) {
       ...next,
       run_id: event.run_id || next.run_id,
       run_status: "failed",
+      is_final: false,
     };
   } else if (code === "pipeline_execution_finished") {
     next = {
       ...next,
       run_id: event.run_id || next.run_id,
       run_status: next.run_status === "success_with_warnings" ? "success_with_warnings" : "success",
+      is_final: false,
     };
   }
 
@@ -1942,17 +1945,18 @@ export default function App() {
   const [isSynchronizedRefreshRunning, setIsSynchronizedRefreshRunning] = useState(false);
   const [pageRefreshActive, setPageRefreshActive] = useState(false);
   const runStatus = String(graphData?.run_status || "").trim().toLowerCase();
+  const isFinalRun = Boolean(graphData?.is_final);
   const hasSelectedNode = Boolean(selectedNodeId);
   const isRunning = runStatus === "running";
   const isFailed = runStatus === "failed";
   const canRun = !isRunning;
-  const canStop = isRunning;
-  const canResume = isFailed;
-  const canResetAll = isFailed;
-  const canResetNode = isFailed && hasSelectedNode;
-  const canResetUpstream = isFailed && hasSelectedNode;
+  const canStop = isRunning && !isFinalRun;
+  const canResume = isFailed && !isFinalRun;
+  const canResetAll = isFailed && !isFinalRun;
+  const canResetNode = isFailed && hasSelectedNode && !isFinalRun;
+  const canResetUpstream = isFailed && hasSelectedNode && !isFinalRun;
   const controlsDisabled = Boolean(pendingAction) || isRunning;
-  const stopDisabled = pendingAction === "/api/stop" || !isRunning;
+  const stopDisabled = pendingAction === "/api/stop" || !canStop;
   const selectedNodeIdRef = useRef("");
   const sheetOpenRef = useRef(false);
   const activeTabRef = useRef("query");
@@ -2390,7 +2394,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-5">
               <div className="max-w-[200px] text-right">
                 <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Run ID</div>
                 <div className="mt-0.5 truncate text-[12px] font-medium text-slate-700">{graphData?.run_id || "-"}</div>
@@ -2398,6 +2402,16 @@ export default function App() {
               <div className="max-w-[180px] text-right">
                 <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Run Label</div>
                 <div className="mt-0.5 truncate text-[12px] font-medium text-slate-700">{graphData?.run_label || "-"}</div>
+              </div>
+              <div className="max-w-[120px] text-right">
+                <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Active</div>
+                <div className="mt-0.5 flex h-[18px] items-center justify-end">
+                  <span
+                    className={`inline-block h-2.5 w-2.5 rounded-full ${isFinalRun ? "bg-slate-300" : "bg-emerald-500"}`}
+                    aria-label={isFinalRun ? "Final run" : "Active run"}
+                    title={isFinalRun ? "Final run" : "Active run"}
+                  />
+                </div>
               </div>
             </div>
 

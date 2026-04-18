@@ -205,6 +205,7 @@ def get_graph_panel(
         "run_id": result.run_id,
         "run_label": result.run_label,
         "run_status": result.run_status,
+        "is_final": result.is_final,
         "node_count": len(result.nodes),
         "nodes": result.nodes,
         "edges": result.edges,
@@ -237,6 +238,7 @@ def get_node_panel(
         "run_id": selection.run_id,
         "run_label": selection.run_label,
         "run_status": selection.run_status,
+        "is_final": selection.is_final,
         "node_name": node_name,
         "selected": selected_node,
     }
@@ -263,6 +265,7 @@ def get_node_upstream_panel(
         "run_id": upstream.run_id,
         "run_label": upstream.run_label,
         "run_status": upstream.run_status,
+        "is_final": upstream.is_final,
         "nodes": upstream.nodes,
     }
 
@@ -288,6 +291,7 @@ def get_node_downstream_panel(
         "run_id": downstream.run_id,
         "run_label": downstream.run_label,
         "run_status": downstream.run_status,
+        "is_final": downstream.is_final,
         "nodes": downstream.nodes,
     }
 
@@ -312,6 +316,7 @@ def get_node_history_panel(
         "run_id": history.run_id,
         "run_label": history.run_label,
         "run_status": history.run_status,
+        "is_final": history.is_final,
         "history": {
             "node_name": history.node_name,
             "node_kind": history.node_kind,
@@ -349,6 +354,7 @@ def get_node_logs_panel(
         "run_id": logs.run_id,
         "run_label": logs.run_label,
         "run_status": logs.run_status,
+        "is_final": logs.is_final,
         "logs": logs.logs,
     }
 
@@ -373,6 +379,7 @@ def get_node_query_panel(
         "run_id": query.run_id,
         "run_label": query.run_label,
         "run_status": query.run_status,
+        "is_final": query.is_final,
         "query": {
             "pipeline_path": query.pipeline_path,
             "artifact_path": query.artifact_path,
@@ -381,6 +388,7 @@ def get_node_query_panel(
             "run_id": query.run_id,
             "run_label": query.run_label,
             "run_status": query.run_status,
+            "is_final": query.is_final,
             "node_name": query.node_name,
             "node_kind": query.node_kind,
             "logical_artifact": query.logical_artifact,

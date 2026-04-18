@@ -316,6 +316,7 @@ class PipelineRunRecord(BaseModel):
     finished_at: str | None = None
     status: RunStatus
     error_message: str | None = None
+    is_final: bool = False
 
     @property
     def notebook_id(self) -> str:

@@ -942,7 +942,8 @@ def _pipeline_runs_create_sql(*, table_name: str) -> str:
             started_at VARCHAR,
             finished_at VARCHAR,
             status VARCHAR {_run_status_check_sql()},
-            error_message VARCHAR
+            error_message VARCHAR,
+            is_final BOOLEAN DEFAULT FALSE
         )
         """
 
@@ -1091,6 +1092,10 @@ def _ensure_queron_meta_tables(conn) -> None:
     except Exception:
         pass
     try:
+        conn.execute(f"ALTER TABLE {pipeline_runs_name} ADD COLUMN IF NOT EXISTS is_final BOOLEAN DEFAULT FALSE")
+    except Exception:
+        pass
+    try:
         conn.execute(f"ALTER TABLE {node_runs_name} ADD COLUMN IF NOT EXISTS details_json VARCHAR")
     except Exception:
         pass
@@ -1125,7 +1130,7 @@ def _ensure_queron_meta_tables(conn) -> None:
             "status",
             "error_message",
         ],
-        required_column_names=["pipeline_id"],
+        required_column_names=["pipeline_id", "is_final"],
     )
     node_runs_sql = str(_table_create_sql(conn, schema_name="_queron_meta", table_name="node_runs") or "").lower()
     if "node_run_id" not in node_runs_sql or "active_node_state_id" not in node_runs_sql:
@@ -1311,6 +1316,7 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
         item.finished_at,
         item.status,
         item.error_message,
+        item.is_final,
     )
     try:
         conn.execute(
@@ -1326,8 +1332,9 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 started_at,
                 finished_at,
                 status,
-                error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                error_message,
+                is_final
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1345,8 +1352,9 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 started_at,
                 finished_at,
                 status,
-                error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                error_message,
+                is_final
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -2487,7 +2495,8 @@ def get_latest_pipeline_run(
                     started_at,
                     finished_at,
                     status,
-                    error_message
+                    error_message,
+                    COALESCE(is_final, FALSE) AS is_final
                 FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
                 {where_sql}
                 ORDER BY COALESCE(finished_at, started_at) DESC
@@ -2511,6 +2520,7 @@ def get_latest_pipeline_run(
             "finished_at": row[8],
             "status": row[9],
             "error_message": row[10],
+            "is_final": bool(row[11]) if row[11] is not None else False,
         }
     finally:
         conn.close()
@@ -2542,7 +2552,8 @@ def get_pipeline_run_by_label(
                 started_at,
                 finished_at,
                 status,
-                error_message
+                error_message,
+                COALESCE(is_final, FALSE) AS is_final
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
             WHERE run_label = ?
             LIMIT 1
@@ -2563,6 +2574,7 @@ def get_pipeline_run_by_label(
             "finished_at": row[8],
             "status": row[9],
             "error_message": row[10],
+            "is_final": bool(row[11]) if row[11] is not None else False,
         }
     finally:
         conn.close()
@@ -2594,7 +2606,8 @@ def get_pipeline_run_by_id(
                 started_at,
                 finished_at,
                 status,
-                error_message
+                error_message,
+                COALESCE(is_final, FALSE) AS is_final
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
             WHERE run_id = ?
             LIMIT 1
@@ -2615,6 +2628,7 @@ def get_pipeline_run_by_id(
             "finished_at": row[8],
             "status": row[9],
             "error_message": row[10],
+            "is_final": bool(row[11]) if row[11] is not None else False,
         }
     finally:
         conn.close()
@@ -2647,7 +2661,8 @@ def list_pipeline_runs(
                 started_at,
                 finished_at,
                 status,
-                error_message
+                error_message,
+                COALESCE(is_final, FALSE) AS is_final
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
             ORDER BY COALESCE(finished_at, started_at) DESC
             {limit_sql}
@@ -2670,9 +2685,66 @@ def list_pipeline_runs(
             "finished_at": row[8],
             "status": row[9],
             "error_message": row[10],
+            "is_final": bool(row[11]) if row[11] is not None else False,
         }
         for row in rows
     ]
+
+
+def finalize_latest_failed_run(
+    *,
+    database_path: str,
+) -> dict[str, Any] | None:
+    resolved_database_path = str(Path(database_path).expanduser().resolve())
+    conn = _duckdb_connection(resolved_database_path)
+    try:
+        _ensure_queron_meta_tables(conn)
+        row = conn.execute(
+            f"""
+            SELECT
+                run_id,
+                run_label,
+                log_path,
+                compile_id,
+                pipeline_id,
+                target,
+                artifact_path,
+                started_at,
+                finished_at,
+                status,
+                error_message
+            FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
+            WHERE status = 'failed' AND COALESCE(is_final, FALSE) = FALSE
+            ORDER BY COALESCE(finished_at, started_at) DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            f"""
+            UPDATE {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
+            SET is_final = TRUE
+            WHERE run_id = ?
+            """,
+            (row[0],),
+        )
+        return {
+            "run_id": row[0],
+            "run_label": row[1],
+            "log_path": row[2],
+            "compile_id": row[3],
+            "pipeline_id": row[4],
+            "target": row[5],
+            "artifact_path": row[6],
+            "started_at": row[7],
+            "finished_at": row[8],
+            "status": row[9],
+            "error_message": row[10],
+            "is_final": True,
+        }
+    finally:
+        conn.close()
 
 
 def get_node_runs_for_run(
