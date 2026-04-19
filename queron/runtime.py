@@ -1012,7 +1012,10 @@ class PipelineRuntime:
                 target_tables=self._selected_local_artifact_tables(),
             )
             if archived:
-                archived_artifact_path = self.duckdb_path
+                archived_artifact_path = duckdb_core.archived_artifact_path_for_run(
+                    database_path=self.duckdb_path,
+                    run_id=self.run_id,
+                )
         except Exception as exc:
             self._record_pipeline_run(
                 PipelineRunRecord(

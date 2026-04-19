@@ -1940,12 +1940,17 @@ def _load_database_block_size(conn) -> int | None:
         return None
 
 
-def _table_exists(conn, *, schema: str, name: str) -> bool:
+def _table_exists(conn, *, schema: str, name: str, database: str | None = None) -> bool:
     try:
+        info_schema = (
+            f"{_quote_identifier(database)}.{_quote_identifier('information_schema')}.{_quote_identifier('tables')}"
+            if str(database or "").strip()
+            else "information_schema.tables"
+        )
         row = conn.execute(
-            """
+            f"""
             SELECT 1
-            FROM information_schema.tables
+            FROM {info_schema}
             WHERE table_schema = ? AND table_name = ?
             LIMIT 1
             """,
@@ -3318,6 +3323,18 @@ def _archive_schema_name_for_run(run_id: str) -> str:
     return f"run_{normalized}"
 
 
+def _quote_sql_string(value: str) -> str:
+    return "'" + str(value or "").replace("'", "''") + "'"
+
+
+def archived_artifact_path_for_run(*, database_path: str | Path, run_id: str) -> str:
+    resolved_database_path = Path(database_path).expanduser().resolve()
+    normalized_run_id = str(run_id or "").strip()
+    if not normalized_run_id:
+        raise RuntimeError("run_id is required to resolve archived artifact path.")
+    return str((resolved_database_path.parent / normalized_run_id / "artifact.duckdb").resolve())
+
+
 def archive_pipeline_targets(
     *,
     connection_id: str,
@@ -3343,30 +3360,52 @@ def archive_pipeline_targets(
 
     archive_schema = _archive_schema_name_for_run(run_id)
     database = _resolve_database_path(DuckDbConnectRequest(**cfg_dict))
+    archived_database = archived_artifact_path_for_run(database_path=database, run_id=run_id)
+    archived_database_path = Path(archived_database)
+    archived_database_path.parent.mkdir(parents=True, exist_ok=True)
     conn = _duckdb_connection(database)
     archived: dict[str, str] = {}
     try:
         _ensure_queron_meta_tables(conn)
-        conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(archive_schema)}")
-
         existing_targets: list[tuple[str, str]] = []
         for schema, name in normalized_targets:
             if _table_exists(conn, schema=schema, name=name):
                 existing_targets.append((schema, name))
+        if not existing_targets:
+            return {}
+
+        archive_alias = "queron_archive_target"
+        try:
+            conn.execute(
+                f"ATTACH {_quote_sql_string(str(archived_database_path))} AS {_quote_identifier(archive_alias)}"
+            )
+            conn.execute(
+                f"CREATE SCHEMA IF NOT EXISTS "
+                f"{_quote_identifier(archive_alias)}.{_quote_identifier(archive_schema)}"
+            )
+            for source_schema, table_name in existing_targets:
+                destination_qualified = f"{archive_schema}.{table_name}"
+                source_qualified = f"{source_schema}.{table_name}"
+                archive_table_ref = (
+                    f"{_quote_identifier(archive_alias)}."
+                    f"{_quote_identifier(archive_schema)}.{_quote_identifier(table_name)}"
+                )
+                if _table_exists(conn, database=archive_alias, schema=archive_schema, name=table_name):
+                    raise RuntimeError(
+                        f"Archived artifact table '{archive_schema}.{table_name}' already exists for run '{run_id}'."
+                    )
+                conn.execute(
+                    f"CREATE TABLE {archive_table_ref} AS SELECT * FROM {_qualified_name(source_schema, table_name)}"
+                )
+                archived[source_qualified] = destination_qualified
+        finally:
+            try:
+                conn.execute(f"DETACH {_quote_identifier(archive_alias)}")
+            except Exception:
+                pass
 
         for source_schema, table_name in existing_targets:
-            destination_qualified = _qualified_name(archive_schema, table_name)
-            source_qualified = _qualified_name(source_schema, table_name)
-            if _table_exists(conn, schema=archive_schema, name=table_name):
-                raise RuntimeError(
-                    f"Archived artifact table '{archive_schema}.{table_name}' already exists for run '{run_id}'."
-                )
-            conn.execute(f"CREATE TABLE {destination_qualified} AS SELECT * FROM {source_qualified}")
-            conn.execute(f"DROP TABLE {source_qualified}")
-            archived[f"{source_schema}.{table_name}"] = f"{archive_schema}.{table_name}"
-
-        if not archived:
-            return {}
+            conn.execute(f"DROP TABLE {_qualified_name(source_schema, table_name)}")
 
         mapping_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('column_mapping')}"
         lineage_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('table_lineage')}"
@@ -3404,7 +3443,7 @@ def archive_pipeline_targets(
                 SET artifact_name = ?, archived_artifact_path = ?, archived_artifact_name = ?
                 WHERE run_id = ? AND artifact_name = ?
                 """,
-                (destination_qualified, database, destination_qualified, str(run_id), source_qualified),
+                (destination_qualified, archived_database, destination_qualified, str(run_id), source_qualified),
             )
         conn.execute(
             f"""
@@ -3412,7 +3451,7 @@ def archive_pipeline_targets(
             SET archived_artifact_path = ?
             WHERE run_id = ?
             """,
-            (database, str(run_id)),
+            (archived_database, str(run_id)),
         )
     finally:
         conn.close()

@@ -149,6 +149,8 @@ def _selected_node_artifact_record(
         raise RuntimeError(f"Node '{node_name}' does not have a materialized artifact for the selected run.")
     return {
         "artifact_name": artifact_name,
+        "artifact_path": str(selected_node.get("archived_artifact_path") or "").strip() or str(Path(artifact_path).resolve()),
+        "archived_artifact_name": str(selected_node.get("archived_artifact_name") or "").strip() or None,
         "logical_artifact": str(selected_node.get("logical_artifact") or "").strip() or None,
         "run_id": selection.run_id,
         "run_label": selection.run_label,
@@ -415,7 +417,7 @@ def get_node_artifact_preview_panel(
         run_label=run_label,
     )
     query_result = _execute_artifact_query(
-        artifact_path,
+        selected["artifact_path"],
         _artifact_preview_query(selected["artifact_name"], limit=limit),
     )
     return {
@@ -424,6 +426,7 @@ def get_node_artifact_preview_panel(
         "run_id": selected["run_id"],
         "run_label": selected["run_label"],
         "run_status": selected["run_status"],
+        "artifact_path": selected["artifact_path"],
         "artifact_name": selected["artifact_name"],
         "logical_artifact": selected["logical_artifact"],
         **query_result,
@@ -448,13 +451,14 @@ def query_node_artifact_panel(
         "{{artifact}}",
         _qualified_artifact_name(selected["artifact_name"]),
     )
-    query_result = _execute_artifact_query(artifact_path, validated_sql)
+    query_result = _execute_artifact_query(selected["artifact_path"], validated_sql)
     return {
         "ok": True,
         "node_name": node_name,
         "run_id": selected["run_id"],
         "run_label": selected["run_label"],
         "run_status": selected["run_status"],
+        "artifact_path": selected["artifact_path"],
         "artifact_name": selected["artifact_name"],
         "logical_artifact": selected["logical_artifact"],
         "sql": validated_sql,
