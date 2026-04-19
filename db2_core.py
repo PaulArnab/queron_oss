@@ -29,7 +29,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
@@ -641,12 +641,14 @@ def ingest_query_to_duckdb(
     replace: bool,
     chunk_size: int,
     pipeline_id: str,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> DuckDbIngestQueryResponse:
     conn_str = _config_from_connection_id(source_connection_id)
     source_conn = None
     source_cur = None
     duck_conn = None
     inserted = 0
+    next_progress_threshold = 1000
     warnings: list[str] = []
     warning_set: set[str] = set()
 
@@ -695,6 +697,10 @@ def ingest_query_to_duckdb(
             if payload:
                 duck_conn.executemany(insert_sql, payload)
                 inserted += len(payload)
+                if on_progress is not None and inserted >= next_progress_threshold:
+                    on_progress({"row_count": inserted, "chunk_size": len(payload)})
+                    while inserted >= next_progress_threshold:
+                        next_progress_threshold += 1000
     finally:
         try:
             if source_cur is not None:

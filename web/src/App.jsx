@@ -648,6 +648,8 @@ function patchGraphDataWithEvent(current, event) {
     } else if (code === "node_warning") {
       patched.current_state = "complete_with_warnings";
       patched.node_run_status = "complete_with_warnings";
+    } else if (code === "node_rows_extracted") {
+      if (details.row_count !== undefined) patched.row_count_out = details.row_count;
     } else if (successCodes.has(code)) {
       const alreadyWarning =
         String(patched.current_state || "").trim().toLowerCase() === "complete_with_warnings" ||
@@ -756,6 +758,9 @@ function patchPanelDataWithEvent(current, event, selectedNodeId) {
     nextSelected.currentState = "complete_with_warnings";
     nextSelected.nodeRunStatus = "complete_with_warnings";
     nextSelected.displayState = runtimeLabel("complete_with_warnings", 1);
+  } else if (code === "node_rows_extracted") {
+    if (details.row_count !== undefined) nextSelected.rowCountOut = details.row_count;
+    if (details.row_count !== undefined) nextSelected.rows = details.row_count;
   } else if (["node_rows_written", "node_artifact_created", "node_egress_written", "node_export_written", "node_check_passed"].includes(code)) {
     const alreadyWarning =
       String(nextSelected.currentState || "").trim().toLowerCase() === "complete_with_warnings" ||

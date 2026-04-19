@@ -25,7 +25,7 @@ from dataclasses import dataclass
 import json
 import re
 import uuid
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urlsplit, urlunsplit
 import time
 
@@ -831,6 +831,7 @@ def ingest_query_to_duckdb(
     replace: bool,
     chunk_size: int,
     pipeline_id: str,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> DuckDbIngestQueryResponse:
     cfg = _config_from_connection_id(source_connection_id)
     connect_kwargs = _pg_connect_kwargs(cfg)
@@ -838,6 +839,7 @@ def ingest_query_to_duckdb(
     source_cur = None
     duck_conn = None
     inserted = 0
+    next_progress_threshold = 1000
     warnings: list[str] = []
     try:
         source_conn = _pg_connection(cfg["uri"], **connect_kwargs)
@@ -881,6 +883,10 @@ def ingest_query_to_duckdb(
             if payload:
                 duck_conn.executemany(insert_sql, payload)
                 inserted += len(payload)
+                if on_progress is not None and inserted >= next_progress_threshold:
+                    on_progress({"row_count": inserted, "chunk_size": len(payload)})
+                    while inserted >= next_progress_threshold:
+                        next_progress_threshold += 1000
 
         target_columns = _inspect_duckdb_target_columns(duck_conn, target_table)
     finally:

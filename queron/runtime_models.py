@@ -53,6 +53,7 @@ class LogCode:
     NODE_CHECK_PASSED = "node_check_passed"
     NODE_SOURCES_RESOLVED = "node_sources_resolved"
     NODE_REFS_RESOLVED = "node_refs_resolved"
+    NODE_ROWS_EXTRACTED = "node_rows_extracted"
     NODE_ROWS_WRITTEN = "node_rows_written"
     NODE_ARTIFACT_CREATED = "node_artifact_created"
     NODE_EGRESS_WRITTEN = "node_egress_written"

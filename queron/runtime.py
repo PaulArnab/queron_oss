@@ -169,6 +169,7 @@ class PipelineRuntime:
         self._node_active_state_ids: dict[str, str] = {}
         self._pipeline_started_at: str | None = None
         self._stop_request_handled = False
+        self._node_progress_row_counts: dict[str, int] = {}
 
     def _resolve_log_path(self) -> Path:
         return Path(self.duckdb_path).resolve().parent / "logs" / str(self.pipeline_id) / f"{self.run_id}.jsonl"
@@ -288,6 +289,49 @@ class PipelineRuntime:
         self._log_event(
             code=LogCode.PIPELINE_EXECUTION_STARTED,
             message=message,
+        )
+
+    def _emit_live_event(
+        self,
+        *,
+        code: str,
+        message: str,
+        severity: str = "info",
+        source: str = "queron",
+        details: dict[str, Any] | None = None,
+        node: NodeSpec | None = None,
+        artifact_name: str | None = None,
+    ) -> None:
+        if self._on_log is None or not str(message or "").strip():
+            return
+        event = build_log_event(
+            code=code,
+            message=str(message),
+            severity=severity,  # type: ignore[arg-type]
+            source=source,  # type: ignore[arg-type]
+            details=details,
+            run_id=self.run_id,
+            node_id=_node_log_id(node),
+            node_name=node.name if node is not None else None,
+            node_kind=node.kind if node is not None else None,
+            artifact_name=artifact_name or (self._node_artifact_name(node) if node is not None else None),
+        )
+        try:
+            self._on_log(event)
+        except Exception:
+            pass
+
+    def _update_node_extract_progress(self, node: NodeSpec, *, row_count: int, chunk_size: int | None = None) -> None:
+        normalized_row_count = max(0, int(row_count))
+        self._node_progress_row_counts[node.name] = normalized_row_count
+        self._emit_live_event(
+            code=LogCode.NODE_ROWS_EXTRACTED,
+            message=f"Extracted {normalized_row_count} row(s) into {node.target_table} so far.",
+            node=node,
+            details={
+                "row_count": normalized_row_count,
+                "chunk_size": int(chunk_size) if chunk_size is not None else None,
+            },
         )
 
     def _ensure_duckdb_connection_id(self) -> str:
@@ -488,6 +532,7 @@ class PipelineRuntime:
         started_at = utc_now_timestamp()
         self._node_started_at[node.name] = started_at
         self._node_terminal_statuses[node.name] = "running"
+        self._node_progress_row_counts.pop(node.name, None)
         node_state_id = self._append_node_state(
             node_name=node.name,
             state="running",
@@ -629,30 +674,32 @@ class PipelineRuntime:
                 )
             ]
         )
+        self._node_progress_row_counts.pop(node.name, None)
 
     def mark_node_failed(self, node: NodeSpec, exc: Exception) -> None:
         self._node_terminal_statuses[node.name] = "failed"
         details_json = getattr(exc, "queron_details", None)
         if not isinstance(details_json, dict):
             details_json = {}
+        progress_count = self._node_progress_row_counts.pop(node.name, None)
+        failure_details = {
+            "exception_type": type(exc).__name__,
+            **{str(key): value for key, value in details_json.items()},
+        }
+        if progress_count is not None:
+            failure_details["extracted_row_count_so_far"] = int(progress_count)
         self._log_event(
             code=LogCode.NODE_EXECUTION_FAILED,
             message=f"Node '{node.name}' failed: {exc}",
             severity="error",
             node=node,
-            details={
-                "exception_type": type(exc).__name__,
-                **{str(key): value for key, value in details_json.items()},
-            },
+            details=failure_details,
         )
         node_state_id = self._append_node_state(
             node_name=node.name,
             state="failed",
             trigger="node_failed",
-            details={
-                "exception_type": type(exc).__name__,
-                **{str(key): value for key, value in details_json.items()},
-            },
+            details=failure_details,
         )
         self._record_node_runs(
             [
@@ -677,7 +724,7 @@ class PipelineRuntime:
                             )
                         ]
                     ),
-                    details_json=details_json,
+                    details_json=failure_details,
                     active_node_state_id=node_state_id,
                 )
             ]
@@ -694,6 +741,7 @@ class PipelineRuntime:
         )
         for node in nodes:
             self._node_terminal_statuses[node.name] = "skipped"
+            self._node_progress_row_counts.pop(node.name, None)
             self._log_event(
                 code=LogCode.NODE_SKIPPED,
                 message=f"Skipping node '{node.name}': {reason}",
@@ -769,7 +817,7 @@ class PipelineRuntime:
                 started_at=self._pipeline_started_at,
                 finished_at=utc_now_timestamp(),
                 status=status,
-                is_final=False,
+                is_final=True,
             )
         )
 
@@ -1119,6 +1167,11 @@ class PipelineRuntime:
                 replace=False,
                 chunk_size=200,
                 pipeline_id=self.pipeline_id,
+                on_progress=lambda progress: self._update_node_extract_progress(
+                    node,
+                    row_count=int(progress.get("row_count") or 0),
+                    chunk_size=int(progress.get("chunk_size")) if progress.get("chunk_size") is not None else None,
+                ),
             )
             duckdb_core.record_ingest_column_mappings(
                 connection_id=duckdb_connection_id,
@@ -1143,6 +1196,11 @@ class PipelineRuntime:
                 replace=False,
                 chunk_size=200,
                 pipeline_id=self.pipeline_id,
+                on_progress=lambda progress: self._update_node_extract_progress(
+                    node,
+                    row_count=int(progress.get("row_count") or 0),
+                    chunk_size=int(progress.get("chunk_size")) if progress.get("chunk_size") is not None else None,
+                ),
             )
             duckdb_core.record_ingest_column_mappings(
                 connection_id=duckdb_connection_id,
