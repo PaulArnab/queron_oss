@@ -448,14 +448,14 @@ def init_pipeline_project(
 
 
 def _fallback_artifact_path_for_diagnostics(pipeline_path: Path) -> Path:
-    return pipeline_path.parent / ".queron" / pipeline_path.stem / "current.duckdb"
+    return pipeline_path.parent / ".queron" / pipeline_path.stem / "artifact.duckdb"
 
 
 def _default_artifact_path(pipeline_path: Path, *, pipeline_id: str) -> Path:
     normalized_pipeline_id = str(pipeline_id or "").strip()
     if not normalized_pipeline_id:
         raise RuntimeError("Pipeline is missing a required pipeline_id in __queron_native__.")
-    return pipeline_path.parent / ".queron" / normalized_pipeline_id / "current.duckdb"
+    return pipeline_path.parent / ".queron" / normalized_pipeline_id / "artifact.duckdb"
 
 
 def _normalize_run_label(run_label: str | None) -> str | None:
