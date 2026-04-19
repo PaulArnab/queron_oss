@@ -80,7 +80,7 @@ def resolve_graph_live_context(pipeline_path: str | Path) -> GraphLiveContext:
     if not resolved_pipeline_path.exists() or not resolved_pipeline_path.is_file():
         raise RuntimeError(f"Pipeline file '{resolved_pipeline_path}' was not found.")
     pipeline_id = _pipeline_id_from_file(resolved_pipeline_path)
-    artifact_path = (resolved_pipeline_path.parent / ".queron" / f"{pipeline_id}.duckdb").resolve()
+    artifact_path = (resolved_pipeline_path.parent / ".queron" / pipeline_id / "current.duckdb").resolve()
     if not artifact_path.exists() or not artifact_path.is_file():
         raise RuntimeError(
             f"Artifact database '{artifact_path}' was not found. Compile or run the pipeline first."

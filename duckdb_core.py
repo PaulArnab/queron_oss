@@ -955,6 +955,7 @@ def _pipeline_runs_create_sql(*, table_name: str) -> str:
             pipeline_id VARCHAR,
             target VARCHAR,
             artifact_path VARCHAR,
+            archived_artifact_path VARCHAR,
             started_at VARCHAR,
             finished_at VARCHAR,
             status VARCHAR {_run_status_check_sql()},
@@ -972,6 +973,8 @@ def _node_runs_create_sql(*, table_name: str) -> str:
             node_name VARCHAR,
             node_kind VARCHAR,
             artifact_name VARCHAR,
+            archived_artifact_path VARCHAR,
+            archived_artifact_name VARCHAR,
             started_at VARCHAR,
             finished_at VARCHAR,
             status VARCHAR {_node_status_check_sql()},
@@ -1108,7 +1111,19 @@ def _ensure_queron_meta_tables(conn) -> None:
     except Exception:
         pass
     try:
+        conn.execute(f"ALTER TABLE {pipeline_runs_name} ADD COLUMN IF NOT EXISTS archived_artifact_path VARCHAR")
+    except Exception:
+        pass
+    try:
         conn.execute(f"ALTER TABLE {pipeline_runs_name} ADD COLUMN IF NOT EXISTS is_final BOOLEAN DEFAULT FALSE")
+    except Exception:
+        pass
+    try:
+        conn.execute(f"ALTER TABLE {node_runs_name} ADD COLUMN IF NOT EXISTS archived_artifact_path VARCHAR")
+    except Exception:
+        pass
+    try:
+        conn.execute(f"ALTER TABLE {node_runs_name} ADD COLUMN IF NOT EXISTS archived_artifact_name VARCHAR")
     except Exception:
         pass
     try:
@@ -1328,6 +1343,7 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
         item.pipeline_id,
         item.target,
         item.artifact_path,
+        item.archived_artifact_path,
         item.started_at,
         item.finished_at,
         item.status,
@@ -1345,12 +1361,13 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 pipeline_id,
                 target,
                 artifact_path,
+                archived_artifact_path,
                 started_at,
                 finished_at,
                 status,
                 error_message,
                 is_final
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1365,12 +1382,13 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 notebook_id,
                 target,
                 artifact_path,
+                archived_artifact_path,
                 started_at,
                 finished_at,
                 status,
                 error_message,
                 is_final
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1453,6 +1471,8 @@ def _persist_node_runs(conn, *, records: list[NodeRunRecord | dict[str, Any]]) -
             item.node_name,
             item.node_kind,
             item.artifact_name,
+            item.archived_artifact_path,
+            item.archived_artifact_name,
             item.started_at,
             item.finished_at,
             item.status,
@@ -1474,6 +1494,8 @@ def _persist_node_runs(conn, *, records: list[NodeRunRecord | dict[str, Any]]) -
             node_name,
             node_kind,
             artifact_name,
+            archived_artifact_path,
+            archived_artifact_name,
             started_at,
             finished_at,
             status,
@@ -1484,7 +1506,7 @@ def _persist_node_runs(conn, *, records: list[NodeRunRecord | dict[str, Any]]) -
             warnings_json,
             details_json,
             active_node_state_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -2561,6 +2583,7 @@ def get_latest_pipeline_run(
                     pipeline_id,
                     target,
                     artifact_path,
+                    archived_artifact_path,
                     started_at,
                     finished_at,
                     status,
@@ -2585,11 +2608,12 @@ def get_latest_pipeline_run(
             "pipeline_id": row[4],
             "target": row[5],
             "artifact_path": row[6],
-            "started_at": row[7],
-            "finished_at": row[8],
-            "status": row[9],
-            "error_message": row[10],
-            "is_final": bool(row[11]) if row[11] is not None else False,
+            "archived_artifact_path": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "status": row[10],
+            "error_message": row[11],
+            "is_final": bool(row[12]) if row[12] is not None else False,
         }
     finally:
         conn.close()
@@ -2618,6 +2642,7 @@ def get_pipeline_run_by_label(
                 pipeline_id,
                 target,
                 artifact_path,
+                archived_artifact_path,
                 started_at,
                 finished_at,
                 status,
@@ -2639,11 +2664,12 @@ def get_pipeline_run_by_label(
             "pipeline_id": row[4],
             "target": row[5],
             "artifact_path": row[6],
-            "started_at": row[7],
-            "finished_at": row[8],
-            "status": row[9],
-            "error_message": row[10],
-            "is_final": bool(row[11]) if row[11] is not None else False,
+            "archived_artifact_path": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "status": row[10],
+            "error_message": row[11],
+            "is_final": bool(row[12]) if row[12] is not None else False,
         }
     finally:
         conn.close()
@@ -2672,6 +2698,7 @@ def get_pipeline_run_by_id(
                 pipeline_id,
                 target,
                 artifact_path,
+                archived_artifact_path,
                 started_at,
                 finished_at,
                 status,
@@ -2693,11 +2720,12 @@ def get_pipeline_run_by_id(
             "pipeline_id": row[4],
             "target": row[5],
             "artifact_path": row[6],
-            "started_at": row[7],
-            "finished_at": row[8],
-            "status": row[9],
-            "error_message": row[10],
-            "is_final": bool(row[11]) if row[11] is not None else False,
+            "archived_artifact_path": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "status": row[10],
+            "error_message": row[11],
+            "is_final": bool(row[12]) if row[12] is not None else False,
         }
     finally:
         conn.close()
@@ -2727,6 +2755,7 @@ def list_pipeline_runs(
                 pipeline_id,
                 target,
                 artifact_path,
+                archived_artifact_path,
                 started_at,
                 finished_at,
                 status,
@@ -2750,11 +2779,12 @@ def list_pipeline_runs(
             "pipeline_id": row[4],
             "target": row[5],
             "artifact_path": row[6],
-            "started_at": row[7],
-            "finished_at": row[8],
-            "status": row[9],
-            "error_message": row[10],
-            "is_final": bool(row[11]) if row[11] is not None else False,
+            "archived_artifact_path": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "status": row[10],
+            "error_message": row[11],
+            "is_final": bool(row[12]) if row[12] is not None else False,
         }
         for row in rows
     ]
@@ -2778,6 +2808,7 @@ def finalize_latest_failed_run(
                 pipeline_id,
                 target,
                 artifact_path,
+                archived_artifact_path,
                 started_at,
                 finished_at,
                 status,
@@ -2806,10 +2837,11 @@ def finalize_latest_failed_run(
             "pipeline_id": row[4],
             "target": row[5],
             "artifact_path": row[6],
-            "started_at": row[7],
-            "finished_at": row[8],
-            "status": row[9],
-            "error_message": row[10],
+            "archived_artifact_path": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "status": row[10],
+            "error_message": row[11],
             "is_final": True,
         }
     finally:
@@ -2837,6 +2869,8 @@ def get_node_runs_for_run(
                     node_name,
                     node_kind,
                     artifact_name,
+                    archived_artifact_path,
+                    archived_artifact_name,
                     started_at,
                     finished_at,
                     status,
@@ -2861,13 +2895,13 @@ def get_node_runs_for_run(
     out: list[dict[str, Any]] = []
     for row in rows:
         try:
-            warnings_json = json.loads(str(row[12] or "[]"))
+            warnings_json = json.loads(str(row[14] or "[]"))
             if not isinstance(warnings_json, list):
                 warnings_json = []
         except Exception:
             warnings_json = []
         try:
-            details_json = json.loads(str(row[13] or "{}"))
+            details_json = json.loads(str(row[15] or "{}"))
             if not isinstance(details_json, dict):
                 details_json = {}
         except Exception:
@@ -2879,16 +2913,18 @@ def get_node_runs_for_run(
                 "node_name": row[2],
                 "node_kind": row[3],
                 "artifact_name": row[4],
-                "started_at": row[5],
-                "finished_at": row[6],
-                "status": row[7],
-                "row_count_in": row[8],
-                "row_count_out": row[9],
-                "artifact_size_bytes": row[10],
-                "error_message": row[11],
+                "archived_artifact_path": row[5],
+                "archived_artifact_name": row[6],
+                "started_at": row[7],
+                "finished_at": row[8],
+                "status": row[9],
+                "row_count_in": row[10],
+                "row_count_out": row[11],
+                "artifact_size_bytes": row[12],
+                "error_message": row[13],
                 "warnings_json": warnings_json,
                 "details_json": details_json,
-                "active_node_state_id": row[14],
+                "active_node_state_id": row[16],
             }
         )
     return out
@@ -2915,6 +2951,8 @@ def get_node_runs_for_run_by_database(
                     node_name,
                     node_kind,
                     artifact_name,
+                    archived_artifact_path,
+                    archived_artifact_name,
                     started_at,
                     finished_at,
                     status,
@@ -2939,13 +2977,13 @@ def get_node_runs_for_run_by_database(
     out: list[dict[str, Any]] = []
     for row in rows:
         try:
-            warnings_json = json.loads(str(row[12] or "[]"))
+            warnings_json = json.loads(str(row[14] or "[]"))
             if not isinstance(warnings_json, list):
                 warnings_json = []
         except Exception:
             warnings_json = []
         try:
-            details_json = json.loads(str(row[13] or "{}"))
+            details_json = json.loads(str(row[15] or "{}"))
             if not isinstance(details_json, dict):
                 details_json = {}
         except Exception:
@@ -2957,16 +2995,18 @@ def get_node_runs_for_run_by_database(
                 "node_name": row[2],
                 "node_kind": row[3],
                 "artifact_name": row[4],
-                "started_at": row[5],
-                "finished_at": row[6],
-                "status": row[7],
-                "row_count_in": row[8],
-                "row_count_out": row[9],
-                "artifact_size_bytes": row[10],
-                "error_message": row[11],
+                "archived_artifact_path": row[5],
+                "archived_artifact_name": row[6],
+                "started_at": row[7],
+                "finished_at": row[8],
+                "status": row[9],
+                "row_count_in": row[10],
+                "row_count_out": row[11],
+                "artifact_size_bytes": row[12],
+                "error_message": row[13],
                 "warnings_json": warnings_json,
                 "details_json": details_json,
-                "active_node_state_id": row[14],
+                "active_node_state_id": row[16],
             }
         )
     return out
@@ -3331,6 +3371,7 @@ def archive_pipeline_targets(
         mapping_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('column_mapping')}"
         lineage_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('table_lineage')}"
         node_runs_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('node_runs')}"
+        pipeline_runs_table = f"{_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}"
         for source_qualified, destination_qualified in archived.items():
             source_schema, table_name = _split_target_table_name(source_qualified)
             conn.execute(
@@ -3360,11 +3401,19 @@ def archive_pipeline_targets(
             conn.execute(
                 f"""
                 UPDATE {node_runs_table}
-                SET artifact_name = ?
+                SET artifact_name = ?, archived_artifact_path = ?, archived_artifact_name = ?
                 WHERE run_id = ? AND artifact_name = ?
                 """,
-                (destination_qualified, str(run_id), source_qualified),
+                (destination_qualified, database, destination_qualified, str(run_id), source_qualified),
             )
+        conn.execute(
+            f"""
+            UPDATE {pipeline_runs_table}
+            SET archived_artifact_path = ?
+            WHERE run_id = ?
+            """,
+            (database, str(run_id)),
+        )
     finally:
         conn.close()
 

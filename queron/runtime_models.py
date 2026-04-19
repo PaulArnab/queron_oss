@@ -313,6 +313,7 @@ class PipelineRunRecord(BaseModel):
     pipeline_id: str = Field(min_length=1, validation_alias=AliasChoices("pipeline_id", "notebook_id"))
     target: str | None = None
     artifact_path: str | None = None
+    archived_artifact_path: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     status: RunStatus
@@ -330,6 +331,8 @@ class NodeRunRecord(BaseModel):
     node_name: str = Field(min_length=1)
     node_kind: str = Field(min_length=1)
     artifact_name: str | None = None
+    archived_artifact_path: str | None = None
+    archived_artifact_name: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     status: NodeStatus

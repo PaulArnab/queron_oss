@@ -69,6 +69,7 @@ class InspectDagResult:
     run_id: str | None = None
     run_label: str | None = None
     run_status: str | None = None
+    archived_artifact_path: str | None = None
     is_final: bool = False
     nodes: list[dict[str, Any]] = field(default_factory=list)
     edges: list[list[str]] = field(default_factory=list)
@@ -82,6 +83,7 @@ class InspectNodeResult:
     run_id: str | None = None
     run_label: str | None = None
     run_status: str | None = None
+    archived_artifact_path: str | None = None
     is_final: bool = False
     selection: str = "node"
     requested_node: str | None = None
@@ -103,6 +105,8 @@ class InspectNodeHistoryResult:
     node_run_status: str | None = None
     logical_artifact: str | None = None
     artifact_name: str | None = None
+    archived_artifact_path: str | None = None
+    archived_artifact_name: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     error_message: str | None = None
@@ -117,6 +121,7 @@ class InspectNodeLogResult:
     run_id: str | None = None
     run_label: str | None = None
     run_status: str | None = None
+    archived_artifact_path: str | None = None
     is_final: bool = False
     node_name: str | None = None
     node_kind: str | None = None
@@ -132,6 +137,7 @@ class InspectNodeQueryResult:
     run_id: str | None = None
     run_label: str | None = None
     run_status: str | None = None
+    archived_artifact_path: str | None = None
     is_final: bool = False
     node_name: str | None = None
     node_kind: str | None = None
@@ -207,6 +213,7 @@ def _set_run_final_if_allowed(
             pipeline_id=pipeline_id,
             target=str(run.get("target") or "").strip() or None,
             artifact_path=str(run.get("artifact_path") or "").strip() or resolved_artifact_path,
+            archived_artifact_path=str(run.get("archived_artifact_path") or "").strip() or None,
             started_at=str(run.get("started_at") or "").strip() or None,
             finished_at=str(run.get("finished_at") or "").strip() or None,
             status="failed",
@@ -315,6 +322,7 @@ def _reconcile_orphaned_running_runs(
                 pipeline_id=str(run.get("pipeline_id") or "").strip(),
                 target=str(run.get("target") or "").strip() or None,
                 artifact_path=str(run.get("artifact_path") or "").strip() or resolved_artifact_path,
+                archived_artifact_path=str(run.get("archived_artifact_path") or "").strip() or None,
                 started_at=str(run.get("started_at") or "").strip() or None,
                 finished_at=failed_at,
                 status="failed",
@@ -440,14 +448,14 @@ def init_pipeline_project(
 
 
 def _fallback_artifact_path_for_diagnostics(pipeline_path: Path) -> Path:
-    return pipeline_path.parent / ".queron" / f"{pipeline_path.stem}.duckdb"
+    return pipeline_path.parent / ".queron" / pipeline_path.stem / "current.duckdb"
 
 
 def _default_artifact_path(pipeline_path: Path, *, pipeline_id: str) -> Path:
     normalized_pipeline_id = str(pipeline_id or "").strip()
     if not normalized_pipeline_id:
         raise RuntimeError("Pipeline is missing a required pipeline_id in __queron_native__.")
-    return pipeline_path.parent / ".queron" / f"{normalized_pipeline_id}.duckdb"
+    return pipeline_path.parent / ".queron" / normalized_pipeline_id / "current.duckdb"
 
 
 def _normalize_run_label(run_label: str | None) -> str | None:
@@ -882,7 +890,7 @@ def _resolve_artifact_path(
 
 
 def _stop_request_path(*, artifact_path: Path, pipeline_id: str, run_id: str) -> Path:
-    root = artifact_path.parent / "stop_requests" / str(pipeline_id).strip()
+    root = artifact_path.parent / "stop_requests"
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{str(run_id).strip()}.json"
 
@@ -1339,6 +1347,8 @@ def inspect_node(
                 "node_run_status": str(node_run.get("status") or "").strip() or None,
                 "logical_artifact": _inspect_node_artifact_name(raw_node),
                 "artifact_name": str(node_run.get("artifact_name") or "").strip() or None,
+                "archived_artifact_path": str(node_run.get("archived_artifact_path") or "").strip() or None,
+                "archived_artifact_name": str(node_run.get("archived_artifact_name") or "").strip() or None,
                 "row_count_in": node_run.get("row_count_in"),
                 "row_count_out": node_run.get("row_count_out"),
                 "dependencies": [
@@ -1363,6 +1373,7 @@ def inspect_node(
         run_id=selected_run_id or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
         run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        archived_artifact_path=str(selected_run.get("archived_artifact_path") or "").strip() or None if selected_run is not None else None,
         is_final=_selected_run_is_final(selected_run),
         selection=selection,
         requested_node=str(node_name).strip(),
@@ -1441,6 +1452,8 @@ def inspect_node_history(
         node_run_status=str(node_run.get("status") or "").strip() or None,
         logical_artifact=_inspect_node_artifact_name(node_payload),
         artifact_name=str(node_run.get("artifact_name") or "").strip() or None,
+        archived_artifact_path=str(node_run.get("archived_artifact_path") or "").strip() or None,
+        archived_artifact_name=str(node_run.get("archived_artifact_name") or "").strip() or None,
         started_at=str(node_run.get("started_at") or "").strip() or None,
         finished_at=str(node_run.get("finished_at") or "").strip() or None,
         error_message=str(node_run.get("error_message") or "").strip() or None,
@@ -1526,6 +1539,7 @@ def inspect_node_logs(
         run_id=str(selected_run.get("run_id") or "").strip() or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None,
         run_status=str(selected_run.get("status") or "").strip() or None,
+        archived_artifact_path=str(selected_run.get("archived_artifact_path") or "").strip() or None,
         is_final=_selected_run_is_final(selected_run),
         node_name=normalized_node_name,
         node_kind=str(node_payload.get("kind") or "").strip() or None,
@@ -1584,6 +1598,7 @@ def inspect_node_query(
         run_id=selected_run_id or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
         run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        archived_artifact_path=str(selected_run.get("archived_artifact_path") or "").strip() or None if selected_run is not None else None,
         is_final=_selected_run_is_final(selected_run),
         node_name=normalized_node_name,
         node_kind=str(node_payload.get("kind") or "").strip() or None,
@@ -1668,6 +1683,8 @@ def inspect_dag(
                 "kind": str(raw_node.get("kind") or "").strip() or None,
                 "artifact_name": run_artifact if use_run_artifact else logical_artifact,
                 "logical_artifact": logical_artifact,
+                "archived_artifact_path": str(node_run.get("archived_artifact_path") or "").strip() or None,
+                "archived_artifact_name": str(node_run.get("archived_artifact_name") or "").strip() or None,
                 "current_state": str(active_state.get("state") or "").strip() or None,
                 "node_run_status": str(node_run.get("status") or "").strip() or None,
                 "started_at": str(node_run.get("started_at") or "").strip() or None,
@@ -1685,6 +1702,7 @@ def inspect_dag(
         run_id=selected_run_id or None,
         run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
         run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
+        archived_artifact_path=str(selected_run.get("archived_artifact_path") or "").strip() or None if selected_run is not None else None,
         is_final=_selected_run_is_final(selected_run),
         nodes=nodes,
         edges=edges,

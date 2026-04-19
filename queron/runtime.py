@@ -193,10 +193,10 @@ class PipelineRuntime:
         return active_kind not in {"", "python.ingress", "db2.ingress", "db2.egress"}
 
     def _resolve_log_path(self) -> Path:
-        return Path(self.duckdb_path).resolve().parent / "logs" / str(self.pipeline_id) / f"{self.run_id}.jsonl"
+        return Path(self.duckdb_path).resolve().parent / "logs" / f"{self.run_id}.jsonl"
 
     def _resolve_stop_request_path(self) -> Path:
-        return Path(self.duckdb_path).resolve().parent / "stop_requests" / str(self.pipeline_id) / f"{self.run_id}.json"
+        return Path(self.duckdb_path).resolve().parent / "stop_requests" / f"{self.run_id}.json"
 
     def _refresh_log_path(self) -> None:
         self.log_path = str(self._resolve_log_path())
@@ -1002,14 +1002,17 @@ class PipelineRuntime:
             if any(value == "success_with_warnings" for value in self._node_terminal_statuses.values())
             else "success"
         )
+        archived_artifact_path: str | None = None
         try:
             import duckdb_core
 
-            duckdb_core.archive_pipeline_targets(
+            archived = duckdb_core.archive_pipeline_targets(
                 connection_id=self._ensure_duckdb_connection_id(),
                 run_id=self.run_id,
                 target_tables=self._selected_local_artifact_tables(),
             )
+            if archived:
+                archived_artifact_path = self.duckdb_path
         except Exception as exc:
             self._record_pipeline_run(
                 PipelineRunRecord(
@@ -1020,6 +1023,7 @@ class PipelineRuntime:
                     pipeline_id=self.pipeline_id,
                     target=self.spec.target,
                     artifact_path=self.duckdb_path,
+                    archived_artifact_path=archived_artifact_path,
                     started_at=self._pipeline_started_at,
                     finished_at=utc_now_timestamp(),
                     status="failed",
@@ -1037,6 +1041,7 @@ class PipelineRuntime:
                 pipeline_id=self.pipeline_id,
                 target=self.spec.target,
                 artifact_path=self.duckdb_path,
+                archived_artifact_path=archived_artifact_path,
                 started_at=self._pipeline_started_at,
                 finished_at=utc_now_timestamp(),
                 status=status,
