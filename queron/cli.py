@@ -99,6 +99,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Drop existing pipeline output tables before execution.",
     )
     run_parser.add_argument(
+        "--set-final",
+        action="store_true",
+        dest="set_final",
+        help="Finalize the latest failed or stale running run before starting a new run.",
+    )
+    run_parser.add_argument(
         "--stream-logs",
         action="store_true",
         dest="stream_logs",
@@ -604,6 +610,7 @@ def _handle_run(args: argparse.Namespace) -> int:
             target=args.target,
             target_node=args.target_node,
             clean_existing=bool(args.clean_existing or requires_full_purge),
+            set_final=bool(getattr(args, "set_final", False)),
             run_label=args.run_label,
             on_log=_log if bool(getattr(args, "stream_logs", False)) and not args.json_output else None,
         )

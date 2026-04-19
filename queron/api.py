@@ -142,6 +142,9 @@ class InspectNodeQueryResult:
     node_name: str | None = None
     node_kind: str | None = None
     logical_artifact: str | None = None
+    artifact_name: str | None = None
+    effective_artifact_path: str | None = None
+    archived_artifact_name: str | None = None
     sql: str | None = None
     resolved_sql: str | None = None
     dependencies: list[str] = field(default_factory=list)
@@ -1111,6 +1114,27 @@ def _inspect_node_artifact_name(node_payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _resolved_node_artifact_location(
+    *,
+    artifact_path: Path,
+    selected_run: dict[str, Any] | None,
+    node_payload: dict[str, Any],
+    node_run: dict[str, Any],
+) -> tuple[str | None, str | None, str | None]:
+    logical_artifact = _inspect_node_artifact_name(node_payload)
+    selected_status = str(selected_run.get("status") or "").strip().lower() if selected_run is not None else ""
+    run_artifact = str(node_run.get("artifact_name") or "").strip() or None
+    archived_artifact_path = str(node_run.get("archived_artifact_path") or "").strip() or None
+    archived_artifact_name = str(node_run.get("archived_artifact_name") or "").strip() or None
+
+    if selected_status in {"success", "success_with_warnings", "failed"}:
+        if archived_artifact_path and archived_artifact_name:
+            return archived_artifact_path, archived_artifact_name, logical_artifact
+        if run_artifact:
+            return str(artifact_path), run_artifact, logical_artifact
+    return str(artifact_path), logical_artifact, logical_artifact
+
+
 def _load_compiled_contract_for_inspection(
     *,
     resolved_artifact_path: Path,
@@ -1301,9 +1325,6 @@ def inspect_node(
     node_runs_by_name: dict[str, dict[str, Any]] = {}
     active_states_by_name: dict[str, dict[str, Any]] = {}
     selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
-    selected_status = str(selected_run.get("status") or "").strip().lower() if selected_run is not None else ""
-    selected_status = str(selected_run.get("status") or "").strip().lower() if selected_run is not None else ""
-    selected_status = str(selected_run.get("status") or "").strip().lower() if selected_run is not None else ""
     if selected_run_id:
         import duckdb_core
 
@@ -1336,6 +1357,12 @@ def inspect_node(
             continue
         node_run = node_runs_by_name.get(name, {})
         active_state = active_states_by_name.get(name, {})
+        artifact_database_path, artifact_name, logical_artifact = _resolved_node_artifact_location(
+            artifact_path=resolved_artifact_path,
+            selected_run=selected_run,
+            node_payload=raw_node,
+            node_run=node_run,
+        )
         dependencies = raw_node.get("dependencies")
         if not isinstance(dependencies, list):
             dependencies = []
@@ -1345,8 +1372,9 @@ def inspect_node(
                 "kind": str(raw_node.get("kind") or "").strip() or None,
                 "current_state": str(active_state.get("state") or "").strip() or None,
                 "node_run_status": str(node_run.get("status") or "").strip() or None,
-                "logical_artifact": _inspect_node_artifact_name(raw_node),
-                "artifact_name": str(node_run.get("artifact_name") or "").strip() or None,
+                "logical_artifact": logical_artifact,
+                "artifact_name": artifact_name,
+                "artifact_path": artifact_database_path,
                 "archived_artifact_path": str(node_run.get("archived_artifact_path") or "").strip() or None,
                 "archived_artifact_name": str(node_run.get("archived_artifact_name") or "").strip() or None,
                 "row_count_in": node_run.get("row_count_in"),
@@ -1438,6 +1466,13 @@ def inspect_node_history(
             node_name=normalized_node_name,
         )
 
+    artifact_database_path, artifact_name, logical_artifact = _resolved_node_artifact_location(
+        artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+        node_payload=node_payload,
+        node_run=node_run,
+    )
+
     return InspectNodeHistoryResult(
         pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
         artifact_path=str(resolved_artifact_path),
@@ -1450,8 +1485,8 @@ def inspect_node_history(
         node_kind=str(node_payload.get("kind") or "").strip() or None,
         node_run_id=str(node_run.get("node_run_id") or "").strip() or None,
         node_run_status=str(node_run.get("status") or "").strip() or None,
-        logical_artifact=_inspect_node_artifact_name(node_payload),
-        artifact_name=str(node_run.get("artifact_name") or "").strip() or None,
+        logical_artifact=logical_artifact,
+        artifact_name=artifact_name,
         archived_artifact_path=str(node_run.get("archived_artifact_path") or "").strip() or None,
         archived_artifact_name=str(node_run.get("archived_artifact_name") or "").strip() or None,
         started_at=str(node_run.get("started_at") or "").strip() or None,
@@ -1590,6 +1625,23 @@ def inspect_node_query(
         dependencies = []
 
     selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    node_run: dict[str, Any] = {}
+    if selected_run_id:
+        import duckdb_core
+
+        for item in duckdb_core.get_node_runs_for_run_by_database(
+            database_path=str(resolved_artifact_path),
+            run_id=selected_run_id,
+        ):
+            if str(item.get("node_name") or "").strip() == normalized_node_name:
+                node_run = item
+                break
+    artifact_database_path, artifact_name, logical_artifact = _resolved_node_artifact_location(
+        artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+        node_payload=node_payload,
+        node_run=node_run,
+    )
     return InspectNodeQueryResult(
         pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
         artifact_path=str(resolved_artifact_path),
@@ -1602,7 +1654,10 @@ def inspect_node_query(
         is_final=_selected_run_is_final(selected_run),
         node_name=normalized_node_name,
         node_kind=str(node_payload.get("kind") or "").strip() or None,
-        logical_artifact=_inspect_node_artifact_name(node_payload),
+        logical_artifact=logical_artifact,
+        artifact_name=artifact_name,
+        effective_artifact_path=artifact_database_path,
+        archived_artifact_name=str(node_run.get("archived_artifact_name") or "").strip() or None,
         sql=str(node_payload.get("sql") or "").strip() or None,
         resolved_sql=str(node_payload.get("resolved_sql") or "").strip() or None,
         dependencies=[
@@ -1674,14 +1729,18 @@ def inspect_dag(
             continue
         node_run = node_runs_by_name.get(name, {})
         active_state = active_states_by_name.get(name, {})
-        logical_artifact = _inspect_node_artifact_name(raw_node)
-        run_artifact = str(node_run.get("artifact_name") or "").strip() or None
-        use_run_artifact = bool(run_artifact) and selected_status in {"success", "success_with_warnings", "failed"}
+        artifact_database_path, artifact_name, logical_artifact = _resolved_node_artifact_location(
+            artifact_path=resolved_artifact_path,
+            selected_run=selected_run,
+            node_payload=raw_node,
+            node_run=node_run,
+        )
         nodes.append(
             {
                 "name": name,
                 "kind": str(raw_node.get("kind") or "").strip() or None,
-                "artifact_name": run_artifact if use_run_artifact else logical_artifact,
+                "artifact_name": artifact_name,
+                "artifact_path": artifact_database_path,
                 "logical_artifact": logical_artifact,
                 "archived_artifact_path": str(node_run.get("archived_artifact_path") or "").strip() or None,
                 "archived_artifact_name": str(node_run.get("archived_artifact_name") or "").strip() or None,

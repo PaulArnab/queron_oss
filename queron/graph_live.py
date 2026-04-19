@@ -149,7 +149,9 @@ def _selected_node_artifact_record(
         raise RuntimeError(f"Node '{node_name}' does not have a materialized artifact for the selected run.")
     return {
         "artifact_name": artifact_name,
-        "artifact_path": str(selected_node.get("archived_artifact_path") or "").strip() or str(Path(artifact_path).resolve()),
+        "artifact_path": str(selected_node.get("artifact_path") or "").strip()
+        or str(selected_node.get("archived_artifact_path") or "").strip()
+        or str(Path(artifact_path).resolve()),
         "archived_artifact_name": str(selected_node.get("archived_artifact_name") or "").strip() or None,
         "logical_artifact": str(selected_node.get("logical_artifact") or "").strip() or None,
         "run_id": selection.run_id,
@@ -386,6 +388,7 @@ def get_node_query_panel(
         "query": {
             "pipeline_path": query.pipeline_path,
             "artifact_path": query.artifact_path,
+            "effective_artifact_path": query.effective_artifact_path,
             "pipeline_id": query.pipeline_id,
             "compile_id": query.compile_id,
             "run_id": query.run_id,
@@ -395,6 +398,8 @@ def get_node_query_panel(
             "node_name": query.node_name,
             "node_kind": query.node_kind,
             "logical_artifact": query.logical_artifact,
+            "artifact_name": query.artifact_name,
+            "archived_artifact_name": query.archived_artifact_name,
             "sql": query.sql,
             "resolved_sql": query.resolved_sql,
             "dependencies": query.dependencies,
@@ -498,6 +503,7 @@ def get_run_artifacts_panel(
         artifacts.append(
             {
                 "artifact_name": artifact_name,
+                "artifact_path": str(node.get("artifact_path") or "").strip() or graph.archived_artifact_path or graph.artifact_path,
                 "logical_artifact": logical_artifact,
                 "node_name": node_name,
                 "node_kind": str(node.get("kind") or "").strip() or None,
