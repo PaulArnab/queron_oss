@@ -150,6 +150,8 @@ def execute_selected_nodes(spec: PipelineSpec, *, runtime, selected_node_names: 
         try:
             result = runtime.execute_node(node)
         except Exception as exc:
+            if hasattr(runtime, "coerce_active_exception"):
+                exc = runtime.coerce_active_exception(node, exc)
             _handle_interrupted_run(exc, failed_node=node)
         if run_policy.on_warning != "continue":
             raise RuntimeError(f"Unsupported run policy on_warning='{run_policy.on_warning}'.")

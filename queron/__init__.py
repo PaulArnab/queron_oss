@@ -414,6 +414,7 @@ from .api import (  # noqa: E402
     resume_pipeline,
     run_pipeline,
     stop_pipeline,
+    force_stop_pipeline,
 )
 
 __all__ = [
@@ -441,5 +442,6 @@ __all__ = [
     "resume_pipeline",
     "run_pipeline",
     "stop_pipeline",
+    "force_stop_pipeline",
     "source",
 ]

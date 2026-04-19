@@ -5,11 +5,21 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+import uuid
 
 from .compiler import CompiledPipeline, compile_pipeline_code
 from .executor import _select_downstream_nodes, _select_upstream_nodes, execute_pipeline, execute_selected_nodes
 from .runtime import PipelineRuntime
-from .runtime_models import LogCode, PipelineLogEvent, build_log_event, normalize_log_event, utc_now_timestamp
+from .runtime_models import (
+    LogCode,
+    NodeRunRecord,
+    NodeStateRecord,
+    PipelineLogEvent,
+    PipelineRunRecord,
+    build_log_event,
+    normalize_log_event,
+    utc_now_timestamp,
+)
 from .specs import PipelineSpec
 from .templates import build_init_config_text, build_init_gitignore_text, build_init_pipeline_text
 
@@ -37,6 +47,7 @@ class StopPipelineResult:
     run_id: str | None = None
     run_label: str | None = None
     stop_requested: bool = False
+    stop_mode: str = "graceful"
     request_path: str | None = None
     message: str = ""
 
@@ -128,6 +139,193 @@ class InspectNodeQueryResult:
     sql: str | None = None
     resolved_sql: str | None = None
     dependencies: list[str] = field(default_factory=list)
+
+
+_ACTIVE_RUNTIMES_BY_RUN_ID: dict[str, PipelineRuntime] = {}
+
+
+@dataclass
+class ReconcileOrphanedRunResult:
+    artifact_path: str
+    reconciled_run_ids: list[str] = field(default_factory=list)
+    reconciled_node_names_by_run_id: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _register_active_runtime(runtime: PipelineRuntime) -> None:
+    run_id = str(getattr(runtime, "run_id", "") or "").strip()
+    if run_id:
+        _ACTIVE_RUNTIMES_BY_RUN_ID[run_id] = runtime
+
+
+def _unregister_active_runtime(runtime_or_run_id: PipelineRuntime | str | None) -> None:
+    if isinstance(runtime_or_run_id, PipelineRuntime):
+        run_id = str(getattr(runtime_or_run_id, "run_id", "") or "").strip()
+    else:
+        run_id = str(runtime_or_run_id or "").strip()
+    if run_id:
+        _ACTIVE_RUNTIMES_BY_RUN_ID.pop(run_id, None)
+
+
+def _is_run_active_in_registry(run_id: str | None) -> bool:
+    normalized_run_id = str(run_id or "").strip()
+    return bool(normalized_run_id) and normalized_run_id in _ACTIVE_RUNTIMES_BY_RUN_ID
+
+
+def _is_run_final(run: dict[str, Any] | None) -> bool:
+    if not isinstance(run, dict):
+        return False
+    return bool(run.get("is_final"))
+
+
+def _set_run_final_if_allowed(
+    *,
+    artifact_path: str | Path,
+    run: dict[str, Any] | None,
+) -> bool:
+    import duckdb_core
+
+    if not isinstance(run, dict):
+        return False
+    if _is_run_final(run):
+        return False
+    if str(run.get("status") or "").strip().lower() != "failed":
+        return False
+    run_id = str(run.get("run_id") or "").strip()
+    pipeline_id = str(run.get("pipeline_id") or "").strip()
+    if not run_id or not pipeline_id:
+        return False
+
+    resolved_artifact_path = str(Path(artifact_path).expanduser().resolve())
+    connection_id = duckdb_core.connect(duckdb_core.DuckDbConnectRequest(database=resolved_artifact_path)).connection_id
+    duckdb_core.record_pipeline_run(
+        connection_id=connection_id,
+        record=PipelineRunRecord(
+            run_id=run_id,
+            run_label=str(run.get("run_label") or "").strip() or None,
+            log_path=str(run.get("log_path") or "").strip() or None,
+            compile_id=str(run.get("compile_id") or "").strip() or None,
+            pipeline_id=pipeline_id,
+            target=str(run.get("target") or "").strip() or None,
+            artifact_path=str(run.get("artifact_path") or "").strip() or resolved_artifact_path,
+            started_at=str(run.get("started_at") or "").strip() or None,
+            finished_at=str(run.get("finished_at") or "").strip() or None,
+            status="failed",
+            error_message=str(run.get("error_message") or "").strip() or None,
+            is_final=True,
+        ),
+    )
+    run["is_final"] = True
+    return True
+
+
+def _reconcile_orphaned_running_runs(
+    *,
+    artifact_path: str | Path,
+    run_id: str | None = None,
+    error_message: str = "Pipeline process exited unexpectedly during execution.",
+) -> ReconcileOrphanedRunResult:
+    import duckdb_core
+
+    resolved_artifact_path = str(Path(artifact_path).expanduser().resolve())
+    result = ReconcileOrphanedRunResult(artifact_path=resolved_artifact_path)
+    normalized_run_id = str(run_id or "").strip()
+    running_runs = [
+        item
+        for item in duckdb_core.list_pipeline_runs(database_path=resolved_artifact_path)
+        if str(item.get("status") or "").strip().lower() == "running"
+        and (not normalized_run_id or str(item.get("run_id") or "").strip() == normalized_run_id)
+    ]
+    orphaned_runs = [
+        item
+        for item in running_runs
+        if str(item.get("run_id") or "").strip() and not _is_run_active_in_registry(str(item.get("run_id") or "").strip())
+    ]
+    if not orphaned_runs:
+        return result
+
+    connection_id = duckdb_core.connect(duckdb_core.DuckDbConnectRequest(database=resolved_artifact_path)).connection_id
+    failed_at = utc_now_timestamp()
+    for run in orphaned_runs:
+        run_id = str(run.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        node_runs = duckdb_core.get_node_runs_for_run_by_database(database_path=resolved_artifact_path, run_id=run_id)
+        active_states = duckdb_core.get_active_node_states_for_run_by_database(database_path=resolved_artifact_path, run_id=run_id)
+        active_state_by_node_name = {
+            str(item.get("node_name") or "").strip(): item
+            for item in active_states
+            if str(item.get("node_name") or "").strip()
+        }
+        running_node_records: list[NodeRunRecord] = []
+        failed_state_records: list[NodeStateRecord] = []
+        reconciled_node_names: list[str] = []
+        for item in node_runs:
+            node_name = str(item.get("node_name") or "").strip()
+            if not node_name or str(item.get("status") or "").strip().lower() != "running":
+                continue
+            reconciled_node_names.append(node_name)
+            failed_details = {
+                "exception_type": "OrphanedRunRecovered",
+                "recovery_reason": "process_missing",
+            }
+            active_state_id = f"{uuid.uuid4().hex}"
+            failed_state_records.append(
+                NodeStateRecord(
+                    node_state_id=active_state_id,
+                    run_id=run_id,
+                    node_run_id=str(item.get("node_run_id") or "").strip(),
+                    node_name=node_name,
+                    state="failed",
+                    is_active=True,
+                    created_at=failed_at,
+                    trigger="orphaned_run_reconciled",
+                    details_json=failed_details,
+                )
+            )
+            running_node_records.append(
+                NodeRunRecord(
+                    node_run_id=str(item.get("node_run_id") or "").strip(),
+                    run_id=run_id,
+                    node_name=node_name,
+                    node_kind=str(item.get("node_kind") or "").strip() or "unknown",
+                    artifact_name=str(item.get("artifact_name") or "").strip() or None,
+                    started_at=str(item.get("started_at") or "").strip() or None,
+                    finished_at=failed_at,
+                    status="failed",
+                    row_count_in=item.get("row_count_in"),
+                    row_count_out=item.get("row_count_out"),
+                    artifact_size_bytes=item.get("artifact_size_bytes"),
+                    error_message=error_message,
+                    warnings_json=[],
+                    details_json=failed_details,
+                    active_node_state_id=active_state_id,
+                )
+            )
+        if failed_state_records:
+            duckdb_core.record_node_states(connection_id=connection_id, records=failed_state_records)
+        if running_node_records:
+            duckdb_core.record_node_runs(connection_id=connection_id, records=running_node_records)
+        duckdb_core.record_pipeline_run(
+            connection_id=connection_id,
+            record=PipelineRunRecord(
+                run_id=run_id,
+                run_label=str(run.get("run_label") or "").strip() or None,
+                log_path=str(run.get("log_path") or "").strip() or None,
+                compile_id=str(run.get("compile_id") or "").strip() or None,
+                pipeline_id=str(run.get("pipeline_id") or "").strip(),
+                target=str(run.get("target") or "").strip() or None,
+                artifact_path=str(run.get("artifact_path") or "").strip() or resolved_artifact_path,
+                started_at=str(run.get("started_at") or "").strip() or None,
+                finished_at=failed_at,
+                status="failed",
+                error_message=error_message,
+                is_final=False,
+            ),
+        )
+        result.reconciled_run_ids.append(run_id)
+        if reconciled_node_names:
+            result.reconciled_node_names_by_run_id[run_id] = reconciled_node_names
+    return result
 
 
 def _emit_log_event(
@@ -262,8 +460,21 @@ def _normalize_stop_reason(reason: str | None) -> str:
     return text or "Pipeline stop requested by user."
 
 
+def _normalize_force_stop_reason(reason: str | None) -> str:
+    text = str(reason or "").strip()
+    return text or "Force stopped by user."
+
+
 def _selected_run_is_final(selected_run: dict[str, Any] | None) -> bool:
     return bool(selected_run.get("is_final")) if isinstance(selected_run, dict) else False
+
+
+def _pipeline_failure_details(exc: Exception) -> dict[str, Any]:
+    details = {"exception_type": type(exc).__name__}
+    extra = getattr(exc, "queron_details", None)
+    if isinstance(extra, dict):
+        details.update({str(key): value for key, value in extra.items()})
+    return details
 
 
 def load_pipeline_code_from_file(path: str | Path) -> tuple[Path, str]:
@@ -297,6 +508,30 @@ def _compile_pipeline_impl(
         config_path=resolved_config_path,
         target=target,
     )
+    import duckdb_core
+
+    latest_runs = duckdb_core.list_pipeline_runs(database_path=str(resolved_artifact_path), limit=1)
+    latest_run = latest_runs[0] if latest_runs else None
+    if latest_run is not None and not _is_run_final(latest_run):
+        latest_status = str(latest_run.get("status") or "").strip().lower()
+        if latest_status == "failed":
+            _set_run_final_if_allowed(artifact_path=resolved_artifact_path, run=latest_run)
+        elif latest_status == "running":
+            latest_run_id = str(latest_run.get("run_id") or "").strip()
+            if _is_run_active_in_registry(latest_run_id):
+                raise RuntimeError(
+                    f"Pipeline run '{latest_run_id}' is currently active and compile cannot proceed until it finishes."
+                )
+            _reconcile_orphaned_running_runs(artifact_path=resolved_artifact_path, run_id=latest_run_id)
+            reconciled_run = duckdb_core.get_pipeline_run_by_id(
+                database_path=str(resolved_artifact_path),
+                run_id=latest_run_id,
+            )
+            _set_run_final_if_allowed(artifact_path=resolved_artifact_path, run=reconciled_run)
+        else:
+            raise RuntimeError(
+                f"The latest pipeline run has unexpected non-final status '{latest_status or 'unknown'}'."
+            )
     compiled = compile_pipeline_code(
         code,
         yaml_text=yaml_text,
@@ -307,13 +542,11 @@ def _compile_pipeline_impl(
     )
     if has_compile_errors(compiled) or compiled.spec is None or compiled.contract is None:
         return compiled
-    import duckdb_core
 
     compiled.contract = duckdb_core.save_compiled_contract(
         database_path=str(resolved_artifact_path),
         record=compiled.contract,
     )
-    duckdb_core.finalize_latest_failed_run(database_path=str(resolved_artifact_path))
     return compiled
 
 
@@ -480,7 +713,7 @@ def resume_compiled_pipeline(
             code=LogCode.PIPELINE_EXECUTION_FAILED,
             message=f"Execution failed: {exc}",
             severity="error",
-            details={"exception_type": type(exc).__name__},
+            details=_pipeline_failure_details(exc),
         )
         raise
     runtime._log_event(
@@ -733,6 +966,7 @@ def _inspect_pipeline_runs(
     limit: int | None = None,
 ):
     resolved_artifact_path = _resolve_inspect_artifact_path(artifact_path)
+    _reconcile_orphaned_running_runs(artifact_path=resolved_artifact_path)
 
     import duckdb_core
 
@@ -1611,6 +1845,7 @@ def _run_pipeline_impl(
     artifact_path: str | Path | None = None,
     target_node: str | None = None,
     clean_existing: bool = False,
+    set_final: bool = False,
     pipeline_id: str | None = None,
     run_label: str | None = None,
     on_log: Callable[[PipelineLogEvent], None] | None = None,
@@ -1654,6 +1889,32 @@ def _run_pipeline_impl(
         message=f"Compiled contract validated with {len(compiled.spec.nodes)} node(s).",
         details={"node_count": len(compiled.spec.nodes)},
     )
+    import duckdb_core
+
+    latest_runs = duckdb_core.list_pipeline_runs(database_path=str(resolved_artifact_path), limit=1)
+    latest_run = latest_runs[0] if latest_runs else None
+    if latest_run is not None and not _is_run_final(latest_run):
+        if not bool(set_final):
+            raise RuntimeError(
+                "The latest pipeline run is not final. Re-run with set_final=True to finalize the prior failed or stale running run first."
+            )
+        latest_status = str(latest_run.get("status") or "").strip().lower()
+        if latest_status == "failed":
+            _set_run_final_if_allowed(artifact_path=resolved_artifact_path, run=latest_run)
+        elif latest_status == "running":
+            latest_run_id = str(latest_run.get("run_id") or "").strip()
+            if _is_run_active_in_registry(latest_run_id):
+                raise RuntimeError(f"Pipeline run '{latest_run_id}' is currently active and must finish before a new run can start.")
+            _reconcile_orphaned_running_runs(artifact_path=resolved_artifact_path, run_id=latest_run_id)
+            reconciled_run = duckdb_core.get_pipeline_run_by_id(
+                database_path=str(resolved_artifact_path),
+                run_id=latest_run_id,
+            )
+            _set_run_final_if_allowed(artifact_path=resolved_artifact_path, run=reconciled_run)
+        else:
+            raise RuntimeError(
+                f"The latest pipeline run has unexpected non-final status '{latest_status or 'unknown'}'."
+            )
     normalized_run_label = _ensure_run_label_available(
         artifact_path=resolved_artifact_path,
         run_label=run_label,
@@ -1668,9 +1929,6 @@ def _run_pipeline_impl(
         connections_path=connections_path,
         on_log=on_log,
     )
-    import duckdb_core
-
-    duckdb_core.finalize_latest_failed_run(database_path=str(resolved_artifact_path))
     if clean_existing:
         _preserve_latest_incomplete_run_outputs_before_purge(compiled, runtime=runtime)
         runtime.clear_pipeline_outputs()
@@ -1685,6 +1943,7 @@ def _run_pipeline_impl(
         message="Executing pipeline DAG.",
         details={"target_node": target_node, "clean_existing": bool(clean_existing)},
     )
+    _register_active_runtime(runtime)
     try:
         executed = execute_compiled_pipeline(compiled, runtime=runtime, target_node=target_node)
     except Exception as exc:
@@ -1692,9 +1951,11 @@ def _run_pipeline_impl(
             code=LogCode.PIPELINE_EXECUTION_FAILED,
             message=f"Execution failed: {exc}",
             severity="error",
-            details={"exception_type": type(exc).__name__},
+            details=_pipeline_failure_details(exc),
         )
         raise
+    finally:
+        _unregister_active_runtime(runtime)
     runtime._log_event(
         code=LogCode.PIPELINE_EXECUTION_FINISHED,
         message=f"Finished successfully. Executed {len(executed)} node(s).",
@@ -1719,6 +1980,7 @@ def run_pipeline(
     target: str | None = None,
     target_node: str | None = None,
     clean_existing: bool = False,
+    set_final: bool = False,
     pipeline_id: str | None = None,
     run_label: str | None = None,
     on_log: Callable[[PipelineLogEvent], None] | None = None,
@@ -1732,6 +1994,7 @@ def run_pipeline(
         artifact_path=None,
         target_node=target_node,
         clean_existing=clean_existing,
+        set_final=set_final,
         pipeline_id=pipeline_id,
         run_label=run_label,
         on_log=on_log,
@@ -2057,6 +2320,7 @@ def stop_pipeline(
         "run_label": str(selected_run.get("run_label") or "").strip() or None,
         "requested_at": utc_now_timestamp(),
         "reason": _normalize_stop_reason(reason),
+        "stop_mode": "graceful",
         "status": "requested",
     }
     request_path.write_text(json.dumps(request_payload, indent=2) + "\n", encoding="utf-8")
@@ -2065,8 +2329,64 @@ def stop_pipeline(
         run_id=resolved_run_id,
         run_label=request_payload["run_label"],
         stop_requested=True,
+        stop_mode="graceful",
         request_path=str(request_path),
         message=f"Stop requested for run '{resolved_run_id}'.",
+    )
+
+
+def force_stop_pipeline(
+    pipeline_path: str | Path,
+    *,
+    run_id: str | None = None,
+    reason: str | None = None,
+) -> StopPipelineResult:
+    resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
+    resolved_artifact_path = _resolve_inspect_artifact_path(
+        _resolve_artifact_path(
+            resolved_pipeline_path,
+            artifact_path=None,
+            compiled=None,
+            config_path=None,
+            target=None,
+        )
+    )
+    selected_run = _select_pipeline_run_for_stop(
+        resolved_artifact_path,
+        run_id=run_id,
+    )
+    resolved_run_id = str(selected_run.get("run_id") or "").strip()
+    if not resolved_run_id:
+        raise RuntimeError("The selected running pipeline is missing a run_id.")
+    pipeline_id = str(selected_run.get("pipeline_id") or "").strip()
+    if not pipeline_id:
+        raise RuntimeError("The selected running pipeline is missing a pipeline_id.")
+
+    request_path = _stop_request_path(
+        artifact_path=resolved_artifact_path,
+        pipeline_id=pipeline_id,
+        run_id=resolved_run_id,
+    )
+    request_payload = {
+        "pipeline_id": pipeline_id,
+        "pipeline_path": str(resolved_pipeline_path),
+        "artifact_path": str(resolved_artifact_path),
+        "run_id": resolved_run_id,
+        "run_label": str(selected_run.get("run_label") or "").strip() or None,
+        "requested_at": utc_now_timestamp(),
+        "reason": _normalize_force_stop_reason(reason),
+        "stop_mode": "force",
+        "status": "requested",
+    }
+    request_path.write_text(json.dumps(request_payload, indent=2) + "\n", encoding="utf-8")
+    return StopPipelineResult(
+        artifact_path=str(resolved_artifact_path),
+        run_id=resolved_run_id,
+        run_label=request_payload["run_label"],
+        stop_requested=True,
+        stop_mode="force",
+        request_path=str(request_path),
+        message=f"Force stop requested for run '{resolved_run_id}'.",
     )
 
 

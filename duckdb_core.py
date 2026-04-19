@@ -129,6 +129,22 @@ def _normalize_source_name(source: str) -> str:
     return normalized
 
 
+def _build_duckdb_interruptor(conn: Any):
+    def _interrupt() -> None:
+        interrupt = getattr(conn, "interrupt", None)
+        if callable(interrupt):
+            try:
+                interrupt()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return _interrupt
+
+
 def _normalize_source_type(
     source: str,
     raw_type: str,
@@ -2026,11 +2042,16 @@ def materialize_egress_artifact(
     sql: str,
     target_table: str,
     replace: bool = True,
+    on_interrupt_open: Any = None,
+    on_interrupt_close: Any = None,
 ) -> int:
     normalized_target = str(target_table or "").strip()
     if not normalized_target:
         raise RuntimeError("Egress artifact target table is required.")
     conn = _duckdb_connection(str(database))
+    interrupt_token = None
+    if callable(on_interrupt_open):
+        interrupt_token = on_interrupt_open(_build_duckdb_interruptor(conn))
     try:
         schema, _table = _split_target_table_name(normalized_target)
         conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier(schema)}")
@@ -2040,6 +2061,8 @@ def materialize_egress_artifact(
         conn.execute(f"CREATE TABLE {target_ident} AS {_strip_sql_terminator(sql)}")
         row = conn.execute(f"SELECT COUNT(*) FROM {target_ident}").fetchone()
     finally:
+        if callable(on_interrupt_close):
+            on_interrupt_close(interrupt_token)
         conn.close()
     return int(row[0]) if row and row[0] is not None else 0
 
@@ -2053,12 +2076,16 @@ def export_query_to_parquet_with_artifact(
     overwrite: bool = False,
     compression: str | None = None,
     working_dir: str | None = None,
+    on_interrupt_open: Any = None,
+    on_interrupt_close: Any = None,
 ) -> DuckDbExportResponse:
     materialize_egress_artifact(
         database=database,
         sql=sql,
         target_table=target_table,
         replace=True,
+        on_interrupt_open=on_interrupt_open,
+        on_interrupt_close=on_interrupt_close,
     )
     target_ident = _quote_compound_identifier(target_table)
     return export_query_to_parquet(
@@ -2068,6 +2095,8 @@ def export_query_to_parquet_with_artifact(
         overwrite=overwrite,
         compression=compression,
         working_dir=working_dir,
+        on_interrupt_open=on_interrupt_open,
+        on_interrupt_close=on_interrupt_close,
     )
 
 
@@ -2081,12 +2110,16 @@ def export_query_to_csv_with_artifact(
     header: bool = True,
     delimiter: str = ",",
     working_dir: str | None = None,
+    on_interrupt_open: Any = None,
+    on_interrupt_close: Any = None,
 ) -> DuckDbExportResponse:
     materialize_egress_artifact(
         database=database,
         sql=sql,
         target_table=target_table,
         replace=True,
+        on_interrupt_open=on_interrupt_open,
+        on_interrupt_close=on_interrupt_close,
     )
     target_ident = _quote_compound_identifier(target_table)
     return export_query_to_csv(
@@ -2097,6 +2130,8 @@ def export_query_to_csv_with_artifact(
         header=header,
         delimiter=delimiter,
         working_dir=working_dir,
+        on_interrupt_open=on_interrupt_open,
+        on_interrupt_close=on_interrupt_close,
     )
 
 
@@ -2108,12 +2143,16 @@ def export_query_to_jsonl_with_artifact(
     target_table: str,
     overwrite: bool = False,
     working_dir: str | None = None,
+    on_interrupt_open: Any = None,
+    on_interrupt_close: Any = None,
 ) -> DuckDbExportResponse:
     materialize_egress_artifact(
         database=database,
         sql=sql,
         target_table=target_table,
         replace=True,
+        on_interrupt_open=on_interrupt_open,
+        on_interrupt_close=on_interrupt_close,
     )
     target_ident = _quote_compound_identifier(target_table)
     return export_query_to_jsonl(
@@ -2122,6 +2161,8 @@ def export_query_to_jsonl_with_artifact(
         output_path=output_path,
         overwrite=overwrite,
         working_dir=working_dir,
+        on_interrupt_open=on_interrupt_open,
+        on_interrupt_close=on_interrupt_close,
     )
 
 
@@ -2133,8 +2174,13 @@ def export_query_to_parquet(
     overwrite: bool = False,
     compression: str | None = None,
     working_dir: str | None = None,
+    on_interrupt_open: Any = None,
+    on_interrupt_close: Any = None,
 ) -> DuckDbExportResponse:
     conn = _duckdb_connection(str(database))
+    interrupt_token = None
+    if callable(on_interrupt_open):
+        interrupt_token = on_interrupt_open(_build_duckdb_interruptor(conn))
     resolved_output_path = _resolve_export_path(output_path, working_dir=working_dir)
     try:
         if resolved_output_path.exists():
@@ -2150,6 +2196,8 @@ def export_query_to_parquet(
             (str(resolved_output_path),),
         )
     finally:
+        if callable(on_interrupt_close):
+            on_interrupt_close(interrupt_token)
         conn.close()
     return DuckDbExportResponse(
         output_path=str(resolved_output_path),
@@ -2169,11 +2217,16 @@ def export_query_to_csv(
     header: bool = True,
     delimiter: str = ",",
     working_dir: str | None = None,
+    on_interrupt_open: Any = None,
+    on_interrupt_close: Any = None,
 ) -> DuckDbExportResponse:
     delim = str(delimiter or "")
     if len(delim) != 1:
         raise RuntimeError("CSV delimiter must be exactly one character.")
     conn = _duckdb_connection(str(database))
+    interrupt_token = None
+    if callable(on_interrupt_open):
+        interrupt_token = on_interrupt_open(_build_duckdb_interruptor(conn))
     resolved_output_path = _resolve_export_path(output_path, working_dir=working_dir)
     try:
         if resolved_output_path.exists():
@@ -2190,6 +2243,8 @@ def export_query_to_csv(
             (str(resolved_output_path),),
         )
     finally:
+        if callable(on_interrupt_close):
+            on_interrupt_close(interrupt_token)
         conn.close()
     return DuckDbExportResponse(
         output_path=str(resolved_output_path),
@@ -2207,8 +2262,13 @@ def export_query_to_jsonl(
     output_path: str,
     overwrite: bool = False,
     working_dir: str | None = None,
+    on_interrupt_open: Any = None,
+    on_interrupt_close: Any = None,
 ) -> DuckDbExportResponse:
     conn = _duckdb_connection(str(database))
+    interrupt_token = None
+    if callable(on_interrupt_open):
+        interrupt_token = on_interrupt_open(_build_duckdb_interruptor(conn))
     resolved_output_path = _resolve_export_path(output_path, working_dir=working_dir)
     try:
         if resolved_output_path.exists():
@@ -2221,6 +2281,8 @@ def export_query_to_jsonl(
             (str(resolved_output_path),),
         )
     finally:
+        if callable(on_interrupt_close):
+            on_interrupt_close(interrupt_token)
         conn.close()
     return DuckDbExportResponse(
         output_path=str(resolved_output_path),
@@ -2385,6 +2447,8 @@ def ingest_file_to_duckdb(
     skip_rows: int = 0,
     columns: dict[str, str] | None = None,
     replace: bool = False,
+    on_interrupt_open: Any = None,
+    on_interrupt_close: Any = None,
 ) -> dict[str, Any]:
     resolved_path = Path(input_path).expanduser().resolve()
     if not resolved_path.exists() or not resolved_path.is_file():
@@ -2404,6 +2468,9 @@ def ingest_file_to_duckdb(
             columns = {str(key): str(value) for key, value in dict(columns).items()}
 
     conn = _duckdb_connection(str(database))
+    interrupt_token = None
+    if callable(on_interrupt_open):
+        interrupt_token = on_interrupt_open(_build_duckdb_interruptor(conn))
     target_ident = _quote_compound_identifier(target_table)
     try:
         if normalized_format == "csv" and header and columns:
@@ -2444,6 +2511,8 @@ def ingest_file_to_duckdb(
         row = conn.execute(f"SELECT COUNT(*) FROM {target_ident}").fetchone()
         described = conn.execute(f"DESCRIBE {target_ident}").fetchall()
     finally:
+        if callable(on_interrupt_close):
+            on_interrupt_close(interrupt_token)
         conn.close()
 
     row_count = int(row[0]) if row and row[0] is not None else 0

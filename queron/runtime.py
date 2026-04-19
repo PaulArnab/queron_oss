@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
+import time
 import uuid
 from typing import Any, Callable
 
@@ -119,6 +121,10 @@ class GracefulStopRequested(RuntimeError):
     pass
 
 
+class ForceStopRequested(RuntimeError):
+    pass
+
+
 def _node_log_id(node: NodeSpec | None) -> str | None:
     if node is None:
         return None
@@ -168,8 +174,23 @@ class PipelineRuntime:
         self._node_run_ids: dict[str, str] = {}
         self._node_active_state_ids: dict[str, str] = {}
         self._pipeline_started_at: str | None = None
+        self._stop_request_lock = threading.Lock()
+        self._pending_stop_request: dict[str, Any] | None = None
         self._stop_request_handled = False
+        self._stop_watcher_shutdown = threading.Event()
+        self._stop_watcher_thread: threading.Thread | None = None
+        self._active_node_name: str | None = None
+        self._active_node_kind: str | None = None
+        self._active_force_interruptors: dict[int, Callable[[], Any]] = {}
+        self._active_force_interrupt_details: dict[str, Any] = {}
+        self._active_interruptor_tokens_by_object: dict[int, int] = {}
+        self._active_force_target_node_name: str | None = None
+        self._active_force_interrupt_attempted = False
         self._node_progress_row_counts: dict[str, int] = {}
+
+    def _active_node_force_interrupt_supported(self) -> bool:
+        active_kind = str(self._active_node_kind or "").strip().lower()
+        return active_kind not in {"", "python.ingress", "db2.ingress", "db2.egress"}
 
     def _resolve_log_path(self) -> Path:
         return Path(self.duckdb_path).resolve().parent / "logs" / str(self.pipeline_id) / f"{self.run_id}.jsonl"
@@ -205,8 +226,16 @@ class PipelineRuntime:
         return resolved
 
     def _consume_stop_request_payload(self) -> dict[str, Any] | None:
-        if self._stop_request_handled:
-            return None
+        with self._stop_request_lock:
+            if self._pending_stop_request is not None:
+                return dict(self._pending_stop_request)
+        payload = self._take_stop_request_payload_from_disk()
+        if payload is not None:
+            self._accept_stop_request(payload)
+        with self._stop_request_lock:
+            return dict(self._pending_stop_request) if self._pending_stop_request is not None else None
+
+    def _take_stop_request_payload_from_disk(self) -> dict[str, Any] | None:
         request_path = self._resolve_stop_request_path()
         if not request_path.exists() or not request_path.is_file():
             return None
@@ -222,13 +251,176 @@ class PipelineRuntime:
                 request_path.unlink()
             except Exception:
                 pass
-        self._stop_request_handled = True
         return payload
+
+    def _start_stop_watcher(self) -> None:
+        if self._stop_watcher_thread is not None and self._stop_watcher_thread.is_alive():
+            return
+        self._stop_watcher_shutdown.clear()
+        self._stop_watcher_thread = threading.Thread(
+            target=self._stop_watcher_loop,
+            name=f"queron-stop-watcher-{self.run_id}",
+            daemon=True,
+        )
+        self._stop_watcher_thread.start()
+
+    def _stop_watcher_loop(self) -> None:
+        while not self._stop_watcher_shutdown.is_set():
+            payload = self._take_stop_request_payload_from_disk()
+            if payload is not None:
+                self._accept_stop_request(payload)
+            time.sleep(0.1)
+
+    def _shutdown_stop_watcher(self) -> None:
+        self._stop_watcher_shutdown.set()
+        watcher = self._stop_watcher_thread
+        if watcher is not None and watcher.is_alive():
+            watcher.join(timeout=0.3)
+        self._stop_watcher_thread = None
+
+    def _accept_stop_request(self, payload: dict[str, Any]) -> None:
+        callbacks: list[Callable[[], Any]] = []
+        with self._stop_request_lock:
+            if self._pending_stop_request is not None:
+                return
+            self._pending_stop_request = dict(payload)
+            self._stop_request_handled = True
+            stop_mode = str(payload.get("stop_mode") or "graceful").strip().lower()
+            if stop_mode == "force" and self._active_node_force_interrupt_supported():
+                self._active_force_target_node_name = self._active_node_name
+                self._active_force_interrupt_attempted = True
+                callbacks = list(self._active_force_interruptors.values())
+        for callback in callbacks:
+            try:
+                result = callback()
+                if isinstance(result, dict) and result:
+                    with self._stop_request_lock:
+                        self._active_force_interrupt_details.update(
+                            {str(key): value for key, value in result.items()}
+                        )
+            except Exception:
+                pass
+
+    def register_active_interruptor(self, callback: Callable[[], Any]) -> int:
+        token = id(callback)
+        with self._stop_request_lock:
+            self._active_force_interruptors[token] = callback
+        return token
+
+    def unregister_active_interruptor(self, token: int | None) -> None:
+        if token is None:
+            return
+        with self._stop_request_lock:
+            self._active_force_interruptors.pop(int(token), None)
+
+    def _begin_active_node(self, node: NodeSpec) -> None:
+        with self._stop_request_lock:
+            self._active_node_name = node.name
+            self._active_node_kind = node.kind
+            self._active_force_target_node_name = None
+            self._active_force_interrupt_attempted = False
+            self._active_force_interruptors = {}
+            self._active_force_interrupt_details = {}
+            self._active_interruptor_tokens_by_object = {}
+
+    def _end_active_node(self) -> None:
+        with self._stop_request_lock:
+            self._active_node_name = None
+            self._active_node_kind = None
+            self._active_force_target_node_name = None
+            self._active_force_interrupt_attempted = False
+            self._active_force_interruptors = {}
+            self._active_force_interrupt_details = {}
+            self._active_interruptor_tokens_by_object = {}
+
+    def _build_force_stop_exception(
+        self,
+        *,
+        node: NodeSpec | None,
+        boundary: str,
+        interrupted_current_node: bool,
+        python_fallback: bool,
+        completed_before_cancellation: bool,
+        interruption_error: str | None = None,
+    ) -> ForceStopRequested:
+        payload = self._consume_stop_request_payload() or {}
+        reason = str(payload.get("reason") or "").strip() or "Force stopped by user."
+        node_kind = str(node.kind or "").strip().lower() if node is not None else ""
+        db2_fallback = bool(python_fallback and node_kind in {"db2.ingress", "db2.egress"})
+        if interrupted_current_node and node is not None:
+            message = f"{reason} Node '{node.name}' was interrupted."
+        elif python_fallback and node is not None:
+            if db2_fallback:
+                message = f"{reason} DB2 node '{node.name}' completed before stop was applied."
+            else:
+                message = f"{reason} Python node '{node.name}' completed before stop was applied."
+        elif completed_before_cancellation and node is not None:
+            message = f"{reason} Node '{node.name}' completed before cancellation landed."
+        else:
+            message = reason
+        exc = ForceStopRequested(message)
+        with self._stop_request_lock:
+            interrupt_details = dict(self._active_force_interrupt_details)
+        setattr(
+            exc,
+            "queron_details",
+            {
+                "stop_requested": True,
+                "stop_mode": "force",
+                "boundary": str(boundary or "").strip() or "unknown",
+                "requested_at": str(payload.get("requested_at") or "").strip() or None,
+                "request_path": str(self._resolve_stop_request_path()),
+                "node_name": node.name if node is not None else None,
+                "node_kind": node.kind if node is not None else None,
+                "interrupted_current_node": bool(interrupted_current_node),
+                "python_fallback": bool(python_fallback and not db2_fallback),
+                "db2_fallback": bool(db2_fallback),
+                "completed_before_cancellation": bool(completed_before_cancellation),
+                "interruption_error": str(interruption_error or "").strip() or None,
+                **interrupt_details,
+            },
+        )
+        return exc
+
+    def coerce_active_exception(self, node: NodeSpec, exc: Exception) -> Exception:
+        payload = self._consume_stop_request_payload()
+        if payload is None:
+            return exc
+        stop_mode = str(payload.get("stop_mode") or "graceful").strip().lower()
+        if stop_mode != "force":
+            return exc
+        with self._stop_request_lock:
+            target_node_name = self._active_force_target_node_name
+            interrupt_attempted = self._active_force_interrupt_attempted
+        if target_node_name == node.name and interrupt_attempted:
+            return self._build_force_stop_exception(
+                node=node,
+                boundary="during_node",
+                interrupted_current_node=True,
+                python_fallback=False,
+                completed_before_cancellation=False,
+                interruption_error=str(exc),
+            )
+        return exc
 
     def raise_if_stop_requested(self, *, node: NodeSpec | None = None, boundary: str) -> None:
         payload = self._consume_stop_request_payload()
         if payload is None:
             return
+        stop_mode = str(payload.get("stop_mode") or "graceful").strip().lower()
+        if stop_mode == "force":
+            node_kind = str((node.kind if node is not None else None) or "").strip().lower()
+            fallback_node = node_kind in {"python.ingress", "db2.ingress", "db2.egress"}
+            with self._stop_request_lock:
+                target_node_name = self._active_force_target_node_name
+                interrupt_attempted = self._active_force_interrupt_attempted
+            raise self._build_force_stop_exception(
+                node=node,
+                boundary=boundary,
+                interrupted_current_node=False,
+                python_fallback=fallback_node,
+                completed_before_cancellation=bool(node is not None and target_node_name == node.name and interrupt_attempted),
+            )
         reason = str(payload.get("reason") or "").strip() or "Pipeline stop requested by user."
         exc = GracefulStopRequested(reason)
         setattr(
@@ -334,6 +526,32 @@ class PipelineRuntime:
             },
         )
 
+    def _open_tracked_duckdb_connection(self):
+        conn = connect_duckdb(self.duckdb_path)
+        def _interrupt() -> None:
+            interrupt = getattr(conn, "interrupt", None)
+            if callable(interrupt):
+                try:
+                    interrupt()
+                except Exception:
+                    pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        token = self.register_active_interruptor(_interrupt)
+        self._active_interruptor_tokens_by_object[id(conn)] = token
+        return conn
+
+    def _close_tracked_duckdb_connection(self, conn: Any) -> None:
+        token = self._active_interruptor_tokens_by_object.pop(id(conn), None)
+        self.unregister_active_interruptor(token)
+        try:
+            conn.close()
+        except Exception:
+            pass
+
     def _ensure_duckdb_connection_id(self) -> str:
         if self._duckdb_connection_id:
             return self._duckdb_connection_id
@@ -429,6 +647,8 @@ class PipelineRuntime:
         self._refresh_log_path()
         self._run_started = False
         self._selected_node_names = set()
+        self._pending_stop_request = None
+        self._stop_request_handled = False
         self._node_run_ids = {
             str(item.get("node_name") or "").strip(): (
                 str(item.get("node_run_id") or "").strip() or self._default_node_run_id(str(item.get("node_name") or ""))
@@ -474,10 +694,13 @@ class PipelineRuntime:
         if self._run_started:
             return
         self._run_started = True
+        self._pending_stop_request = None
+        self._stop_request_handled = False
         self._selected_node_names = set(selected_node_names)
         started_at = utc_now_timestamp()
         if not self._pipeline_started_at:
             self._pipeline_started_at = started_at
+        self._start_stop_watcher()
         self._record_pipeline_run(
             PipelineRunRecord(
                 run_id=self.run_id,
@@ -820,6 +1043,7 @@ class PipelineRuntime:
                 is_final=True,
             )
         )
+        self._shutdown_stop_watcher()
 
     def mark_run_failed(self, exc: Exception) -> None:
         self._record_pipeline_run(
@@ -838,6 +1062,7 @@ class PipelineRuntime:
                 is_final=False,
             )
         )
+        self._shutdown_stop_watcher()
 
     def clear_pipeline_outputs(self) -> None:
         self.clear_selected_outputs({node.name for node in self.spec.nodes})
@@ -1116,29 +1341,33 @@ class PipelineRuntime:
             message=f"Running {node.kind} node '{node.name}' -> {target_label}",
             node=node,
         )
-        if node.kind in {"postgres.ingress", "db2.ingress"}:
-            return self._execute_ingress(node)
-        if node.kind == "python.ingress":
-            return self._execute_python_ingress(node)
-        if node.kind in _ALL_FILE_INGRESS_KINDS:
-            return self._execute_file_ingress(node)
-        if node.kind == "postgres.egress":
-            return self._execute_postgres_egress(node)
-        if node.kind == "db2.egress":
-            return self._execute_db2_egress(node)
-        if node.kind == "model.sql":
-            return self._execute_model(node)
-        if node.kind == "parquet.egress":
-            return self._execute_parquet_egress(node)
-        if node.kind == "csv.egress":
-            return self._execute_csv_egress(node)
-        if node.kind == "jsonl.egress":
-            return self._execute_jsonl_egress(node)
-        if node.kind == "check.count":
-            return self._execute_check_count(node)
-        if node.kind == "check.boolean":
-            return self._execute_check_boolean(node)
-        raise RuntimeError(f"Unsupported Phase 1 node kind '{node.kind}'.")
+        self._begin_active_node(node)
+        try:
+            if node.kind in {"postgres.ingress", "db2.ingress"}:
+                return self._execute_ingress(node)
+            if node.kind == "python.ingress":
+                return self._execute_python_ingress(node)
+            if node.kind in _ALL_FILE_INGRESS_KINDS:
+                return self._execute_file_ingress(node)
+            if node.kind == "postgres.egress":
+                return self._execute_postgres_egress(node)
+            if node.kind == "db2.egress":
+                return self._execute_db2_egress(node)
+            if node.kind == "model.sql":
+                return self._execute_model(node)
+            if node.kind == "parquet.egress":
+                return self._execute_parquet_egress(node)
+            if node.kind == "csv.egress":
+                return self._execute_csv_egress(node)
+            if node.kind == "jsonl.egress":
+                return self._execute_jsonl_egress(node)
+            if node.kind == "check.count":
+                return self._execute_check_count(node)
+            if node.kind == "check.boolean":
+                return self._execute_check_boolean(node)
+            raise RuntimeError(f"Unsupported Phase 1 node kind '{node.kind}'.")
+        finally:
+            self._end_active_node()
 
     def _execute_ingress(self, node: NodeSpec) -> NodeExecutionResult:
         binding = self._binding_for_node(node)
@@ -1172,6 +1401,8 @@ class PipelineRuntime:
                     row_count=int(progress.get("row_count") or 0),
                     chunk_size=int(progress.get("chunk_size")) if progress.get("chunk_size") is not None else None,
                 ),
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
             )
             duckdb_core.record_ingest_column_mappings(
                 connection_id=duckdb_connection_id,
@@ -1269,6 +1500,8 @@ class PipelineRuntime:
             skip_rows=max(0, int(node.skip_rows or 0)),
             columns=dict(node.columns or {}) if isinstance(node.columns, dict) else None,
             replace=False,
+            on_interrupt_open=self.register_active_interruptor,
+            on_interrupt_close=self.unregister_active_interruptor,
         )
         duckdb_core.record_table_lineage(
             connection_id=self._ensure_duckdb_connection_id(),
@@ -1315,13 +1548,13 @@ class PipelineRuntime:
                 details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
             )
         target_ident = _quote_compound_identifier(str(node.target_table or ""))
-        conn = connect_duckdb(self.duckdb_path)
+        conn = self._open_tracked_duckdb_connection()
         try:
             conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier('main')}")
             conn.execute(f"CREATE TABLE {target_ident} AS {sql}")
             row = conn.execute(f"SELECT COUNT(*) FROM {target_ident}").fetchone()
         finally:
-            conn.close()
+            self._close_tracked_duckdb_connection(conn)
         row_count_out = int(row[0]) if row and row[0] is not None else None
         duckdb_core.record_table_lineage(
             connection_id=self._ensure_duckdb_connection_id(),
@@ -1366,6 +1599,8 @@ class PipelineRuntime:
             target_table=str(node.target_relation or ""),
             mode=str(node.mode or "replace"),
             artifact_table=local_artifact_name,
+            on_interrupt_open=self.register_active_interruptor,
+            on_interrupt_close=self.unregister_active_interruptor,
         )
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
@@ -1456,6 +1691,8 @@ class PipelineRuntime:
                 overwrite=bool(node.overwrite),
                 compression=str(node.compression or "").strip() or None,
                 working_dir=self.working_dir,
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
             )
         else:
             response = duckdb_core.export_query_to_parquet(
@@ -1465,6 +1702,8 @@ class PipelineRuntime:
                 overwrite=bool(node.overwrite),
                 compression=str(node.compression or "").strip() or None,
                 working_dir=self.working_dir,
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
             )
         self._log_event(
             code=LogCode.NODE_EXPORT_WRITTEN,
@@ -1516,6 +1755,8 @@ class PipelineRuntime:
                 header=bool(node.header if node.header is not None else True),
                 delimiter=str(node.delimiter or ","),
                 working_dir=self.working_dir,
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
             )
         else:
             response = duckdb_core.export_query_to_csv(
@@ -1526,6 +1767,8 @@ class PipelineRuntime:
                 header=bool(node.header if node.header is not None else True),
                 delimiter=str(node.delimiter or ","),
                 working_dir=self.working_dir,
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
             )
         self._log_event(
             code=LogCode.NODE_EXPORT_WRITTEN,
@@ -1575,6 +1818,8 @@ class PipelineRuntime:
                 target_table=local_artifact_name,
                 overwrite=bool(node.overwrite),
                 working_dir=self.working_dir,
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
             )
         else:
             response = duckdb_core.export_query_to_jsonl(
@@ -1583,6 +1828,8 @@ class PipelineRuntime:
                 output_path=str(node.output_path or ""),
                 overwrite=bool(node.overwrite),
                 working_dir=self.working_dir,
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
             )
         self._log_event(
             code=LogCode.NODE_EXPORT_WRITTEN,
@@ -1622,11 +1869,11 @@ class PipelineRuntime:
                 details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
             )
         rows: list[tuple[Any, ...]] = []
-        conn = connect_duckdb(self.duckdb_path)
+        conn = self._open_tracked_duckdb_connection()
         try:
             rows = conn.execute(sql).fetchall()
         finally:
-            conn.close()
+            self._close_tracked_duckdb_connection(conn)
         if len(rows) != 1:
             raise RuntimeError(
                 f"Check node '{node.name}' must return exactly one row, but returned {len(rows)}."

@@ -26,6 +26,7 @@ from .api import (
     resume_pipeline,
     run_pipeline,
     stop_pipeline,
+    force_stop_pipeline,
 )
 from .cli import _load_pipeline_namespace, _pipeline_id_from_file, _runtime_bindings_from_file
 from .runtime_models import LogCode, PipelineLogEvent
@@ -631,6 +632,25 @@ def stop_graph_pipeline(pipeline_path: str | Path, *, reason: str | None = None)
         "run_id": result.run_id,
         "run_label": result.run_label,
         "stop_requested": result.stop_requested,
+        "stop_mode": result.stop_mode,
+        "request_path": result.request_path,
+        "message": result.message,
+    }
+
+
+def force_stop_graph_pipeline(pipeline_path: str | Path, *, reason: str | None = None) -> dict[str, Any]:
+    result = force_stop_pipeline(
+        pipeline_path,
+        run_id=None,
+        reason=reason,
+    )
+    return {
+        "ok": True,
+        "artifact_path": result.artifact_path,
+        "run_id": result.run_id,
+        "run_label": result.run_label,
+        "stop_requested": result.stop_requested,
+        "stop_mode": result.stop_mode,
         "request_path": result.request_path,
         "message": result.message,
     }
@@ -864,6 +884,10 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/stop":
                 reason = str(payload.get("reason") or "").strip() or None
                 self._write_json(stop_graph_pipeline(context.pipeline_path, reason=reason))
+                return
+            if parsed.path == "/api/force-stop":
+                reason = str(payload.get("reason") or "").strip() or None
+                self._write_json(force_stop_graph_pipeline(context.pipeline_path, reason=reason))
                 return
             if parsed.path == "/api/reset-all":
                 self._write_json(reset_graph_all(context.pipeline_path, on_log=self._emit_runtime_log))

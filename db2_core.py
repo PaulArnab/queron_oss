@@ -122,6 +122,68 @@ def _sanitize_chunk_size(chunk_size: int | None) -> int:
     return min(size, 5000)
 
 
+def _build_db2_interruptor(conn: Any, cur: Any | None = None) -> tuple[Callable[[], dict[str, Any]], dict[str, Any]]:
+    state: dict[str, Any] = {
+        "db2_statement_handle_present": False,
+        "db2_connection_handle_present": False,
+        "db2_free_result_attempted": False,
+        "db2_raw_close_attempted": False,
+        "db2_connection_close_attempted": False,
+    }
+
+    def _interrupt() -> None:
+        stmt_handler = getattr(cur, "stmt_handler", None) if cur is not None else None
+        conn_handler = getattr(conn, "conn_handler", None)
+        state["db2_statement_handle_present"] = stmt_handler is not None
+        state["db2_connection_handle_present"] = conn_handler is not None
+        if stmt_handler is not None and ibm_db is not None and hasattr(ibm_db, "free_result"):
+            state["db2_free_result_attempted"] = True
+            try:
+                ibm_db.free_result(stmt_handler)
+            except Exception:
+                pass
+        if conn_handler is not None and ibm_db is not None and hasattr(ibm_db, "close"):
+            state["db2_raw_close_attempted"] = True
+            try:
+                ibm_db.close(conn_handler)
+            except Exception:
+                pass
+        state["db2_connection_close_attempted"] = True
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return dict(state)
+
+    return _interrupt, state
+
+
+def _annotate_db2_interrupt_exception(exc: Exception, state: dict[str, Any] | None) -> Exception:
+    payload = dict(getattr(exc, "queron_details", {}) or {})
+    interrupt_state = dict(state or {})
+    if not any(bool(interrupt_state.get(key)) for key in interrupt_state):
+        return exc
+    payload.update(interrupt_state)
+    setattr(exc, "queron_details", payload)
+    return exc
+
+
+def _build_duckdb_interruptor(conn: Any) -> Callable[[], None]:
+    def _interrupt() -> None:
+        interrupt = getattr(conn, "interrupt", None)
+        if callable(interrupt):
+            try:
+                interrupt()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return _interrupt
+
+
 def _sanitize_conn_value(value: Any) -> str:
     return str(value).strip()
 
@@ -642,11 +704,16 @@ def ingest_query_to_duckdb(
     chunk_size: int,
     pipeline_id: str,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
+    on_interrupt_open: Callable[[Callable[[], None]], int] | None = None,
+    on_interrupt_close: Callable[[int | None], None] | None = None,
 ) -> DuckDbIngestQueryResponse:
     conn_str = _config_from_connection_id(source_connection_id)
     source_conn = None
     source_cur = None
     duck_conn = None
+    source_interrupt_token: int | None = None
+    duck_interrupt_token: int | None = None
+    source_interrupt_state: dict[str, Any] | None = None
     inserted = 0
     next_progress_threshold = 1000
     warnings: list[str] = []
@@ -655,6 +722,9 @@ def ingest_query_to_duckdb(
     try:
         source_conn = _dbapi_connect(conn_str)
         source_cur = source_conn.cursor()
+        if on_interrupt_open is not None:
+            source_interruptor, source_interrupt_state = _build_db2_interruptor(source_conn, source_cur)
+            source_interrupt_token = on_interrupt_open(source_interruptor)
         source_cur.execute(sql)
 
         if source_cur.description is None:
@@ -671,6 +741,8 @@ def ingest_query_to_duckdb(
                     warnings.append(warning)
 
         duck_conn = _duckdb_connection_from_id(duckdb_connection_id)
+        if on_interrupt_open is not None:
+            duck_interrupt_token = on_interrupt_open(_build_duckdb_interruptor(duck_conn))
         create_sql = _build_create_table_sql(target_table, mapped_columns, replace=replace)
         duck_conn.execute(create_sql)
 
@@ -701,6 +773,8 @@ def ingest_query_to_duckdb(
                     on_progress({"row_count": inserted, "chunk_size": len(payload)})
                     while inserted >= next_progress_threshold:
                         next_progress_threshold += 1000
+    except Exception as exc:
+        raise _annotate_db2_interrupt_exception(exc, source_interrupt_state)
     finally:
         try:
             if source_cur is not None:
@@ -709,11 +783,15 @@ def ingest_query_to_duckdb(
             pass
         try:
             if source_conn is not None:
+                if on_interrupt_close is not None:
+                    on_interrupt_close(source_interrupt_token)
                 source_conn.close()
         except Exception:
             pass
         try:
             if duck_conn is not None:
+                if on_interrupt_close is not None:
+                    on_interrupt_close(duck_interrupt_token)
                 duck_conn.close()
         except Exception:
             pass
@@ -740,6 +818,8 @@ def egress_query_from_duckdb(
     mode: str = "replace",
     chunk_size: int = 1000,
     artifact_table: str | None = None,
+    on_interrupt_open: Callable[[Callable[[], None]], int] | None = None,
+    on_interrupt_close: Callable[[int | None], None] | None = None,
 ) -> ConnectorEgressResponse:
     normalized_mode = str(mode or "replace").strip().lower()
     if normalized_mode not in {"replace", "append", "create", "create_append"}:
@@ -752,6 +832,9 @@ def egress_query_from_duckdb(
     duck_cur = None
     target_conn = None
     target_cur = None
+    duck_interrupt_token: int | None = None
+    target_interrupt_token: int | None = None
+    target_interrupt_state: dict[str, Any] | None = None
     warnings: list[str] = []
     row_count = 0
     schema_name, table_name, normalized_target_table = _normalize_db2_target_relation(target_table)
@@ -767,10 +850,14 @@ def egress_query_from_duckdb(
                 sql=sql,
                 target_table=str(artifact_table),
                 replace=True,
+                on_interrupt_open=on_interrupt_open,
+                on_interrupt_close=on_interrupt_close,
             )
             sql = f"SELECT * FROM {duckdb_core._quote_compound_identifier(str(artifact_table))}"
 
         duck_conn = connect_duckdb(str(duckdb_database))
+        if on_interrupt_open is not None:
+            duck_interrupt_token = on_interrupt_open(_build_duckdb_interruptor(duck_conn))
         duck_cur = duck_conn.cursor()
         duck_cur.execute(_strip_sql_terminator(sql))
         if duck_cur.description is None:
@@ -781,6 +868,9 @@ def egress_query_from_duckdb(
 
         target_conn = _dbapi_connect(conn_str)
         target_cur = target_conn.cursor()
+        if on_interrupt_open is not None:
+            target_interruptor, target_interrupt_state = _build_db2_interruptor(target_conn, target_cur)
+            target_interrupt_token = on_interrupt_open(target_interruptor)
 
         if normalized_mode in {"replace", "create", "create_append"}:
             _ensure_db2_schema(target_cur, schema_name)
@@ -821,6 +911,8 @@ def egress_query_from_duckdb(
             target_conn.commit()
         except Exception:
             pass
+    except Exception as exc:
+        raise _annotate_db2_interrupt_exception(exc, target_interrupt_state)
     finally:
         try:
             if duck_cur is not None:
@@ -829,6 +921,8 @@ def egress_query_from_duckdb(
             pass
         try:
             if duck_conn is not None:
+                if on_interrupt_close is not None:
+                    on_interrupt_close(duck_interrupt_token)
                 duck_conn.close()
         except Exception:
             pass
@@ -839,6 +933,8 @@ def egress_query_from_duckdb(
             pass
         try:
             if target_conn is not None:
+                if on_interrupt_close is not None:
+                    on_interrupt_close(target_interrupt_token)
                 target_conn.close()
         except Exception:
             pass

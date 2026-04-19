@@ -1962,6 +1962,7 @@ export default function App() {
   const canResetUpstream = isFailed && hasSelectedNode && !isFinalRun;
   const controlsDisabled = Boolean(pendingAction) || isRunning;
   const stopDisabled = pendingAction === "/api/stop" || !canStop;
+  const forceStopDisabled = pendingAction === "/api/force-stop" || !canStop;
   const selectedNodeIdRef = useRef("");
   const sheetOpenRef = useRef(false);
   const activeTabRef = useRef("query");
@@ -2284,7 +2285,10 @@ export default function App() {
       if (endpoint === "/api/stop") {
         setActionError("Stop requested.");
       }
-      if (endpoint !== "/api/stop") {
+      if (endpoint === "/api/force-stop") {
+        setActionError("Force stop requested.");
+      }
+      if (endpoint !== "/api/stop" && endpoint !== "/api/force-stop") {
         await refreshGraphAndDrawer();
       }
     } catch (error) {
@@ -2438,6 +2442,12 @@ export default function App() {
                 icon={Square}
                 onClick={() => runAction("/api/stop")}
                 disabled={stopDisabled}
+              />
+              <HeaderActionButton
+                title="Force Stop"
+                icon={X}
+                onClick={() => runAction("/api/force-stop")}
+                disabled={forceStopDisabled}
               />
               <HeaderActionButton
                 title="Reset All"

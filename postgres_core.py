@@ -89,6 +89,38 @@ def _sanitize_chunk_size(chunk_size: int | None) -> int:
     return min(size, 5000)
 
 
+def _build_postgres_interruptor(conn: Any) -> Callable[[], None]:
+    def _interrupt() -> None:
+        cancel = getattr(conn, "cancel_safe", None) or getattr(conn, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return _interrupt
+
+
+def _build_duckdb_interruptor(conn: Any) -> Callable[[], None]:
+    def _interrupt() -> None:
+        interrupt = getattr(conn, "interrupt", None)
+        if callable(interrupt):
+            try:
+                interrupt()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return _interrupt
+
+
 def _is_schema_change_query(sql: str) -> bool:
     token = (sql or "").lstrip().split(None, 1)
     if not token:
@@ -832,17 +864,23 @@ def ingest_query_to_duckdb(
     chunk_size: int,
     pipeline_id: str,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
+    on_interrupt_open: Callable[[Callable[[], None]], int] | None = None,
+    on_interrupt_close: Callable[[int | None], None] | None = None,
 ) -> DuckDbIngestQueryResponse:
     cfg = _config_from_connection_id(source_connection_id)
     connect_kwargs = _pg_connect_kwargs(cfg)
     source_conn = None
     source_cur = None
     duck_conn = None
+    source_interrupt_token: int | None = None
+    duck_interrupt_token: int | None = None
     inserted = 0
     next_progress_threshold = 1000
     warnings: list[str] = []
     try:
         source_conn = _pg_connection(cfg["uri"], **connect_kwargs)
+        if on_interrupt_open is not None:
+            source_interrupt_token = on_interrupt_open(_build_postgres_interruptor(source_conn))
         source_cur = source_conn.cursor()
         source_cur.execute(_strip_sql_terminator(sql))
         if source_cur.description is None:
@@ -860,6 +898,8 @@ def ingest_query_to_duckdb(
             raise RuntimeError("No columns found in source result.")
 
         duck_conn = _duckdb_connection_from_id(duckdb_connection_id)
+        if on_interrupt_open is not None:
+            duck_interrupt_token = on_interrupt_open(_build_duckdb_interruptor(duck_conn))
         duck_conn.execute(_build_duckdb_create_table_sql(target_table, mapped_columns, replace=replace))
 
         target_ident = _quote_compound_identifier(target_table)
@@ -897,11 +937,15 @@ def ingest_query_to_duckdb(
             pass
         try:
             if source_conn is not None:
+                if on_interrupt_close is not None:
+                    on_interrupt_close(source_interrupt_token)
                 source_conn.close()
         except Exception:
             pass
         try:
             if duck_conn is not None:
+                if on_interrupt_close is not None:
+                    on_interrupt_close(duck_interrupt_token)
                 duck_conn.close()
         except Exception:
             pass
@@ -935,6 +979,8 @@ def egress_query_from_duckdb(
     mode: str = "replace",
     chunk_size: int = 1000,
     artifact_table: str | None = None,
+    on_interrupt_open: Callable[[Callable[[], None]], int] | None = None,
+    on_interrupt_close: Callable[[int | None], None] | None = None,
 ) -> ConnectorEgressResponse:
     cfg = _config_from_connection_id(target_connection_id)
     connect_kwargs = _pg_connect_kwargs(cfg)
@@ -948,6 +994,8 @@ def egress_query_from_duckdb(
     duck_cur = None
     target_conn = None
     target_cur = None
+    duck_interrupt_token: int | None = None
+    target_interrupt_token: int | None = None
     warnings: list[str] = []
     row_count = 0
     try:
@@ -961,10 +1009,14 @@ def egress_query_from_duckdb(
                 sql=sql,
                 target_table=str(artifact_table),
                 replace=True,
+                on_interrupt_open=on_interrupt_open,
+                on_interrupt_close=on_interrupt_close,
             )
             sql = f"SELECT * FROM {duckdb_core._quote_compound_identifier(str(artifact_table))}"
 
         duck_conn = connect_duckdb(str(duckdb_database))
+        if on_interrupt_open is not None:
+            duck_interrupt_token = on_interrupt_open(_build_duckdb_interruptor(duck_conn))
         duck_cur = duck_conn.cursor()
         duck_cur.execute(_strip_sql_terminator(sql))
         if duck_cur.description is None:
@@ -974,6 +1026,8 @@ def egress_query_from_duckdb(
             raise RuntimeError("DuckDB egress query did not return any columns.")
 
         target_conn = _pg_connection(cfg["uri"], **connect_kwargs)
+        if on_interrupt_open is not None:
+            target_interrupt_token = on_interrupt_open(_build_postgres_interruptor(target_conn))
         target_cur = target_conn.cursor()
         current_database, current_schema = _current_postgres_database_and_schema(target_cur)
         schema_name, table_name, normalized_target_table, quoted_target_table = _normalize_postgres_target_relation(
@@ -1030,11 +1084,15 @@ def egress_query_from_duckdb(
             pass
         try:
             if target_conn is not None:
+                if on_interrupt_close is not None:
+                    on_interrupt_close(target_interrupt_token)
                 target_conn.close()
         except Exception:
             pass
         try:
             if duck_conn is not None:
+                if on_interrupt_close is not None:
+                    on_interrupt_close(duck_interrupt_token)
                 duck_conn.close()
         except Exception:
             pass
