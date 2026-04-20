@@ -2320,6 +2320,44 @@ def export_query_to_jsonl(
     )
 
 
+def export_query_to_json(
+    *,
+    database: str,
+    sql: str,
+    output_path: str,
+    overwrite: bool = False,
+    working_dir: str | None = None,
+    on_interrupt_open: Any = None,
+    on_interrupt_close: Any = None,
+) -> DuckDbExportResponse:
+    conn = _duckdb_connection(str(database))
+    interrupt_token = None
+    if callable(on_interrupt_open):
+        interrupt_token = on_interrupt_open(_build_duckdb_interruptor(conn))
+    resolved_output_path = _resolve_export_path(output_path, working_dir=working_dir)
+    try:
+        if resolved_output_path.exists():
+            if not overwrite:
+                raise RuntimeError(f"Export path '{resolved_output_path}' already exists.")
+            resolved_output_path.unlink()
+        row_count = _load_query_row_count(conn, sql=sql)
+        conn.execute(
+            f"COPY ({_strip_sql_terminator(sql)}) TO ? (FORMAT JSON, ARRAY true)",
+            (str(resolved_output_path),),
+        )
+    finally:
+        if callable(on_interrupt_close):
+            on_interrupt_close(interrupt_token)
+        conn.close()
+    return DuckDbExportResponse(
+        output_path=str(resolved_output_path),
+        row_count=row_count,
+        file_size_bytes=int(os.path.getsize(resolved_output_path)) if resolved_output_path.exists() else None,
+        export_format="json",
+        created_at=time.time(),
+    )
+
+
 def _normalize_file_format(value: str | None, *, path: str | None = None) -> str:
     text = str(value or "").strip().lower()
     if text in {"jsonl", "ndjson"}:

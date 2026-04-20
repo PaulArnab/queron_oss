@@ -401,6 +401,7 @@ python = _PythonNamespace()
 
 from .api import (  # noqa: E402
     compile_pipeline,
+    export_artifact,
     inspect_node,
     inspect_node_logs,
     inspect_node_query,
@@ -422,6 +423,7 @@ __all__ = [
     "csv",
     "compile_pipeline",
     "db2",
+    "export_artifact",
     "file",
     "inspect_node",
     "inspect_node_logs",

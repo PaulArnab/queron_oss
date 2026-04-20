@@ -4,6 +4,7 @@ from collections import deque
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any, Callable
 import uuid
 
@@ -148,6 +149,27 @@ class InspectNodeQueryResult:
     sql: str | None = None
     resolved_sql: str | None = None
     dependencies: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ExportArtifactResult:
+    pipeline_path: str
+    artifact_path: str
+    pipeline_id: str | None = None
+    compile_id: str | None = None
+    run_id: str | None = None
+    run_label: str | None = None
+    run_status: str | None = None
+    is_final: bool = False
+    node_name: str | None = None
+    node_kind: str | None = None
+    logical_artifact: str | None = None
+    artifact_name: str | None = None
+    effective_artifact_path: str | None = None
+    output_path: str | None = None
+    export_format: str | None = None
+    row_count: int | None = None
+    file_size_bytes: int | None = None
 
 
 _ACTIVE_RUNTIMES_BY_RUN_ID: dict[str, PipelineRuntime] = {}
@@ -1207,6 +1229,35 @@ def _resolved_node_artifact_location(
     return str(artifact_path), logical_artifact, logical_artifact
 
 
+def _qualified_relation_name(value: str) -> str:
+    text = str(value or "").strip()
+    if not text or "." not in text:
+        raise RuntimeError("Selected artifact is not a queryable local table.")
+    schema_name, table_name = text.split(".", 1)
+    schema_name = schema_name.strip().strip('"')
+    table_name = table_name.strip().strip('"')
+    if not schema_name or not table_name:
+        raise RuntimeError("Selected artifact is not a queryable local table.")
+    return f"\"{schema_name.replace('\"', '\"\"')}\".\"{table_name.replace('\"', '\"\"')}\""
+
+
+def _default_export_artifact_path(
+    *,
+    resolved_artifact_path: Path,
+    pipeline_id: str,
+    run_id: str | None,
+    artifact_name: str,
+    export_format: str,
+) -> Path:
+    base_name = str(artifact_name or "").strip().split(".")[-1].strip().strip('"') or "artifact"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", base_name).strip("._") or "artifact"
+    extension = "json" if export_format == "json" else export_format
+    export_root = resolved_artifact_path.parent / "exports"
+    if run_id:
+        export_root = export_root / str(run_id).strip()
+    return (export_root / f"{safe_name}.{extension}").resolve()
+
+
 def _load_compiled_contract_for_inspection(
     *,
     resolved_artifact_path: Path,
@@ -1737,6 +1788,133 @@ def inspect_node_query(
             for item in dependencies
             if str(item).strip()
         ],
+    )
+
+
+def export_artifact(
+    artifact_path: str | Path,
+    *,
+    node_name: str | None = None,
+    artifact_name: str | None = None,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    format: str = "csv",
+    output_path: str | Path | None = None,
+    overwrite: bool = False,
+) -> ExportArtifactResult:
+    normalized_node_name = str(node_name or "").strip() or None
+    normalized_artifact_name = str(artifact_name or "").strip() or None
+    if bool(normalized_node_name) == bool(normalized_artifact_name):
+        raise RuntimeError("Provide exactly one of node_name or artifact_name.")
+
+    normalized_format = str(format or "").strip().lower()
+    if normalized_format not in {"csv", "parquet", "json"}:
+        raise RuntimeError("format must be one of: csv, parquet, json.")
+
+    if normalized_node_name:
+        query = inspect_node_query(
+            artifact_path,
+            normalized_node_name,
+            run_id=run_id,
+            run_label=run_label,
+        )
+        selected_artifact_name = str(query.artifact_name or "").strip()
+        if not selected_artifact_name:
+            raise RuntimeError(f"Node '{normalized_node_name}' does not have a materialized artifact.")
+        effective_artifact_path = str(query.effective_artifact_path or "").strip()
+        if not effective_artifact_path:
+            raise RuntimeError(f"Node '{normalized_node_name}' does not have a resolvable artifact database.")
+        resolved_artifact_path = Path(query.artifact_path).expanduser().resolve()
+        pipeline_path = str(query.pipeline_path)
+        pipeline_id = str(query.pipeline_id or "").strip() or None
+        compile_id = str(query.compile_id or "").strip() or None
+        selected_run_id = str(query.run_id or "").strip() or None
+        selected_run_label = str(query.run_label or "").strip() or None
+        selected_run_status = str(query.run_status or "").strip() or None
+        is_final = bool(query.is_final)
+        selected_node_kind = str(query.node_kind or "").strip() or None
+        logical_artifact = str(query.logical_artifact or "").strip() or None
+    else:
+        resolved_artifact_path, _active_contract, runs = _inspect_pipeline_runs(artifact_path, limit=None)
+        selected_run = _select_pipeline_run_for_inspection(
+            resolved_artifact_path=resolved_artifact_path,
+            run_id=run_id,
+            run_label=run_label,
+            default_to_latest=True,
+            available_runs=runs,
+        )
+        contract = _load_compiled_contract_for_inspection(
+            resolved_artifact_path=resolved_artifact_path,
+            selected_run=selected_run,
+        )
+        selected_artifact_name = normalized_artifact_name or ""
+        effective_artifact_path = str(resolved_artifact_path)
+        pipeline_path = str(Path(contract.pipeline_path).expanduser().resolve())
+        pipeline_id = str(getattr(contract, "pipeline_id", "") or "").strip() or None
+        compile_id = str(getattr(contract, "compile_id", "") or "").strip() or None
+        selected_run_id = str(selected_run.get("run_id") or "").strip() or None if selected_run is not None else None
+        selected_run_label = str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None
+        selected_run_status = str(selected_run.get("status") or "").strip() or None if selected_run is not None else None
+        is_final = _selected_run_is_final(selected_run)
+        selected_node_kind = None
+        logical_artifact = normalized_artifact_name
+
+    qualified_relation = _qualified_relation_name(selected_artifact_name)
+    export_target_path = (
+        Path(output_path).expanduser().resolve()
+        if output_path is not None
+        else _default_export_artifact_path(
+            resolved_artifact_path=resolved_artifact_path,
+            pipeline_id=pipeline_id or resolved_artifact_path.parent.name,
+            run_id=selected_run_id,
+            artifact_name=selected_artifact_name,
+            export_format=normalized_format,
+        )
+    )
+
+    import duckdb_core
+
+    sql = f"SELECT * FROM {qualified_relation}"
+    if normalized_format == "csv":
+        response = duckdb_core.export_query_to_csv(
+            database=effective_artifact_path,
+            sql=sql,
+            output_path=str(export_target_path),
+            overwrite=overwrite,
+        )
+    elif normalized_format == "parquet":
+        response = duckdb_core.export_query_to_parquet(
+            database=effective_artifact_path,
+            sql=sql,
+            output_path=str(export_target_path),
+            overwrite=overwrite,
+        )
+    else:
+        response = duckdb_core.export_query_to_json(
+            database=effective_artifact_path,
+            sql=sql,
+            output_path=str(export_target_path),
+            overwrite=overwrite,
+        )
+
+    return ExportArtifactResult(
+        pipeline_path=pipeline_path,
+        artifact_path=str(resolved_artifact_path),
+        pipeline_id=pipeline_id,
+        compile_id=compile_id,
+        run_id=selected_run_id,
+        run_label=selected_run_label,
+        run_status=selected_run_status,
+        is_final=is_final,
+        node_name=normalized_node_name,
+        node_kind=selected_node_kind,
+        logical_artifact=logical_artifact,
+        artifact_name=selected_artifact_name,
+        effective_artifact_path=effective_artifact_path,
+        output_path=str(response.output_path),
+        export_format=str(response.export_format),
+        row_count=int(response.row_count),
+        file_size_bytes=int(response.file_size_bytes) if response.file_size_bytes is not None else None,
     )
 
 

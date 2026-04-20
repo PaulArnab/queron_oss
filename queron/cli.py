@@ -12,6 +12,7 @@ from .api import (
     _inspect_pipeline_runs,
     init_pipeline_project,
     compile_pipeline,
+    export_artifact,
     inspect_node,
     inspect_node_query,
     inspect_node_history,
@@ -365,6 +366,57 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Unique run label to inspect within this pipeline.",
     )
     inspect_node_query_parser.set_defaults(handler=_handle_inspect_node_query)
+
+    export_artifact_parser = subparsers.add_parser(
+        "export_artifact",
+        help="Export one materialized artifact table to a file.",
+    )
+    export_artifact_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
+    export_artifact_parser.add_argument(
+        "--node-name",
+        dest="node_name",
+        default=None,
+        help="Pipeline node name whose artifact should be exported.",
+    )
+    export_artifact_parser.add_argument(
+        "--artifact-name",
+        dest="artifact_name",
+        default=None,
+        help="Physical artifact table name to export, such as main.policy_core.",
+    )
+    export_artifact_parser.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=None,
+        help="Run ID to export from. Defaults to the latest run when omitted.",
+    )
+    export_artifact_parser.add_argument(
+        "--run-label",
+        dest="run_label",
+        default=None,
+        help="Unique run label to export from within this pipeline.",
+    )
+    export_artifact_parser.add_argument(
+        "--format",
+        dest="format",
+        default="csv",
+        choices=["csv", "parquet", "json"],
+        help="Export file format. Defaults to csv.",
+    )
+    export_artifact_parser.add_argument(
+        "--output-path",
+        dest="output_path",
+        default=None,
+        help="Optional explicit output file path. Defaults under .queron/<pipeline_id>/exports/<run_id>/",
+    )
+    export_artifact_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        dest="overwrite",
+        help="Overwrite the output file when it already exists.",
+    )
+    export_artifact_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
+    export_artifact_parser.set_defaults(handler=_handle_export_artifact)
 
     open_graph_parser = subparsers.add_parser(
         "open_graph",
@@ -1147,6 +1199,65 @@ def _handle_inspect_node_logs(args: argparse.Namespace) -> int:
         node_name = str(entry.get("node_name") or "-").strip() or "-"
         message = str(entry.get("message") or "").strip()
         print(f"{timestamp}  {severity:<7}  {code:<28}  {node_name:<12}  {message}")
+    return 0
+
+
+def _handle_export_artifact(args: argparse.Namespace) -> int:
+    try:
+        result = export_artifact(
+            args.artifact,
+            node_name=args.node_name,
+            artifact_name=args.artifact_name,
+            run_id=args.run_id,
+            run_label=args.run_label,
+            format=args.format,
+            output_path=args.output_path,
+            overwrite=bool(args.overwrite),
+        )
+    except Exception as exc:
+        if getattr(args, "json_output", False):
+            return _emit_json({"ok": False, "error": str(exc)})
+        print(f"Export artifact failed: {exc}", file=sys.stderr)
+        return 1
+
+    payload = {
+        "ok": True,
+        "pipeline_path": result.pipeline_path,
+        "artifact_path": result.artifact_path,
+        "pipeline_id": result.pipeline_id,
+        "compile_id": result.compile_id,
+        "run_id": result.run_id,
+        "run_label": result.run_label,
+        "run_status": result.run_status,
+        "is_final": result.is_final,
+        "node_name": result.node_name,
+        "node_kind": result.node_kind,
+        "logical_artifact": result.logical_artifact,
+        "artifact_name": result.artifact_name,
+        "effective_artifact_path": result.effective_artifact_path,
+        "output_path": result.output_path,
+        "export_format": result.export_format,
+        "row_count": result.row_count,
+        "file_size_bytes": result.file_size_bytes,
+    }
+    if getattr(args, "json_output", False):
+        return _emit_json(payload)
+
+    print(f"Pipeline: {result.pipeline_path}")
+    print(f"Artifact DB: {result.artifact_path}")
+    if result.run_id:
+        print(f"Run ID: {result.run_id}")
+    if result.run_label:
+        print(f"Run label: {result.run_label}")
+    if result.node_name:
+        print(f"Node: {result.node_name}")
+    if result.artifact_name:
+        print(f"Artifact: {result.artifact_name}")
+    print(f"Format: {result.export_format}")
+    print(f"Rows: {result.row_count if result.row_count is not None else '-'}")
+    if result.file_size_bytes is not None:
+        print(f"File size: {result.file_size_bytes} bytes")
+    print(f"Output: {result.output_path}")
     return 0
 
 
