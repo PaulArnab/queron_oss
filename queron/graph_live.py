@@ -13,6 +13,8 @@ from urllib.parse import parse_qs, urlparse
 
 from duckdb_driver import connect_duckdb
 from .api import (
+    _inspect_pipeline_logs,
+    _inspect_pipeline_runs,
     has_compile_errors,
     inspect_dag,
     inspect_node,
@@ -214,6 +216,67 @@ def get_graph_panel(
         "node_count": len(result.nodes),
         "nodes": result.nodes,
         "edges": result.edges,
+    }
+
+
+def get_runs_panel(artifact_path: str | Path) -> dict[str, Any]:
+    resolved_artifact_path, _contract, runs = _inspect_pipeline_runs(artifact_path, limit=100)
+    items: list[dict[str, Any]] = []
+    for item in runs:
+        items.append(
+            {
+                "run_id": str(item.get("run_id") or "").strip() or None,
+                "run_label": str(item.get("run_label") or "").strip() or None,
+                "status": str(item.get("status") or "").strip() or None,
+                "is_final": bool(item.get("is_final")),
+                "started_at": item.get("started_at"),
+                "finished_at": item.get("finished_at"),
+            }
+        )
+    return {
+        "ok": True,
+        "artifact_path": str(resolved_artifact_path),
+        "runs": items,
+    }
+
+
+def get_pipeline_logs_panel(
+    artifact_path: str | Path,
+    *,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    tail: int | None = 200,
+) -> dict[str, Any]:
+    normalized_run_id, normalized_run_label = _normalized_selection(run_id, run_label)
+    resolved_artifact_path, active_contract, selected_run, lines = _inspect_pipeline_logs(
+        artifact_path,
+        run_id=normalized_run_id,
+        run_label=normalized_run_label,
+        tail=tail,
+    )
+    logs: list[dict[str, Any]] = []
+    for line in lines:
+        text = str(line or "").strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                logs.append(payload)
+                continue
+        except Exception:
+            pass
+        logs.append({"message": text})
+    return {
+        "ok": True,
+        "pipeline_path": str(Path(active_contract.pipeline_path).expanduser().resolve()),
+        "artifact_path": str(resolved_artifact_path),
+        "run_id": str(selected_run.get("run_id") or "").strip() or None,
+        "run_label": str(selected_run.get("run_label") or "").strip() or None,
+        "run_status": str(selected_run.get("status") or "").strip() or None,
+        "is_final": bool(selected_run.get("is_final")),
+        "log_path": str(selected_run.get("log_path") or "").strip() or None,
+        "logs": logs,
     }
 
 
@@ -759,6 +822,12 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._write_error_json(exc)
             return
+        if parsed.path == "/api/runs":
+            try:
+                self._write_json(get_runs_panel(self._graph_context().artifact_path))
+            except Exception as exc:
+                self._write_error_json(exc)
+            return
         if parsed.path == "/api/run/artifacts":
             params = parse_qs(parsed.query, keep_blank_values=False)
             run_id = str((params.get("run_id") or [None])[0] or "").strip() or None
@@ -769,6 +838,23 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
                         self._graph_context().artifact_path,
                         run_id=run_id,
                         run_label=run_label,
+                    )
+                )
+            except Exception as exc:
+                self._write_error_json(exc)
+            return
+        if parsed.path == "/api/pipeline/logs":
+            params = parse_qs(parsed.query, keep_blank_values=False)
+            run_id = str((params.get("run_id") or [None])[0] or "").strip() or None
+            run_label = str((params.get("run_label") or [None])[0] or "").strip() or None
+            tail = int(str((params.get("tail") or [200])[0] or "200").strip() or "200")
+            try:
+                self._write_json(
+                    get_pipeline_logs_panel(
+                        self._graph_context().artifact_path,
+                        run_id=run_id,
+                        run_label=run_label,
+                        tail=tail,
                     )
                 )
             except Exception as exc:

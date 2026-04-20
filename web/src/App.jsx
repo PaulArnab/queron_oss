@@ -10,7 +10,7 @@ import {
 } from "@xyflow/react";
 import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown, Square } from "lucide-react";
+import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown, Square, Terminal } from "lucide-react";
 import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
 import "ag-grid-community/styles/ag-grid.css";
@@ -1620,6 +1620,89 @@ function InspectBottomSheet({
   );
 }
 
+function PipelineLogsPanel({
+  open,
+  onClose,
+  logs = [],
+  loading = false,
+  error = "",
+  runId = null,
+  runLabel = null,
+}) {
+  if (!open) return null;
+  return (
+    <div className="pointer-events-none absolute inset-y-0 right-0 z-30 flex">
+      <div className="pointer-events-auto h-full w-[560px] max-w-[92vw] border-l border-slate-200 bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Pipeline Logs</div>
+            <div className="mt-1 truncate text-[12px] font-medium text-slate-700">
+              {runLabel ? `${runId || "-"} • ${runLabel}` : (runId || "-")}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+          >
+            <X size={14} strokeWidth={2.25} />
+            <span>Close</span>
+          </button>
+        </div>
+        <div className="h-[calc(100%-61px)] overflow-y-auto px-4 py-3">
+          {loading ? (
+            <div className="text-[13px] text-slate-500">Loading pipeline logs...</div>
+          ) : error ? (
+            <div className="text-[13px] text-rose-600">{error}</div>
+          ) : !logs.length ? (
+            <div className="text-[13px] text-slate-400">No pipeline logs found.</div>
+          ) : (
+            <div className="space-y-2">
+              {logs.map((entry, index) => {
+                const timestamp = String(entry?.timestamp || "").trim() || "-";
+                const severity = String(entry?.severity || "info").trim().toLowerCase() || "info";
+                const code = String(entry?.code || "").trim() || "-";
+                const nodeName = String(entry?.node_name || "").trim() || "-";
+                const message = String(entry?.message || "").trim() || "-";
+                return (
+                  <div
+                    key={`${timestamp}-${code}-${index}`}
+                    className={`rounded-md border px-3 py-2 ${
+                      severity === "error"
+                        ? "border-rose-200 bg-rose-50"
+                        : severity === "warning"
+                          ? "border-amber-200 bg-amber-50"
+                          : "border-slate-200 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">
+                      <span>{timestamp}</span>
+                      <span>{severity}</span>
+                      <span>{code}</span>
+                      <span>{nodeName}</span>
+                    </div>
+                    <div
+                      className={`mt-1 break-words text-[12px] font-medium leading-5 ${
+                        severity === "error"
+                          ? "text-rose-700"
+                          : severity === "warning"
+                            ? "text-amber-800"
+                            : "text-slate-700"
+                      }`}
+                    >
+                      {message}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GraphCanvas({
   graphData,
   graphLoading,
@@ -1947,6 +2030,13 @@ export default function App() {
   const [artifactPreviewError, setArtifactPreviewError] = useState("");
   const [artifactList, setArtifactList] = useState([]);
   const [artifactListLoading, setArtifactListLoading] = useState(false);
+  const [pipelineLogsOpen, setPipelineLogsOpen] = useState(false);
+  const [pipelineLogs, setPipelineLogs] = useState([]);
+  const [pipelineLogsLoading, setPipelineLogsLoading] = useState(false);
+  const [pipelineLogsError, setPipelineLogsError] = useState("");
+  const [runOptions, setRunOptions] = useState([]);
+  const [selectedRunId, setSelectedRunId] = useState("");
+  const [runMenuOpen, setRunMenuOpen] = useState(false);
   const [isSynchronizedRefreshRunning, setIsSynchronizedRefreshRunning] = useState(false);
   const [pageRefreshActive, setPageRefreshActive] = useState(false);
   const runStatus = String(graphData?.run_status || "").trim().toLowerCase();
@@ -1964,14 +2054,42 @@ export default function App() {
   const stopDisabled = pendingAction === "/api/stop" || !canStop;
   const forceStopDisabled = pendingAction === "/api/force-stop" || !canStop;
   const selectedNodeIdRef = useRef("");
+  const selectedRunIdRef = useRef("");
+  const runMenuRef = useRef(null);
   const sheetOpenRef = useRef(false);
   const activeTabRef = useRef("query");
   const artifactPageOpenRef = useRef(false);
 
+  function buildRunScopedPath(path, params = {}) {
+    const search = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== null && value !== undefined && String(value).trim() !== "") {
+        search.set(key, String(value));
+      }
+    });
+    const activeRunId = String(selectedRunIdRef.current || "").trim();
+    if (activeRunId) {
+      search.set("run_id", activeRunId);
+    }
+    const suffix = search.toString();
+    return suffix ? `${path}?${suffix}` : path;
+  }
+
+  async function loadRunOptions() {
+    try {
+      const response = await fetch("/api/runs");
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || "Failed to load runs.");
+      setRunOptions(Array.isArray(payload.runs) ? payload.runs : []);
+    } catch (_error) {
+      setRunOptions([]);
+    }
+  }
+
   async function loadGraph() {
     setGraphLoading(true);
     try {
-      const response = await fetch("/api/graph");
+      const response = await fetch(buildRunScopedPath("/api/graph"));
       const payload = await response.json();
       if (!response.ok || payload.ok === false) throw new Error(payload.error || "Failed to load graph.");
       setGraphData(payload);
@@ -1987,7 +2105,7 @@ export default function App() {
     if (!nodeId) return;
     setPanelLoading(true);
     try {
-      const response = await fetch(`/api/node?node_name=${encodeURIComponent(nodeId)}`);
+      const response = await fetch(buildRunScopedPath("/api/node", { node_name: nodeId }));
       const payload = await response.json();
       if (!response.ok || payload.ok === false) throw new Error(payload.error || "Failed to load node details.");
       setPanelData(buildInspectPanelDataFromApi(payload));
@@ -2006,11 +2124,11 @@ export default function App() {
     setPanelTabError("");
     try {
       let endpoint = "";
-      if (tabName === "query") endpoint = `/api/node/query?node_name=${encodeURIComponent(nodeId)}`;
-      else if (tabName === "history") endpoint = `/api/node/history?node_name=${encodeURIComponent(nodeId)}`;
-      else if (tabName === "logs") endpoint = `/api/node/logs?node_name=${encodeURIComponent(nodeId)}&tail=200`;
-      else if (tabName === "upstream") endpoint = `/api/node/upstream?node_name=${encodeURIComponent(nodeId)}`;
-      else if (tabName === "downstream") endpoint = `/api/node/downstream?node_name=${encodeURIComponent(nodeId)}`;
+      if (tabName === "query") endpoint = buildRunScopedPath("/api/node/query", { node_name: nodeId });
+      else if (tabName === "history") endpoint = buildRunScopedPath("/api/node/history", { node_name: nodeId });
+      else if (tabName === "logs") endpoint = buildRunScopedPath("/api/node/logs", { node_name: nodeId, tail: 200 });
+      else if (tabName === "upstream") endpoint = buildRunScopedPath("/api/node/upstream", { node_name: nodeId });
+      else if (tabName === "downstream") endpoint = buildRunScopedPath("/api/node/downstream", { node_name: nodeId });
       else return;
       const response = await fetch(endpoint);
       const payload = await response.json();
@@ -2068,6 +2186,8 @@ export default function App() {
   }
 
   function currentRunIdForNodePanel() {
+    const activeRunId = String(selectedRunIdRef.current || selectedRunId || "").trim();
+    if (activeRunId) return activeRunId;
     return panelData?.run?.runId || graphData?.run_id || null;
   }
 
@@ -2107,15 +2227,37 @@ export default function App() {
     }
   }
 
+  async function loadPipelineLogs() {
+    setPipelineLogsLoading(true);
+    setPipelineLogsError("");
+    try {
+      const response = await fetch(buildRunScopedPath("/api/pipeline/logs", { tail: 200 }));
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || "Failed to load pipeline logs.");
+      }
+      setPipelineLogs(Array.isArray(payload.logs) ? payload.logs : []);
+    } catch (error) {
+      setPipelineLogs([]);
+      setPipelineLogsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPipelineLogsLoading(false);
+    }
+  }
+
   async function refreshGraphAndDrawer({ refreshActiveTab = false, showPageRefresh = false } = {}) {
     if (showPageRefresh) {
       setPageRefreshActive(true);
     }
     setIsSynchronizedRefreshRunning(true);
     try {
+      await loadRunOptions();
       await loadGraph();
       if (artifactPageOpenRef.current) {
         await loadArtifactList();
+      }
+      if (pipelineLogsOpen) {
+        await loadPipelineLogs();
       }
       if (!sheetOpenRef.current || !selectedNodeIdRef.current) return;
       await loadNodePanel(selectedNodeIdRef.current);
@@ -2175,12 +2317,30 @@ export default function App() {
   }
 
   useEffect(() => {
+    loadRunOptions();
     loadGraph();
   }, []);
 
   useEffect(() => {
     selectedNodeIdRef.current = selectedNodeId;
   }, [selectedNodeId]);
+
+  useEffect(() => {
+    selectedRunIdRef.current = selectedRunId;
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    function handlePointerDown(event) {
+      if (!runMenuRef.current) return;
+      if (!runMenuRef.current.contains(event.target)) {
+        setRunMenuOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, []);
 
   useEffect(() => {
     sheetOpenRef.current = sheetOpen;
@@ -2195,12 +2355,22 @@ export default function App() {
   }, [artifactPageOpen]);
 
   useEffect(() => {
+    if (!pipelineLogsOpen) return;
+    void loadPipelineLogs();
+  }, [pipelineLogsOpen, selectedRunId]);
+
+  useEffect(() => {
     const eventSource = new EventSource("/api/events");
 
     eventSource.onmessage = (messageEvent) => {
       try {
         const payload = JSON.parse(messageEvent.data);
         if (!payload || payload.type !== "runtime_log") return;
+        const eventRunId = String(payload.run_id || "").trim();
+        const viewedRunId = String(selectedRunIdRef.current || "").trim();
+        if (viewedRunId && eventRunId && viewedRunId !== eventRunId) {
+          return;
+        }
 
         setGraphData((current) => patchGraphDataWithEvent(current, payload));
         setPanelData((current) => patchPanelDataWithEvent(current, payload, selectedNodeIdRef.current));
@@ -2311,6 +2481,38 @@ export default function App() {
     }
   }
 
+  async function handleRunSelectionChange(nextRunId) {
+    setSelectedRunId(nextRunId);
+    selectedRunIdRef.current = nextRunId;
+    setRunMenuOpen(false);
+    setPanelError("");
+    setPanelTabError("");
+    setArtifactPreview(null);
+    setArtifactPreviewError("");
+    setArtifactResult(null);
+    setArtifactResultUpdatedAt(null);
+    await refreshGraphAndDrawer({ refreshActiveTab: true });
+  }
+
+  const selectedRunOption = useMemo(
+    () => runOptions.find((item) => String(item?.run_id || "") === String(selectedRunId || "")) || null,
+    [runOptions, selectedRunId],
+  );
+  const latestRunOptionLabel = useMemo(() => {
+    const runId = String(graphData?.run_id || "").trim();
+    const runLabel = String(graphData?.run_label || "").trim();
+    if (!runId) return "Latest";
+    if (runLabel) return `${runId} • ${runLabel} • Latest`;
+    return `${runId} • Latest`;
+  }, [graphData?.run_id, graphData?.run_label]);
+  const selectedRunLabel = useMemo(() => {
+    if (!selectedRunOption) return latestRunOptionLabel;
+    const runId = String(selectedRunOption?.run_id || "").trim();
+    const runLabel = String(selectedRunOption?.run_label || "").trim();
+    if (runLabel) return `${runId} • ${runLabel}`;
+    return runId || latestRunOptionLabel;
+  }, [latestRunOptionLabel, selectedRunOption]);
+
   function buildArtifactQuery(artifactName) {
     const text = String(artifactName || "").trim();
     if (text) {
@@ -2416,16 +2618,64 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-5">
-              <div className="max-w-[200px] text-right">
-                <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Run ID</div>
-                <div className="mt-0.5 truncate text-[12px] font-medium text-slate-700">{graphData?.run_id || "-"}</div>
+            <div className="flex min-w-0 items-start gap-6">
+              <div className="min-w-0 flex-1 text-right">
+                <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Run</div>
+                <div className="mt-0.5 flex justify-end">
+                  <div ref={runMenuRef} className="relative inline-flex min-w-0 max-w-full flex-col items-end">
+                    <button
+                      type="button"
+                      onClick={() => setRunMenuOpen((current) => !current)}
+                      className="inline-flex min-w-0 max-w-full items-center justify-end gap-2 pl-3 text-[12px] font-medium text-slate-700"
+                    >
+                      <span className="truncate text-right">{selectedRunLabel}</span>
+                      <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition ${runMenuOpen ? "rotate-180" : ""}`} />
+                    </button>
+                    {runMenuOpen ? (
+                      <div className="absolute right-0 top-full z-30 mt-2 w-[420px] max-w-[42vw] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+                        <div
+                          className="max-h-80 overflow-y-auto py-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                          style={{ msOverflowStyle: "none", scrollbarWidth: "none" }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleRunSelectionChange("");
+                            }}
+                            className={`block w-full truncate px-4 py-2 text-right text-[12px] font-medium ${
+                              !selectedRunId ? "bg-slate-100 text-slate-950" : "text-slate-700 hover:bg-slate-50"
+                            }`}
+                          >
+                            {latestRunOptionLabel}
+                          </button>
+                          {runOptions.map((item) => {
+                            const runId = String(item?.run_id || "").trim();
+                            if (!runId) return null;
+                            const runLabel = String(item?.run_label || "").trim();
+                            const label = runLabel ? `${runId} • ${runLabel}` : runId;
+                            const isSelected = runId === selectedRunId;
+                            return (
+                              <button
+                                key={runId}
+                                type="button"
+                                onClick={() => {
+                                  void handleRunSelectionChange(runId);
+                                }}
+                                className={`block w-full truncate px-4 py-2 text-right text-[12px] font-medium ${
+                                  isSelected ? "bg-slate-100 text-slate-950" : "text-slate-700 hover:bg-slate-50"
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               </div>
-              <div className="max-w-[180px] text-right">
-                <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Run Label</div>
-                <div className="mt-0.5 truncate text-[12px] font-medium text-slate-700">{graphData?.run_label || "-"}</div>
-              </div>
-              <div className="max-w-[120px] text-right">
+              <div className="w-[72px] text-right">
                 <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Active</div>
                 <div className="mt-0.5 flex h-[18px] items-center justify-end">
                   <span
@@ -2480,6 +2730,7 @@ export default function App() {
                 onClick={() => runAction("/api/reset-upstream", selectedNodeId)}
                 disabled={controlsDisabled || !canResetUpstream}
               />
+              <div className="mx-1 h-6 w-px bg-slate-200" aria-hidden="true" />
               <button
                 type="button"
                 onClick={() => {
@@ -2490,6 +2741,18 @@ export default function App() {
               >
                 <Database size={15} strokeWidth={1.9} />
                 <span>Artifacts</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPipelineLogsOpen(true);
+                  void loadPipelineLogs();
+                }}
+                title="Pipeline Logs"
+                aria-label="Pipeline Logs"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-[12px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+              >
+                <Terminal size={15} strokeWidth={1.9} />
               </button>
             </div>
           </div>
@@ -2548,7 +2811,16 @@ export default function App() {
           artifacts={artifactList}
           artifactsLoading={artifactListLoading}
           onSelectArtifact={handleSelectArtifact}
-          runId={graphData?.run_id || null}
+          runId={selectedRunOption?.run_id || graphData?.run_id || null}
+        />
+        <PipelineLogsPanel
+          open={pipelineLogsOpen}
+          onClose={() => setPipelineLogsOpen(false)}
+          logs={pipelineLogs}
+          loading={pipelineLogsLoading}
+          error={pipelineLogsError}
+          runId={selectedRunOption?.run_id || graphData?.run_id || null}
+          runLabel={selectedRunOption?.run_label || graphData?.run_label || null}
         />
     </div>
   );
