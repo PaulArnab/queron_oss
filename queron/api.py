@@ -228,6 +228,61 @@ def _set_run_final_if_allowed(
     return True
 
 
+def _archive_run_outputs(
+    *,
+    artifact_path: str | Path,
+    run_id: str,
+    target_tables: list[str],
+) -> dict[str, str]:
+    import duckdb_core
+
+    resolved_run_id = str(run_id or "").strip()
+    normalized_target_tables = [
+        str(item).strip()
+        for item in target_tables
+        if str(item).strip()
+    ]
+    if not resolved_run_id or not normalized_target_tables:
+        return {}
+
+    resolved_artifact_path = str(Path(artifact_path).expanduser().resolve())
+    return duckdb_core.archive_pipeline_targets(
+        connection_id=duckdb_core.connect(
+            duckdb_core.DuckDbConnectRequest(database=resolved_artifact_path)
+        ).connection_id,
+        run_id=resolved_run_id,
+        target_tables=normalized_target_tables,
+    )
+
+
+def _completed_artifact_tables_for_run(
+    *,
+    artifact_path: str | Path,
+    run_id: str,
+) -> list[str]:
+    import duckdb_core
+
+    resolved_run_id = str(run_id or "").strip()
+    if not resolved_run_id:
+        return []
+    node_runs = duckdb_core.get_node_runs_for_run_by_database(
+        database_path=str(Path(artifact_path).expanduser().resolve()),
+        run_id=resolved_run_id,
+    )
+    seen: set[str] = set()
+    target_tables: list[str] = []
+    for item in node_runs:
+        status = str(item.get("status") or "").strip().lower()
+        if status not in {"complete", "complete_with_warnings"}:
+            continue
+        artifact_name = str(item.get("artifact_name") or "").strip()
+        if not artifact_name or artifact_name in seen:
+            continue
+        seen.add(artifact_name)
+        target_tables.append(artifact_name)
+    return target_tables
+
+
 def _reconcile_orphaned_running_runs(
     *,
     artifact_path: str | Path,
@@ -526,6 +581,15 @@ def _compile_pipeline_impl(
     if latest_run is not None and not _is_run_final(latest_run):
         latest_status = str(latest_run.get("status") or "").strip().lower()
         if latest_status == "failed":
+            latest_run_id = str(latest_run.get("run_id") or "").strip()
+            _archive_run_outputs(
+                artifact_path=resolved_artifact_path,
+                run_id=latest_run_id,
+                target_tables=_completed_artifact_tables_for_run(
+                    artifact_path=resolved_artifact_path,
+                    run_id=latest_run_id,
+                ),
+            )
             _set_run_final_if_allowed(artifact_path=resolved_artifact_path, run=latest_run)
         elif latest_status == "running":
             latest_run_id = str(latest_run.get("run_id") or "").strip()
@@ -537,6 +601,14 @@ def _compile_pipeline_impl(
             reconciled_run = duckdb_core.get_pipeline_run_by_id(
                 database_path=str(resolved_artifact_path),
                 run_id=latest_run_id,
+            )
+            _archive_run_outputs(
+                artifact_path=resolved_artifact_path,
+                run_id=latest_run_id,
+                target_tables=_completed_artifact_tables_for_run(
+                    artifact_path=resolved_artifact_path,
+                    run_id=latest_run_id,
+                ),
             )
             _set_run_final_if_allowed(artifact_path=resolved_artifact_path, run=reconciled_run)
         else:
@@ -1823,8 +1895,8 @@ def _preserve_latest_incomplete_run_outputs_before_purge(
             "target_tables": list(existing_outputs),
         },
     )
-    archived = duckdb_core.archive_pipeline_targets(
-        connection_id=runtime._ensure_duckdb_connection_id(),
+    archived = _archive_run_outputs(
+        artifact_path=runtime.duckdb_path,
         run_id=latest_run_id,
         target_tables=list(existing_outputs),
     )
@@ -1977,6 +2049,15 @@ def _run_pipeline_impl(
             )
         latest_status = str(latest_run.get("status") or "").strip().lower()
         if latest_status == "failed":
+            latest_run_id = str(latest_run.get("run_id") or "").strip()
+            _archive_run_outputs(
+                artifact_path=resolved_artifact_path,
+                run_id=latest_run_id,
+                target_tables=_completed_artifact_tables_for_run(
+                    artifact_path=resolved_artifact_path,
+                    run_id=latest_run_id,
+                ),
+            )
             _set_run_final_if_allowed(artifact_path=resolved_artifact_path, run=latest_run)
         elif latest_status == "running":
             latest_run_id = str(latest_run.get("run_id") or "").strip()
@@ -1986,6 +2067,14 @@ def _run_pipeline_impl(
             reconciled_run = duckdb_core.get_pipeline_run_by_id(
                 database_path=str(resolved_artifact_path),
                 run_id=latest_run_id,
+            )
+            _archive_run_outputs(
+                artifact_path=resolved_artifact_path,
+                run_id=latest_run_id,
+                target_tables=_completed_artifact_tables_for_run(
+                    artifact_path=resolved_artifact_path,
+                    run_id=latest_run_id,
+                ),
             )
             _set_run_final_if_allowed(artifact_path=resolved_artifact_path, run=reconciled_run)
         else:

@@ -175,7 +175,7 @@ def _validate_read_only_sql(sql: str) -> str:
 
 
 def _execute_artifact_query(database_path: str | Path, sql: str) -> dict[str, Any]:
-    conn = connect_duckdb(str(Path(database_path).resolve()), read_only=True)
+    conn = connect_duckdb(str(Path(database_path).resolve()))
     try:
         cursor = conn.execute(sql)
         column_names = [str(item[0]) for item in list(cursor.description or [])]
@@ -478,22 +478,14 @@ def get_run_artifacts_panel(
     run_label: str | None = None,
 ) -> dict[str, Any]:
     graph = inspect_dag(artifact_path, run_id=run_id, run_label=run_label)
-    run_status = str(graph.run_status or "").strip().lower()
-    if run_status not in {"success", "success_with_warnings", "failed"}:
-        return {
-            "ok": True,
-            "run_id": graph.run_id,
-            "run_label": graph.run_label,
-            "run_status": graph.run_status,
-            "blocked": True,
-            "blocked_message": "Artifacts are available after the run finishes.",
-            "artifacts": [],
-        }
     artifacts: list[dict[str, Any]] = []
     seen: set[str] = set()
     for node in graph.nodes:
         node_name = str(node.get("name") or "").strip()
         if not node_name:
+            continue
+        node_status = str(node.get("node_run_status") or "").strip().lower()
+        if node_status not in {"complete", "complete_with_warnings"}:
             continue
         artifact_name = str(node.get("artifact_name") or "").strip()
         logical_artifact = str(node.get("logical_artifact") or "").strip() or None
@@ -566,6 +558,7 @@ def run_graph_pipeline(
     result = run_pipeline(
         pipeline_path,
         clean_existing=bool(clean_existing),
+        set_final=True,
         runtime_bindings=runtime_bindings,
         on_log=on_log,
     )

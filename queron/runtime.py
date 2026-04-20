@@ -186,6 +186,9 @@ class PipelineRuntime:
         self._active_interruptor_tokens_by_object: dict[int, int] = {}
         self._active_force_target_node_name: str | None = None
         self._active_force_interrupt_attempted = False
+        self._recent_force_target_node_name: str | None = None
+        self._recent_force_interrupt_attempted = False
+        self._recent_force_interrupt_details: dict[str, Any] = {}
         self._node_progress_row_counts: dict[str, int] = {}
 
     def _active_node_force_interrupt_supported(self) -> bool:
@@ -315,6 +318,9 @@ class PipelineRuntime:
 
     def _begin_active_node(self, node: NodeSpec) -> None:
         with self._stop_request_lock:
+            self._recent_force_target_node_name = None
+            self._recent_force_interrupt_attempted = False
+            self._recent_force_interrupt_details = {}
             self._active_node_name = node.name
             self._active_node_kind = node.kind
             self._active_force_target_node_name = None
@@ -325,6 +331,9 @@ class PipelineRuntime:
 
     def _end_active_node(self) -> None:
         with self._stop_request_lock:
+            self._recent_force_target_node_name = self._active_force_target_node_name
+            self._recent_force_interrupt_attempted = self._active_force_interrupt_attempted
+            self._recent_force_interrupt_details = dict(self._active_force_interrupt_details)
             self._active_node_name = None
             self._active_node_kind = None
             self._active_force_target_node_name = None
@@ -360,7 +369,7 @@ class PipelineRuntime:
             message = reason
         exc = ForceStopRequested(message)
         with self._stop_request_lock:
-            interrupt_details = dict(self._active_force_interrupt_details)
+            interrupt_details = dict(self._active_force_interrupt_details or self._recent_force_interrupt_details)
         setattr(
             exc,
             "queron_details",
@@ -392,6 +401,10 @@ class PipelineRuntime:
         with self._stop_request_lock:
             target_node_name = self._active_force_target_node_name
             interrupt_attempted = self._active_force_interrupt_attempted
+            if not target_node_name and self._recent_force_target_node_name:
+                target_node_name = self._recent_force_target_node_name
+            if not interrupt_attempted and self._recent_force_interrupt_attempted:
+                interrupt_attempted = self._recent_force_interrupt_attempted
         if target_node_name == node.name and interrupt_attempted:
             return self._build_force_stop_exception(
                 node=node,

@@ -240,6 +240,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Show only the last N log lines.",
     )
+    inspect_logs_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        dest="verbose",
+        help="Show extra log fields and details.",
+    )
+    inspect_logs_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     inspect_logs_parser.set_defaults(handler=_handle_inspect_logs)
 
     inspect_dag_parser = subparsers.add_parser(
@@ -831,8 +838,38 @@ def _handle_inspect_logs(args: argparse.Namespace) -> int:
             tail=args.tail,
         )
     except Exception as exc:
+        if getattr(args, "json_output", False):
+            return _emit_json({"ok": False, "error": str(exc)})
         print(f"Inspect logs failed: {exc}", file=sys.stderr)
         return 1
+
+    parsed_logs: list[dict[str, Any]] = []
+    for line in lines:
+        text = str(line or "").strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                parsed_logs.append(payload)
+                continue
+        except Exception:
+            pass
+        parsed_logs.append({"message": text})
+
+    if getattr(args, "json_output", False):
+        return _emit_json(
+            {
+                "ok": True,
+                "pipeline_path": str(Path(active_contract.pipeline_path).expanduser().resolve()),
+                "artifact_path": str(artifact_path),
+                "run_id": selected_run.get("run_id"),
+                "run_label": str(selected_run.get("run_label") or "").strip() or None,
+                "is_final": bool(selected_run.get("is_final")),
+                "log_path": str(selected_run.get("log_path") or "").strip() or None,
+                "logs": parsed_logs,
+            }
+        )
 
     print(f"Pipeline: {Path(active_contract.pipeline_path).expanduser().resolve()}")
     print(f"Artifact DB: {artifact_path}")
@@ -846,11 +883,24 @@ def _handle_inspect_logs(args: argparse.Namespace) -> int:
         print(f"Log file: {log_path}")
     print("")
     print("Logs")
-    if not lines:
+    if not parsed_logs:
         print("No log entries found.")
         return 0
-    for line in lines:
-        print(line)
+    for entry in parsed_logs:
+        timestamp = str(entry.get("timestamp") or "-").strip() or "-"
+        severity = str(entry.get("severity") or "info").strip().lower() or "info"
+        code = str(entry.get("code") or "-").strip() or "-"
+        node_name = str(entry.get("node_name") or "-").strip() or "-"
+        message = str(entry.get("message") or "").strip()
+        print(f"{timestamp}  {severity:<7}  {code:<28}  {node_name:<12}  {message}")
+        if getattr(args, "verbose", False):
+            source = str(entry.get("source") or "-").strip() or "-"
+            node_kind = str(entry.get("node_kind") or "-").strip() or "-"
+            artifact_name = str(entry.get("artifact_name") or "-").strip() or "-"
+            details = entry.get("details")
+            print(f"  source={source}  kind={node_kind}  artifact={artifact_name}")
+            if isinstance(details, dict) and details:
+                print(f"  details={json.dumps(details, ensure_ascii=True)}")
     return 0
 
 
@@ -1091,10 +1141,12 @@ def _handle_inspect_node_logs(args: argparse.Namespace) -> int:
         print("No log entries found.")
         return 0
     for entry in result.logs:
-        try:
-            print(format_log_event(entry), end="")
-        except Exception:
-            print(entry)
+        timestamp = str(entry.get("timestamp") or "-").strip() or "-"
+        severity = str(entry.get("severity") or "info").strip().lower() or "info"
+        code = str(entry.get("code") or "-").strip() or "-"
+        node_name = str(entry.get("node_name") or "-").strip() or "-"
+        message = str(entry.get("message") or "").strip()
+        print(f"{timestamp}  {severity:<7}  {code:<28}  {node_name:<12}  {message}")
     return 0
 
 

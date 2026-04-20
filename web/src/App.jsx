@@ -1353,8 +1353,8 @@ function InspectBottomSheet({
   const tabItems = activeTab === "downstream" ? (downstream || []) : (upstream || []);
   const selectedTone = kindDotStyle(selected.tone);
   const selectedBadge = statusBadgeStyle(selected.currentState);
-  const runStatus = String(run?.runStatus || "").trim().toLowerCase();
-  const dataTabBlocked = runStatus === "running";
+  const nodeRunStatus = String(selected.nodeRunStatus || selected.currentState || "").trim().toLowerCase();
+  const dataTabBlocked = !["complete", "complete_with_warnings"].includes(nodeRunStatus);
 
   return (
     <div
@@ -1561,7 +1561,7 @@ function InspectBottomSheet({
                   error={artifactPreviewError}
                   onOpenArtifact={onOpenArtifact}
                   blocked={dataTabBlocked}
-                  blockedMessage="Data preview is unavailable while the pipeline is running."
+                  blockedMessage="Data preview is available only for completed nodes."
                 />
               ) : activeTab === "logs" ? (
                 logs.length ? (
@@ -1966,6 +1966,7 @@ export default function App() {
   const selectedNodeIdRef = useRef("");
   const sheetOpenRef = useRef(false);
   const activeTabRef = useRef("query");
+  const artifactPageOpenRef = useRef(false);
 
   async function loadGraph() {
     setGraphLoading(true);
@@ -2070,11 +2071,6 @@ export default function App() {
     return panelData?.run?.runId || graphData?.run_id || null;
   }
 
-  function isCurrentRunActive() {
-    const runStatus = String(panelData?.run?.runStatus || graphData?.run_status || "").trim().toLowerCase();
-    return runStatus === "running";
-  }
-
   async function loadArtifactList() {
     setArtifactListLoading(true);
     try {
@@ -2118,6 +2114,9 @@ export default function App() {
     setIsSynchronizedRefreshRunning(true);
     try {
       await loadGraph();
+      if (artifactPageOpenRef.current) {
+        await loadArtifactList();
+      }
       if (!sheetOpenRef.current || !selectedNodeIdRef.current) return;
       await loadNodePanel(selectedNodeIdRef.current);
       if (refreshActiveTab && activeTabRef.current) {
@@ -2136,12 +2135,6 @@ export default function App() {
     if (!nodeId) return;
     if (isSynchronizedRefreshRunning && !force) return;
     if (tabName === "data") {
-      if (isCurrentRunActive()) {
-        setArtifactPreview(null);
-        setArtifactPreviewError("");
-        setArtifactPreviewLoading(false);
-        return;
-      }
       setArtifactPreviewLoading(true);
       setArtifactPreviewError("");
       try {
@@ -2198,6 +2191,10 @@ export default function App() {
   }, [activeTab]);
 
   useEffect(() => {
+    artifactPageOpenRef.current = artifactPageOpen;
+  }, [artifactPageOpen]);
+
+  useEffect(() => {
     const eventSource = new EventSource("/api/events");
 
     eventSource.onmessage = (messageEvent) => {
@@ -2213,6 +2210,22 @@ export default function App() {
         }
 
         const code = String(payload.code || "").trim().toLowerCase();
+        if (
+          artifactPageOpenRef.current &&
+          (
+            code === "pipeline_execution_started" ||
+            code === "node_rows_written" ||
+            code === "node_artifact_created" ||
+            code === "node_egress_written" ||
+            code === "node_export_written" ||
+            code === "node_check_passed" ||
+            code === "node_warning" ||
+            code === "node_execution_failed" ||
+            code === "node_skipped"
+          )
+        ) {
+          void loadArtifactList();
+        }
         if (code === "pipeline_execution_finished" || code === "pipeline_execution_failed") {
           window.setTimeout(() => {
             void refreshGraphAndDrawer({ refreshActiveTab: true, showPageRefresh: true });

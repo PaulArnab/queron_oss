@@ -1093,7 +1093,7 @@ def egress_query_from_duckdb(
             if duck_conn is not None:
                 if on_interrupt_close is not None:
                     on_interrupt_close(duck_interrupt_token)
-                duck_conn.close()
+                    duck_conn.close()
         except Exception:
             pass
 

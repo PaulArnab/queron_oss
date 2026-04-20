@@ -46,6 +46,8 @@ def _is_retryable_duckdb_open_error(exc: Exception) -> bool:
         or "being used by another process" in text
         or "database is locked" in text
         or "file is locked" in text
+        or "unique file handle conflict" in text
+        or "already attached by database" in text
     )
 
 
