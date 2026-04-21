@@ -92,6 +92,92 @@ class InspectNodeResult:
     nodes: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _split_relation_name(value: str) -> tuple[str, str]:
+    text = str(value or "").strip()
+    if not text or "." not in text:
+        raise RuntimeError("Selected artifact is not a queryable local table.")
+    schema_name, table_name = text.split(".", 1)
+    schema_name = schema_name.strip().strip('"')
+    table_name = table_name.strip().strip('"')
+    if not schema_name or not table_name:
+        raise RuntimeError("Selected artifact is not a queryable local table.")
+    return schema_name, table_name
+
+
+def _load_node_column_mappings(
+    *,
+    artifact_path: str | None,
+    metadata_artifact_path: str | None = None,
+    artifact_name: str | None,
+    node_name: str | None,
+) -> list[dict[str, Any]]:
+    relation = str(artifact_name or "").strip()
+    database_path = str(artifact_path or "").strip()
+    if not relation or not database_path or "." not in relation:
+        return []
+    def _load_columns(database_path: str) -> list[dict[str, Any]]:
+        import duckdb_core
+
+        schema_name, table_name = _split_relation_name(relation)
+        result = duckdb_core.get_object_details_by_database(
+            database_path=database_path,
+            schema=schema_name,
+            name=table_name,
+            category="table",
+            tab="columns",
+        )
+        return result if isinstance(result, list) else []
+
+    try:
+        columns = _load_columns(database_path)
+    except Exception:
+        columns = []
+    if (
+        not any(isinstance(column, dict) and column.get("source_column") for column in columns)
+        and str(metadata_artifact_path or "").strip()
+        and str(Path(metadata_artifact_path).resolve()) != str(Path(database_path).resolve())
+    ):
+        try:
+            import duckdb_core
+
+            schema_name, table_name = _split_relation_name(relation)
+            mapping_metadata = duckdb_core.get_column_mapping_metadata_by_database(
+                database_path=str(metadata_artifact_path),
+                schema=schema_name,
+                name=table_name,
+            )
+            merged_columns: list[dict[str, Any]] = []
+            for column in columns if isinstance(columns, list) else []:
+                if not isinstance(column, dict):
+                    continue
+                metadata = mapping_metadata.get(str(column.get("name") or "").strip(), {})
+                merged_columns.append({**column, **metadata})
+            columns = merged_columns
+        except Exception:
+            pass
+
+    items: list[dict[str, Any]] = []
+    for column in columns if isinstance(columns, list) else []:
+        if not isinstance(column, dict):
+            continue
+        column_node_name = str(column.get("node_name") or "").strip()
+        if node_name and column_node_name and column_node_name != str(node_name).strip():
+            continue
+        items.append(
+            {
+                "target_column": str(column.get("name") or "").strip() or None,
+                "target_type": str(column.get("type") or column.get("target_type") or "").strip() or None,
+                "source_column": str(column.get("source_column") or "").strip() or None,
+                "source_type": str(column.get("source_type") or "").strip() or None,
+                "connector_type": str(column.get("connector_type") or "").strip() or None,
+                "mapping_mode": str(column.get("mapping_mode") or "").strip() or None,
+                "lossy": column.get("lossy"),
+                "warnings": list(column.get("mapping_warnings") or []),
+            }
+        )
+    return items
+
+
 @dataclass
 class InspectNodeHistoryResult:
     pipeline_path: str
@@ -1761,6 +1847,16 @@ def inspect_node(
         dependencies = raw_node.get("dependencies")
         if not isinstance(dependencies, list):
             dependencies = []
+        column_mappings = (
+            _load_node_column_mappings(
+                artifact_path=artifact_context["artifact_path"],
+                metadata_artifact_path=str(resolved_artifact_path),
+                artifact_name=artifact_context["artifact_name"],
+                node_name=name,
+            )
+            if selection == "node" and name == str(node_name).strip()
+            else []
+        )
         nodes.append(
             {
                 "name": name,
@@ -1784,6 +1880,7 @@ def inspect_node(
                     for item in dependents_by_name.get(name, [])
                     if str(item).strip()
                 ),
+                "column_mappings": column_mappings,
                 "started_at": str(node_run.get("started_at") or "").strip() or None,
                 "finished_at": str(node_run.get("finished_at") or "").strip() or None,
             }

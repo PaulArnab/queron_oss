@@ -902,6 +902,41 @@ def get_object_details(
         raise RuntimeError(str(exc)) from exc
 
 
+def get_object_details_by_database(
+    *,
+    database_path: str,
+    schema: str = "main",
+    name: str = "test",
+    category: str = "table",
+    tab: str = "overview",
+):
+    try:
+        conn = _duckdb_connection(database_path)
+        try:
+            cur = conn.cursor()
+            if tab == "overview":
+                return _get_overview(cur, schema, name, category)
+            if tab == "columns":
+                return _get_columns(cur, schema, name)
+            if tab == "constraints":
+                return _get_constraints(cur, schema, name)
+            if tab == "indexes":
+                return _get_indexes(cur, schema, name)
+            if tab == "ddl":
+                return _get_ddl(cur, schema, name, category)
+            if tab == "er_diagram":
+                return _get_er_diagram(cur, schema, name)
+            if tab == "dependencies":
+                return _get_dependencies(cur, schema, name, category)
+            if tab == "sample_data":
+                return _get_sample_data(cur, schema, name)
+            return {"error": f"Tab '{tab}' not supported for category '{category}'"}
+        finally:
+            conn.close()
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def _quote_identifier(identifier: str) -> str:
     escaped = str(identifier).replace('"', '""')
     return f'"{escaped}"'
@@ -1257,6 +1292,8 @@ def _ensure_queron_meta_tables(conn) -> None:
         CREATE TABLE IF NOT EXISTS {meta_schema}.{_quote_identifier('column_mapping')} (
             target_schema VARCHAR,
             target_table VARCHAR,
+            node_name VARCHAR,
+            node_kind VARCHAR,
             ordinal_position INTEGER,
             source_column VARCHAR,
             source_type VARCHAR,
@@ -1270,6 +1307,8 @@ def _ensure_queron_meta_tables(conn) -> None:
         )
         """
     )
+    conn.execute(f"ALTER TABLE {meta_schema}.{_quote_identifier('column_mapping')} ADD COLUMN IF NOT EXISTS node_name VARCHAR")
+    conn.execute(f"ALTER TABLE {meta_schema}.{_quote_identifier('column_mapping')} ADD COLUMN IF NOT EXISTS node_kind VARCHAR")
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {meta_schema}.{_quote_identifier('table_lineage')} (
@@ -1564,7 +1603,14 @@ def _persist_node_states(conn, *, records: list[NodeStateRecord | dict[str, Any]
         )
 
 
-def _persist_column_mappings(conn, *, target_table: str, column_mappings: list[ColumnMappingRecord | dict[str, Any]]) -> None:
+def _persist_column_mappings(
+    conn,
+    *,
+    target_table: str,
+    node_name: str | None = None,
+    node_kind: str | None = None,
+    column_mappings: list[ColumnMappingRecord | dict[str, Any]],
+) -> None:
     if not column_mappings:
         return
 
@@ -1584,6 +1630,8 @@ def _persist_column_mappings(conn, *, target_table: str, column_mappings: list[C
             (
                 target_schema,
                 target_name,
+                str(node_name or "").strip() or None,
+                str(node_kind or "").strip() or None,
                 item.ordinal_position,
                 item.source_column,
                 item.source_type,
@@ -1601,6 +1649,8 @@ def _persist_column_mappings(conn, *, target_table: str, column_mappings: list[C
         INSERT INTO {meta_table} (
             target_schema,
             target_table,
+            node_name,
+            node_kind,
             ordinal_position,
             source_column,
             source_type,
@@ -1611,7 +1661,7 @@ def _persist_column_mappings(conn, *, target_table: str, column_mappings: list[C
             warnings_json,
             lossy,
             created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -1670,6 +1720,8 @@ def record_ingest_column_mappings(
     *,
     connection_id: str,
     target_table: str,
+    node_name: str | None = None,
+    node_kind: str | None = None,
     column_mappings: list[ColumnMappingRecord | dict[str, Any]],
 ) -> None:
     if not column_mappings:
@@ -1682,7 +1734,13 @@ def record_ingest_column_mappings(
     database = _resolve_database_path(DuckDbConnectRequest(**cfg_dict))
     conn = _duckdb_connection(database)
     try:
-        _persist_column_mappings(conn, target_table=target_table, column_mappings=column_mappings)
+        _persist_column_mappings(
+            conn,
+            target_table=target_table,
+            node_name=node_name,
+            node_kind=node_kind,
+            column_mappings=column_mappings,
+        )
     finally:
         conn.close()
 
@@ -3590,7 +3648,9 @@ def _load_column_mapping_metadata(cur, schema: str, name: str) -> dict[str, dict
                 mapping_mode,
                 warnings_json,
                 lossy,
-                ordinal_position
+                ordinal_position,
+                node_name,
+                node_kind
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('column_mapping')}
             WHERE target_schema = ? AND target_table = ?
             ORDER BY ordinal_position
@@ -3620,8 +3680,28 @@ def _load_column_mapping_metadata(cur, schema: str, name: str) -> dict[str, dict
             "mapping_mode": row[5],
             "warnings": warnings,
             "lossy": row[7],
+            "ordinal_position": row[8],
+            "node_name": row[9],
+            "node_kind": row[10],
         }
     return metadata
+
+
+def get_column_mapping_metadata_by_database(
+    *,
+    database_path: str,
+    schema: str,
+    name: str,
+) -> dict[str, dict[str, Any]]:
+    try:
+        conn = _duckdb_connection(database_path)
+        try:
+            cur = conn.cursor()
+            return _load_column_mapping_metadata(cur, schema, name)
+        finally:
+            conn.close()
+    except Exception:
+        return {}
 
 
 def _materialize_chunk(

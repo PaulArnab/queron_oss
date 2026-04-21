@@ -1435,6 +1435,8 @@ class PipelineRuntime:
             duckdb_core.record_ingest_column_mappings(
                 connection_id=duckdb_connection_id,
                 target_table=str(node.target_table or ""),
+                node_name=node.name,
+                node_kind=node.kind,
                 column_mappings=response.column_mappings,
             )
             duckdb_core.record_table_lineage(
@@ -1465,6 +1467,8 @@ class PipelineRuntime:
             duckdb_core.record_ingest_column_mappings(
                 connection_id=duckdb_connection_id,
                 target_table=str(node.target_table or ""),
+                node_name=node.name,
+                node_kind=node.kind,
                 column_mappings=response.column_mappings,
             )
             duckdb_core.record_table_lineage(

@@ -520,6 +520,7 @@ function buildInspectEntryFromApi(node, resolvedSql = null) {
       dependencies: Array.isArray(node.dependencies) ? node.dependencies : [],
       dependents: Array.isArray(node.dependents) ? node.dependents : [],
       resolvedSql,
+      columnMappings: Array.isArray(node.column_mappings) ? node.column_mappings : [],
     },
     live: {
       displayState: runtimeLabel(status, 0),
@@ -1499,6 +1500,17 @@ function InspectBottomSheet({
               </button>
               <button
                 type="button"
+                onClick={() => onTabChange("columns")}
+                className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
+                  activeTab === "columns"
+                    ? "bg-slate-900 text-white"
+                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                }`}
+              >
+                Columns
+              </button>
+              <button
+                type="button"
                 onClick={() => onTabChange("history")}
                 className={`rounded-md px-3 py-1 text-[12px] font-semibold transition ${
                   activeTab === "history"
@@ -1563,6 +1575,8 @@ function InspectBottomSheet({
                   blocked={dataTabBlocked}
                   blockedMessage="Data preview is available only for completed nodes."
                 />
+              ) : activeTab === "columns" ? (
+                <ColumnMappingsPanel items={selected.columnMappings} />
               ) : activeTab === "logs" ? (
                 logs.length ? (
                   <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto px-2 py-1 text-[12px] text-slate-600">
@@ -1615,6 +1629,45 @@ function InspectBottomSheet({
             </div>
           </main>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ColumnMappingsPanel({ items }) {
+  const rows = Array.isArray(items) ? items : [];
+  if (!rows.length) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
+        No column mappings available for this node.
+      </div>
+    );
+  }
+  return (
+    <div className="h-full min-h-0 overflow-y-auto px-2 py-1">
+      <div className="min-h-full rounded-md border border-slate-200">
+        <table className="min-w-full border-collapse text-[12px]">
+          <thead className="bg-slate-50 text-slate-500">
+            <tr>
+              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Source</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Source Type</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Target</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Target Type</th>
+              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Connector</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((item, index) => (
+              <tr key={`${item.target_column || "col"}-${index}`} className="border-b border-slate-100 last:border-b-0">
+                <td className="px-3 py-2 font-medium text-slate-700">{item.source_column || "-"}</td>
+                <td className="px-3 py-2 text-slate-500">{item.source_type || "-"}</td>
+                <td className="px-3 py-2 font-medium text-slate-700">{item.target_column || "-"}</td>
+                <td className="px-3 py-2 text-slate-500">{item.target_type || "-"}</td>
+                <td className="px-3 py-2 text-slate-500">{item.connector_type || "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
