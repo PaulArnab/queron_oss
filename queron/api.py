@@ -172,6 +172,35 @@ class ExportArtifactResult:
     file_size_bytes: int | None = None
 
 
+@dataclass
+class SelectedRunContext:
+    resolved_artifact_path: Path
+    contract: Any
+    selected_run: dict[str, Any] | None = None
+    pipeline_path: str | None = None
+    pipeline_id: str | None = None
+    compile_id: str | None = None
+    run_id: str | None = None
+    run_label: str | None = None
+    run_status: str | None = None
+    archived_artifact_path: str | None = None
+    is_final: bool = False
+
+
+@dataclass
+class SelectedNodeContext:
+    run_context: SelectedRunContext
+    node_name: str
+    node_payload: dict[str, Any]
+    node_run: dict[str, Any] = field(default_factory=dict)
+    node_kind: str | None = None
+    logical_artifact: str | None = None
+    artifact_name: str | None = None
+    artifact_path: str | None = None
+    archived_artifact_path: str | None = None
+    archived_artifact_name: str | None = None
+
+
 _ACTIVE_RUNTIMES_BY_RUN_ID: dict[str, PipelineRuntime] = {}
 
 
@@ -1350,6 +1379,74 @@ def _find_node_run_for_selected_run(
     return {}
 
 
+def _find_node_run_by_artifact_name_for_selected_run(
+    *,
+    resolved_artifact_path: Path,
+    selected_run: dict[str, Any] | None,
+    artifact_name: str,
+) -> dict[str, Any]:
+    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    if not selected_run_id:
+        return {}
+
+    import duckdb_core
+
+    normalized_artifact_name = str(artifact_name or "").strip()
+    for item in duckdb_core.get_node_runs_for_run_by_database(
+        database_path=str(resolved_artifact_path),
+        run_id=selected_run_id,
+    ):
+        if str(item.get("artifact_name") or "").strip() == normalized_artifact_name:
+            return item
+        if str(item.get("archived_artifact_name") or "").strip() == normalized_artifact_name:
+            return item
+    return {}
+
+
+def _load_node_runs_by_name_for_selected_run(
+    *,
+    resolved_artifact_path: Path,
+    selected_run: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    if not selected_run_id:
+        return {}
+
+    import duckdb_core
+
+    node_runs_by_name: dict[str, dict[str, Any]] = {}
+    for item in duckdb_core.get_node_runs_for_run_by_database(
+        database_path=str(resolved_artifact_path),
+        run_id=selected_run_id,
+    ):
+        node_name = str(item.get("node_name") or "").strip()
+        if node_name:
+            node_runs_by_name[node_name] = item
+    return node_runs_by_name
+
+
+def _load_active_states_by_name_for_selected_run(
+    *,
+    resolved_artifact_path: Path,
+    selected_run: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    if not selected_run_id:
+        return {}
+
+    import duckdb_core
+
+    active_states_by_name: dict[str, dict[str, Any]] = {}
+    for item in duckdb_core.get_active_node_states_for_run_by_database(
+        database_path=str(resolved_artifact_path),
+        run_id=selected_run_id,
+    ):
+        node_name = str(item.get("node_name") or "").strip()
+        if node_name:
+            active_states_by_name[node_name] = item
+    return active_states_by_name
+
+
 def _resolve_node_artifact_context(
     *,
     resolved_artifact_path: Path,
@@ -1383,6 +1480,86 @@ def _build_run_metadata(
         "archived_artifact_path": str(selected_run.get("archived_artifact_path") or "").strip() or None if selected_run is not None else None,
         "is_final": _selected_run_is_final(selected_run),
     }
+
+
+def _selected_run_context_record(
+    artifact_path: str | Path,
+    *,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    limit: int | None = None,
+    default_to_latest: bool = True,
+    available_runs: list[dict[str, Any]] | None = None,
+) -> SelectedRunContext:
+    resolved_artifact_path, contract, selected_run = _resolve_selected_run_context(
+        artifact_path,
+        run_id=run_id,
+        run_label=run_label,
+        limit=limit,
+        default_to_latest=default_to_latest,
+        available_runs=available_runs,
+    )
+    run_metadata = _build_run_metadata(selected_run=selected_run)
+    pipeline_path = str(Path(contract.pipeline_path).expanduser().resolve())
+    pipeline_id = (
+        str(selected_run.get("pipeline_id") or "").strip()
+        if selected_run is not None
+        else ""
+    ) or str(getattr(contract, "pipeline_id", "") or "").strip() or None
+    return SelectedRunContext(
+        resolved_artifact_path=resolved_artifact_path,
+        contract=contract,
+        selected_run=selected_run,
+        pipeline_path=pipeline_path,
+        pipeline_id=pipeline_id,
+        compile_id=str(getattr(contract, "compile_id", "") or "").strip() or None,
+        run_id=run_metadata["run_id"],
+        run_label=run_metadata["run_label"],
+        run_status=run_metadata["run_status"],
+        archived_artifact_path=run_metadata["archived_artifact_path"],
+        is_final=bool(run_metadata["is_final"]),
+    )
+
+
+def _selected_node_context_record(
+    artifact_path: str | Path,
+    node_name: str,
+    *,
+    run_id: str | None = None,
+    run_label: str | None = None,
+) -> SelectedNodeContext:
+    run_context = _selected_run_context_record(
+        artifact_path,
+        run_id=run_id,
+        run_label=run_label,
+        limit=None,
+    )
+    raw_nodes, _edges = _contract_nodes_and_edges(run_context.contract)
+    node_payload = _find_contract_node(raw_nodes, node_name)
+    normalized_node_name = str(node_payload.get("name") or "").strip()
+    node_run = _find_node_run_for_selected_run(
+        resolved_artifact_path=run_context.resolved_artifact_path,
+        selected_run=run_context.selected_run,
+        node_name=normalized_node_name,
+    )
+    artifact_context = _resolve_node_artifact_context(
+        resolved_artifact_path=run_context.resolved_artifact_path,
+        selected_run=run_context.selected_run,
+        node_payload=node_payload,
+        node_run=node_run,
+    )
+    return SelectedNodeContext(
+        run_context=run_context,
+        node_name=normalized_node_name,
+        node_payload=node_payload,
+        node_run=node_run,
+        node_kind=str(node_payload.get("kind") or "").strip() or None,
+        logical_artifact=str(artifact_context["logical_artifact"] or "").strip() or None,
+        artifact_name=str(artifact_context["artifact_name"] or "").strip() or None,
+        artifact_path=str(artifact_context["artifact_path"] or "").strip() or None,
+        archived_artifact_path=str(artifact_context["archived_artifact_path"] or "").strip() or None,
+        archived_artifact_name=str(artifact_context["archived_artifact_name"] or "").strip() or None,
+    )
 
 
 def _contract_nodes_and_edges(contract) -> tuple[list[dict[str, Any]], list[list[str]]]:
@@ -1512,29 +1689,18 @@ def inspect_node(
     upstream: bool = False,
     downstream: bool = False,
 ) -> InspectNodeResult:
-    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
+    resolved_artifact_path, contract, selected_run = _resolve_selected_run_context(
         artifact_path,
-        limit=None,
-    )
-    selected_run = _select_pipeline_run_for_inspection(
-        resolved_artifact_path=resolved_artifact_path,
         run_id=run_id,
         run_label=run_label,
-        default_to_latest=True,
-    )
-
-    contract = _load_compiled_contract_for_inspection(
-        resolved_artifact_path=resolved_artifact_path,
-        selected_run=selected_run,
+        limit=None,
     )
     raw_nodes, edges = _contract_nodes_and_edges(contract)
-    nodes_by_name: dict[str, dict[str, Any]] = {}
-    for raw_node in raw_nodes:
-        if not isinstance(raw_node, dict):
-            continue
-        name = str(raw_node.get("name") or "").strip()
-        if name:
-            nodes_by_name[name] = raw_node
+    nodes_by_name = {
+        str(raw_node.get("name") or "").strip(): raw_node
+        for raw_node in raw_nodes
+        if isinstance(raw_node, dict) and str(raw_node.get("name") or "").strip()
+    }
 
     selection, selected_names = _select_contract_node_names(
         requested_node=node_name,
@@ -1546,7 +1712,8 @@ def inspect_node(
 
     node_runs_by_name: dict[str, dict[str, Any]] = {}
     active_states_by_name: dict[str, dict[str, Any]] = {}
-    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
+    run_metadata = _build_run_metadata(selected_run=selected_run)
+    selected_run_id = str(run_metadata["run_id"] or "").strip()
     if selected_run_id:
         import duckdb_core
 
@@ -1579,8 +1746,8 @@ def inspect_node(
             continue
         node_run = node_runs_by_name.get(name, {})
         active_state = active_states_by_name.get(name, {})
-        artifact_database_path, artifact_name, logical_artifact = _resolved_node_artifact_location(
-            artifact_path=resolved_artifact_path,
+        artifact_context = _resolve_node_artifact_context(
+            resolved_artifact_path=resolved_artifact_path,
             selected_run=selected_run,
             node_payload=raw_node,
             node_run=node_run,
@@ -1594,11 +1761,11 @@ def inspect_node(
                 "kind": str(raw_node.get("kind") or "").strip() or None,
                 "current_state": str(active_state.get("state") or "").strip() or None,
                 "node_run_status": str(node_run.get("status") or "").strip() or None,
-                "logical_artifact": logical_artifact,
-                "artifact_name": artifact_name,
-                "artifact_path": artifact_database_path,
-                "archived_artifact_path": str(node_run.get("archived_artifact_path") or "").strip() or None,
-                "archived_artifact_name": str(node_run.get("archived_artifact_name") or "").strip() or None,
+                "logical_artifact": artifact_context["logical_artifact"],
+                "artifact_name": artifact_context["artifact_name"],
+                "artifact_path": artifact_context["artifact_path"],
+                "archived_artifact_path": artifact_context["archived_artifact_path"],
+                "archived_artifact_name": artifact_context["archived_artifact_name"],
                 "row_count_in": node_run.get("row_count_in"),
                 "row_count_out": node_run.get("row_count_out"),
                 "dependencies": [
@@ -1620,11 +1787,11 @@ def inspect_node(
         pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
         artifact_path=str(resolved_artifact_path),
         compile_id=contract.compile_id,
-        run_id=selected_run_id or None,
-        run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
-        run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
-        archived_artifact_path=str(selected_run.get("archived_artifact_path") or "").strip() or None if selected_run is not None else None,
-        is_final=_selected_run_is_final(selected_run),
+        run_id=run_metadata["run_id"],
+        run_label=run_metadata["run_label"],
+        run_status=run_metadata["run_status"],
+        archived_artifact_path=run_metadata["archived_artifact_path"],
+        is_final=bool(run_metadata["is_final"]),
         selection=selection,
         requested_node=str(node_name).strip(),
         nodes=nodes,
@@ -1638,58 +1805,34 @@ def inspect_node_history(
     run_id: str | None = None,
     run_label: str | None = None,
 ) -> InspectNodeHistoryResult:
-    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
+    resolved_artifact_path, contract, selected_run = _resolve_selected_run_context(
         artifact_path,
-        limit=None,
-    )
-    selected_run = _select_pipeline_run_for_inspection(
-        resolved_artifact_path=resolved_artifact_path,
         run_id=run_id,
         run_label=run_label,
-        default_to_latest=True,
-    )
-
-    contract = _load_compiled_contract_for_inspection(
-        resolved_artifact_path=resolved_artifact_path,
-        selected_run=selected_run,
+        limit=None,
     )
     raw_nodes, _edges = _contract_nodes_and_edges(contract)
-    nodes_by_name: dict[str, dict[str, Any]] = {}
-    for raw_node in raw_nodes:
-        if not isinstance(raw_node, dict):
-            continue
-        name = str(raw_node.get("name") or "").strip()
-        if name:
-            nodes_by_name[name] = raw_node
-
-    normalized_node_name = str(node_name or "").strip()
-    if not normalized_node_name:
-        raise RuntimeError("node_name is required.")
-    if normalized_node_name not in nodes_by_name:
-        raise RuntimeError(f"Node '{normalized_node_name}' was not found in the compiled pipeline.")
-
-    node_payload = nodes_by_name[normalized_node_name]
-    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
-    node_run: dict[str, Any] = {}
+    node_payload = _find_contract_node(raw_nodes, node_name)
+    normalized_node_name = str(node_payload.get("name") or "").strip()
+    run_metadata = _build_run_metadata(selected_run=selected_run)
+    selected_run_id = str(run_metadata["run_id"] or "").strip()
+    node_run = _find_node_run_for_selected_run(
+        resolved_artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+        node_name=normalized_node_name,
+    )
     states: list[dict[str, Any]] = []
     if selected_run_id:
         import duckdb_core
 
-        for item in duckdb_core.get_node_runs_for_run_by_database(
-            database_path=str(resolved_artifact_path),
-            run_id=selected_run_id,
-        ):
-            if str(item.get("node_name") or "").strip() == normalized_node_name:
-                node_run = item
-                break
         states = duckdb_core.get_node_states_for_run_by_database(
             database_path=str(resolved_artifact_path),
             run_id=selected_run_id,
             node_name=normalized_node_name,
         )
 
-    artifact_database_path, artifact_name, logical_artifact = _resolved_node_artifact_location(
-        artifact_path=resolved_artifact_path,
+    artifact_context = _resolve_node_artifact_context(
+        resolved_artifact_path=resolved_artifact_path,
         selected_run=selected_run,
         node_payload=node_payload,
         node_run=node_run,
@@ -1699,18 +1842,18 @@ def inspect_node_history(
         pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
         artifact_path=str(resolved_artifact_path),
         compile_id=contract.compile_id,
-        run_id=selected_run_id or None,
-        run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
-        run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
-        is_final=_selected_run_is_final(selected_run),
+        run_id=run_metadata["run_id"],
+        run_label=run_metadata["run_label"],
+        run_status=run_metadata["run_status"],
+        is_final=bool(run_metadata["is_final"]),
         node_name=normalized_node_name,
         node_kind=str(node_payload.get("kind") or "").strip() or None,
         node_run_id=str(node_run.get("node_run_id") or "").strip() or None,
         node_run_status=str(node_run.get("status") or "").strip() or None,
-        logical_artifact=logical_artifact,
-        artifact_name=artifact_name,
-        archived_artifact_path=str(node_run.get("archived_artifact_path") or "").strip() or None,
-        archived_artifact_name=str(node_run.get("archived_artifact_name") or "").strip() or None,
+        logical_artifact=artifact_context["logical_artifact"],
+        artifact_name=artifact_context["artifact_name"],
+        archived_artifact_path=artifact_context["archived_artifact_path"],
+        archived_artifact_name=artifact_context["archived_artifact_name"],
         started_at=str(node_run.get("started_at") or "").strip() or None,
         finished_at=str(node_run.get("finished_at") or "").strip() or None,
         error_message=str(node_run.get("error_message") or "").strip() or None,
@@ -1726,40 +1869,20 @@ def inspect_node_logs(
     run_label: str | None = None,
     tail: int | None = None,
 ) -> InspectNodeLogResult:
-    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
-        artifact_path,
-        limit=None,
-    )
     if tail is not None and int(tail) <= 0:
         raise RuntimeError("tail must be a positive integer.")
 
-    selected_run = _select_pipeline_run_for_inspection(
-        resolved_artifact_path=resolved_artifact_path,
+    resolved_artifact_path, contract, selected_run = _resolve_selected_run_context(
+        artifact_path,
         run_id=run_id,
         run_label=run_label,
-        default_to_latest=True,
+        limit=None,
     )
     if selected_run is None:
         raise RuntimeError("No runs were found for this pipeline.")
-
-    contract = _load_compiled_contract_for_inspection(
-        resolved_artifact_path=resolved_artifact_path,
-        selected_run=selected_run,
-    )
     raw_nodes, _edges = _contract_nodes_and_edges(contract)
-    nodes_by_name: dict[str, dict[str, Any]] = {}
-    for raw_node in raw_nodes:
-        if not isinstance(raw_node, dict):
-            continue
-        name = str(raw_node.get("name") or "").strip()
-        if name:
-            nodes_by_name[name] = raw_node
-
-    normalized_node_name = str(node_name or "").strip()
-    if not normalized_node_name:
-        raise RuntimeError("node_name is required.")
-    if normalized_node_name not in nodes_by_name:
-        raise RuntimeError(f"Node '{normalized_node_name}' was not found in the compiled pipeline.")
+    node_payload = _find_contract_node(raw_nodes, node_name)
+    normalized_node_name = str(node_payload.get("name") or "").strip()
 
     log_path_text = str(selected_run.get("log_path") or "").strip()
     if not log_path_text:
@@ -1788,16 +1911,16 @@ def inspect_node_logs(
             continue
         logs.append(event.model_dump())
 
-    node_payload = nodes_by_name[normalized_node_name]
+    run_metadata = _build_run_metadata(selected_run=selected_run)
     return InspectNodeLogResult(
         pipeline_path=str(Path(contract.pipeline_path).expanduser().resolve()),
         artifact_path=str(resolved_artifact_path),
         compile_id=contract.compile_id,
-        run_id=str(selected_run.get("run_id") or "").strip() or None,
-        run_label=str(selected_run.get("run_label") or "").strip() or None,
-        run_status=str(selected_run.get("status") or "").strip() or None,
-        archived_artifact_path=str(selected_run.get("archived_artifact_path") or "").strip() or None,
-        is_final=_selected_run_is_final(selected_run),
+        run_id=run_metadata["run_id"],
+        run_label=run_metadata["run_label"],
+        run_status=run_metadata["run_status"],
+        archived_artifact_path=run_metadata["archived_artifact_path"],
+        is_final=bool(run_metadata["is_final"]),
         node_name=normalized_node_name,
         node_kind=str(node_payload.get("kind") or "").strip() or None,
         logs=logs,
@@ -1811,55 +1934,28 @@ def inspect_node_query(
     run_id: str | None = None,
     run_label: str | None = None,
 ) -> InspectNodeQueryResult:
-    resolved_artifact_path, _active_contract, _runs = _inspect_pipeline_runs(
+    resolved_artifact_path, contract, selected_run = _resolve_selected_run_context(
         artifact_path,
-        limit=None,
-    )
-    selected_run = _select_pipeline_run_for_inspection(
-        resolved_artifact_path=resolved_artifact_path,
         run_id=run_id,
         run_label=run_label,
-        default_to_latest=True,
-    )
-
-    contract = _load_compiled_contract_for_inspection(
-        resolved_artifact_path=resolved_artifact_path,
-        selected_run=selected_run,
+        limit=None,
     )
     raw_nodes, _edges = _contract_nodes_and_edges(contract)
-    normalized_node_name = str(node_name or "").strip()
-    if not normalized_node_name:
-        raise RuntimeError("node_name is required.")
-
-    node_payload: dict[str, Any] | None = None
-    for raw_node in raw_nodes:
-        if not isinstance(raw_node, dict):
-            continue
-        name = str(raw_node.get("name") or "").strip()
-        if name == normalized_node_name:
-            node_payload = raw_node
-            break
-    if node_payload is None:
-        raise RuntimeError(f"Node '{normalized_node_name}' was not found in the compiled pipeline.")
+    node_payload = _find_contract_node(raw_nodes, node_name)
+    normalized_node_name = str(node_payload.get("name") or "").strip()
 
     dependencies = node_payload.get("dependencies")
     if not isinstance(dependencies, list):
         dependencies = []
 
-    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
-    node_run: dict[str, Any] = {}
-    if selected_run_id:
-        import duckdb_core
-
-        for item in duckdb_core.get_node_runs_for_run_by_database(
-            database_path=str(resolved_artifact_path),
-            run_id=selected_run_id,
-        ):
-            if str(item.get("node_name") or "").strip() == normalized_node_name:
-                node_run = item
-                break
-    artifact_database_path, artifact_name, logical_artifact = _resolved_node_artifact_location(
-        artifact_path=resolved_artifact_path,
+    run_metadata = _build_run_metadata(selected_run=selected_run)
+    node_run = _find_node_run_for_selected_run(
+        resolved_artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+        node_name=normalized_node_name,
+    )
+    artifact_context = _resolve_node_artifact_context(
+        resolved_artifact_path=resolved_artifact_path,
         selected_run=selected_run,
         node_payload=node_payload,
         node_run=node_run,
@@ -1869,17 +1965,17 @@ def inspect_node_query(
         artifact_path=str(resolved_artifact_path),
         pipeline_id=contract.pipeline_id,
         compile_id=contract.compile_id,
-        run_id=selected_run_id or None,
-        run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
-        run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
-        archived_artifact_path=str(selected_run.get("archived_artifact_path") or "").strip() or None if selected_run is not None else None,
-        is_final=_selected_run_is_final(selected_run),
+        run_id=run_metadata["run_id"],
+        run_label=run_metadata["run_label"],
+        run_status=run_metadata["run_status"],
+        archived_artifact_path=run_metadata["archived_artifact_path"],
+        is_final=bool(run_metadata["is_final"]),
         node_name=normalized_node_name,
         node_kind=str(node_payload.get("kind") or "").strip() or None,
-        logical_artifact=logical_artifact,
-        artifact_name=artifact_name,
-        effective_artifact_path=artifact_database_path,
-        archived_artifact_name=str(node_run.get("archived_artifact_name") or "").strip() or None,
+        logical_artifact=artifact_context["logical_artifact"],
+        artifact_name=artifact_context["artifact_name"],
+        effective_artifact_path=artifact_context["artifact_path"],
+        archived_artifact_name=artifact_context["archived_artifact_name"],
         sql=str(node_payload.get("sql") or "").strip() or None,
         resolved_sql=str(node_payload.get("resolved_sql") or "").strip() or None,
         dependencies=[
@@ -1911,50 +2007,66 @@ def export_artifact(
         raise RuntimeError("format must be one of: csv, parquet, json.")
 
     if normalized_node_name:
-        query = inspect_node_query(
+        resolved_artifact_path, contract, selected_run = _resolve_selected_run_context(
             artifact_path,
-            normalized_node_name,
             run_id=run_id,
             run_label=run_label,
+            limit=None,
         )
-        selected_artifact_name = str(query.artifact_name or "").strip()
-        if not selected_artifact_name:
-            raise RuntimeError(f"Node '{normalized_node_name}' does not have a materialized artifact.")
-        effective_artifact_path = str(query.effective_artifact_path or "").strip()
-        if not effective_artifact_path:
-            raise RuntimeError(f"Node '{normalized_node_name}' does not have a resolvable artifact database.")
-        resolved_artifact_path = Path(query.artifact_path).expanduser().resolve()
-        pipeline_path = str(query.pipeline_path)
-        pipeline_id = str(query.pipeline_id or "").strip() or None
-        compile_id = str(query.compile_id or "").strip() or None
-        selected_run_id = str(query.run_id or "").strip() or None
-        selected_run_label = str(query.run_label or "").strip() or None
-        selected_run_status = str(query.run_status or "").strip() or None
-        is_final = bool(query.is_final)
-        selected_node_kind = str(query.node_kind or "").strip() or None
-        logical_artifact = str(query.logical_artifact or "").strip() or None
-    else:
-        resolved_artifact_path, _active_contract, runs = _inspect_pipeline_runs(artifact_path, limit=None)
-        selected_run = _select_pipeline_run_for_inspection(
-            resolved_artifact_path=resolved_artifact_path,
-            run_id=run_id,
-            run_label=run_label,
-            default_to_latest=True,
-            available_runs=runs,
-        )
-        contract = _load_compiled_contract_for_inspection(
+        raw_nodes, _edges = _contract_nodes_and_edges(contract)
+        node_payload = _find_contract_node(raw_nodes, normalized_node_name)
+        node_run = _find_node_run_for_selected_run(
             resolved_artifact_path=resolved_artifact_path,
             selected_run=selected_run,
+            node_name=normalized_node_name,
         )
+        artifact_context = _resolve_node_artifact_context(
+            resolved_artifact_path=resolved_artifact_path,
+            selected_run=selected_run,
+            node_payload=node_payload,
+            node_run=node_run,
+        )
+        run_metadata = _build_run_metadata(selected_run=selected_run)
+        selected_artifact_name = str(artifact_context["artifact_name"] or "").strip()
+        if not selected_artifact_name:
+            raise RuntimeError(f"Node '{normalized_node_name}' does not have a materialized artifact.")
+        effective_artifact_path = str(artifact_context["artifact_path"] or "").strip()
+        if not effective_artifact_path:
+            raise RuntimeError(f"Node '{normalized_node_name}' does not have a resolvable artifact database.")
+        pipeline_path = str(Path(contract.pipeline_path).expanduser().resolve())
+        pipeline_id = str(contract.pipeline_id or "").strip() or None
+        compile_id = str(contract.compile_id or "").strip() or None
+        selected_run_id = run_metadata["run_id"]
+        selected_run_label = run_metadata["run_label"]
+        selected_run_status = run_metadata["run_status"]
+        is_final = bool(run_metadata["is_final"])
+        selected_node_kind = str(node_payload.get("kind") or "").strip() or None
+        logical_artifact = str(artifact_context["logical_artifact"] or "").strip() or None
+    else:
+        resolved_artifact_path, contract, selected_run = _resolve_selected_run_context(
+            artifact_path,
+            run_id=run_id,
+            run_label=run_label,
+            limit=None,
+        )
+        run_metadata = _build_run_metadata(selected_run=selected_run)
         selected_artifact_name = normalized_artifact_name or ""
-        effective_artifact_path = str(resolved_artifact_path)
+        node_run = _find_node_run_by_artifact_name_for_selected_run(
+            resolved_artifact_path=resolved_artifact_path,
+            selected_run=selected_run,
+            artifact_name=selected_artifact_name,
+        )
+        effective_artifact_path = (
+            str(node_run.get("archived_artifact_path") or "").strip()
+            or str(resolved_artifact_path)
+        )
         pipeline_path = str(Path(contract.pipeline_path).expanduser().resolve())
         pipeline_id = str(getattr(contract, "pipeline_id", "") or "").strip() or None
         compile_id = str(getattr(contract, "compile_id", "") or "").strip() or None
-        selected_run_id = str(selected_run.get("run_id") or "").strip() or None if selected_run is not None else None
-        selected_run_label = str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None
-        selected_run_status = str(selected_run.get("status") or "").strip() or None if selected_run is not None else None
-        is_final = _selected_run_is_final(selected_run)
+        selected_run_id = run_metadata["run_id"]
+        selected_run_label = run_metadata["run_label"]
+        selected_run_status = run_metadata["run_status"]
+        is_final = bool(run_metadata["is_final"])
         selected_node_kind = None
         logical_artifact = normalized_artifact_name
 
@@ -2023,46 +2135,25 @@ def inspect_dag(
     run_id: str | None = None,
     run_label: str | None = None,
 ) -> InspectDagResult:
-    resolved_artifact_path, _active_contract, runs = _inspect_pipeline_runs(
+    resolved_artifact_path, contract, selected_run = _resolve_selected_run_context(
         artifact_path,
-        limit=None,
-    )
-    selected_run = _select_pipeline_run_for_inspection(
-        resolved_artifact_path=resolved_artifact_path,
         run_id=run_id,
         run_label=run_label,
-        default_to_latest=True,
-        available_runs=runs,
+        limit=None,
     )
-    contract = _load_compiled_contract_for_inspection(
+
+    node_runs_by_name = _load_node_runs_by_name_for_selected_run(
+        resolved_artifact_path=resolved_artifact_path,
+        selected_run=selected_run,
+    )
+    active_states_by_name = _load_active_states_by_name_for_selected_run(
         resolved_artifact_path=resolved_artifact_path,
         selected_run=selected_run,
     )
 
-    node_runs_by_name: dict[str, dict[str, Any]] = {}
-    active_states_by_name: dict[str, dict[str, Any]] = {}
-    selected_run_id = str(selected_run.get("run_id") or "").strip() if selected_run is not None else ""
-    selected_status = str(selected_run.get("status") or "").strip().lower() if selected_run is not None else ""
-    if selected_run_id:
-        import duckdb_core
-
-        for item in duckdb_core.get_node_runs_for_run_by_database(
-            database_path=str(resolved_artifact_path),
-            run_id=selected_run_id,
-        ):
-            node_name = str(item.get("node_name") or "").strip()
-            if node_name:
-                node_runs_by_name[node_name] = item
-        for item in duckdb_core.get_active_node_states_for_run_by_database(
-            database_path=str(resolved_artifact_path),
-            run_id=selected_run_id,
-        ):
-                node_name = str(item.get("node_name") or "").strip()
-                if node_name:
-                    active_states_by_name[node_name] = item
-
     raw_nodes, edges = _contract_nodes_and_edges(contract)
     ordered_nodes = _order_contract_nodes_breadth_first(raw_nodes, edges)
+    run_metadata = _build_run_metadata(selected_run=selected_run)
     pipeline_id = (
         str(selected_run.get("pipeline_id") or "").strip()
         if selected_run is not None
@@ -2078,8 +2169,8 @@ def inspect_dag(
             continue
         node_run = node_runs_by_name.get(name, {})
         active_state = active_states_by_name.get(name, {})
-        artifact_database_path, artifact_name, logical_artifact = _resolved_node_artifact_location(
-            artifact_path=resolved_artifact_path,
+        artifact_context = _resolve_node_artifact_context(
+            resolved_artifact_path=resolved_artifact_path,
             selected_run=selected_run,
             node_payload=raw_node,
             node_run=node_run,
@@ -2088,11 +2179,11 @@ def inspect_dag(
             {
                 "name": name,
                 "kind": str(raw_node.get("kind") or "").strip() or None,
-                "artifact_name": artifact_name,
-                "artifact_path": artifact_database_path,
-                "logical_artifact": logical_artifact,
-                "archived_artifact_path": str(node_run.get("archived_artifact_path") or "").strip() or None,
-                "archived_artifact_name": str(node_run.get("archived_artifact_name") or "").strip() or None,
+                "artifact_name": artifact_context["artifact_name"],
+                "artifact_path": artifact_context["artifact_path"],
+                "logical_artifact": artifact_context["logical_artifact"],
+                "archived_artifact_path": artifact_context["archived_artifact_path"],
+                "archived_artifact_name": artifact_context["archived_artifact_name"],
                 "current_state": str(active_state.get("state") or "").strip() or None,
                 "node_run_status": str(node_run.get("status") or "").strip() or None,
                 "started_at": str(node_run.get("started_at") or "").strip() or None,
@@ -2107,11 +2198,11 @@ def inspect_dag(
         artifact_path=str(resolved_artifact_path),
         pipeline_id=pipeline_id,
         compile_id=contract.compile_id,
-        run_id=selected_run_id or None,
-        run_label=str(selected_run.get("run_label") or "").strip() or None if selected_run is not None else None,
-        run_status=str(selected_run.get("status") or "").strip() or None if selected_run is not None else None,
-        archived_artifact_path=str(selected_run.get("archived_artifact_path") or "").strip() or None if selected_run is not None else None,
-        is_final=_selected_run_is_final(selected_run),
+        run_id=run_metadata["run_id"],
+        run_label=run_metadata["run_label"],
+        run_status=run_metadata["run_status"],
+        archived_artifact_path=run_metadata["archived_artifact_path"],
+        is_final=bool(run_metadata["is_final"]),
         nodes=nodes,
         edges=edges,
     )
