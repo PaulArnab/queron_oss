@@ -31,6 +31,7 @@ from .runtime_models import (
     normalize_warning_events,
     utc_now_timestamp,
 )
+from .runtime_vars import render_runtime_sql
 from .specs import NodeSpec, PipelineSpec
 
 _FILE_INGRESS_KIND_TO_FORMAT = {
@@ -146,6 +147,7 @@ class PipelineRuntime:
         spec: PipelineSpec,
         module_globals: dict[str, Any] | None = None,
         runtime_bindings: dict[str, Any] | None = None,
+        runtime_vars: dict[str, Any] | None = None,
         config_bindings: dict[str, dict[str, Any]] | None = None,
         connections_text: str | None = None,
         connections_path: str | None = None,
@@ -162,6 +164,7 @@ class PipelineRuntime:
         self.run_id = _generate_run_id()
         self.log_path = str(self._resolve_log_path())
         self.runtime_bindings = runtime_bindings or {}
+        self.runtime_vars = dict(runtime_vars or {})
         self.config_bindings = config_bindings or {}
         self.connections_config = load_connections_config(connections_text, yaml_path=connections_path)
         self.run_policy = run_policy if isinstance(run_policy, RunPolicy) else RunPolicy.model_validate(run_policy or {})
@@ -1393,7 +1396,10 @@ class PipelineRuntime:
     def _execute_ingress(self, node: NodeSpec) -> NodeExecutionResult:
         binding = self._binding_for_node(node)
         duckdb_connection_id = self._ensure_duckdb_connection_id()
-        sql = str(node.resolved_sql or node.sql or "").strip()
+        sql, sql_params = self._render_node_sql(
+            node,
+            placeholder_style="format" if node.kind == "postgres.ingress" else "qmark",
+        )
         if not sql:
             raise RuntimeError(f"Ingress node '{node.name}' is missing SQL.")
         if node.sources:
@@ -1413,6 +1419,7 @@ class PipelineRuntime:
                 source_connection_id=source_connection_id,
                 duckdb_connection_id=duckdb_connection_id,
                 sql=sql,
+                sql_params=sql_params,
                 target_table=str(node.target_table or ""),
                 replace=False,
                 chunk_size=200,
@@ -1444,6 +1451,7 @@ class PipelineRuntime:
                 source_connection_id=source_connection_id,
                 duckdb_connection_id=duckdb_connection_id,
                 sql=sql,
+                sql_params=sql_params,
                 target_table=str(node.target_table or ""),
                 replace=False,
                 chunk_size=200,
@@ -1558,7 +1566,8 @@ class PipelineRuntime:
     def _execute_model(self, node: NodeSpec) -> NodeExecutionResult:
         import duckdb_core
 
-        sql = str(node.resolved_sql or node.sql or "").strip().rstrip(";")
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        sql = sql.strip().rstrip(";")
         if not sql:
             raise RuntimeError(f"Model node '{node.name}' is missing SQL.")
         if node.refs:
@@ -1572,7 +1581,7 @@ class PipelineRuntime:
         conn = self._open_tracked_duckdb_connection()
         try:
             conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_quote_identifier('main')}")
-            conn.execute(f"CREATE TABLE {target_ident} AS {sql}")
+            conn.execute(f"CREATE TABLE {target_ident} AS SELECT * FROM ({sql}) AS queron_runtime_model", sql_params)
             row = conn.execute(f"SELECT COUNT(*) FROM {target_ident}").fetchone()
         finally:
             self._close_tracked_duckdb_connection(conn)
@@ -1601,7 +1610,7 @@ class PipelineRuntime:
         import postgres_core
 
         binding = self._binding_for_node(node)
-        sql = str(node.resolved_sql or node.sql or "").strip()
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
         if not sql:
             raise RuntimeError(f"Egress node '{node.name}' is missing SQL.")
         if node.refs:
@@ -1617,6 +1626,7 @@ class PipelineRuntime:
             target_connection_id=source_connection_id,
             duckdb_database=self.duckdb_path,
             sql=sql,
+            sql_params=sql_params,
             target_table=str(node.target_relation or ""),
             mode=str(node.mode or "replace"),
             artifact_table=local_artifact_name,
@@ -1648,7 +1658,7 @@ class PipelineRuntime:
         import db2_core
 
         binding = self._binding_for_node(node)
-        sql = str(node.resolved_sql or node.sql or "").strip()
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
         if not sql:
             raise RuntimeError(f"Egress node '{node.name}' is missing SQL.")
         if node.refs:
@@ -1664,6 +1674,7 @@ class PipelineRuntime:
             target_connection_id=source_connection_id,
             duckdb_database=self.duckdb_path,
             sql=sql,
+            sql_params=sql_params,
             target_table=str(node.target_relation or ""),
             mode=str(node.mode or "replace"),
             artifact_table=local_artifact_name,
@@ -1692,7 +1703,7 @@ class PipelineRuntime:
     def _execute_parquet_egress(self, node: NodeSpec) -> NodeExecutionResult:
         import duckdb_core
 
-        sql = str(node.resolved_sql or node.sql or "").strip()
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
         if not sql:
             raise RuntimeError(f"Export node '{node.name}' is missing SQL.")
         if node.refs:
@@ -1707,6 +1718,7 @@ class PipelineRuntime:
             response = duckdb_core.export_query_to_parquet_with_artifact(
                 database=self.duckdb_path,
                 sql=sql,
+                sql_params=sql_params,
                 output_path=str(node.output_path or ""),
                 target_table=local_artifact_name,
                 overwrite=bool(node.overwrite),
@@ -1719,6 +1731,7 @@ class PipelineRuntime:
             response = duckdb_core.export_query_to_parquet(
                 database=self.duckdb_path,
                 sql=sql,
+                sql_params=sql_params,
                 output_path=str(node.output_path or ""),
                 overwrite=bool(node.overwrite),
                 compression=str(node.compression or "").strip() or None,
@@ -1755,7 +1768,7 @@ class PipelineRuntime:
     def _execute_csv_egress(self, node: NodeSpec) -> NodeExecutionResult:
         import duckdb_core
 
-        sql = str(node.resolved_sql or node.sql or "").strip()
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
         if not sql:
             raise RuntimeError(f"Export node '{node.name}' is missing SQL.")
         if node.refs:
@@ -1770,6 +1783,7 @@ class PipelineRuntime:
             response = duckdb_core.export_query_to_csv_with_artifact(
                 database=self.duckdb_path,
                 sql=sql,
+                sql_params=sql_params,
                 output_path=str(node.output_path or ""),
                 target_table=local_artifact_name,
                 overwrite=bool(node.overwrite),
@@ -1783,6 +1797,7 @@ class PipelineRuntime:
             response = duckdb_core.export_query_to_csv(
                 database=self.duckdb_path,
                 sql=sql,
+                sql_params=sql_params,
                 output_path=str(node.output_path or ""),
                 overwrite=bool(node.overwrite),
                 header=bool(node.header if node.header is not None else True),
@@ -1820,7 +1835,7 @@ class PipelineRuntime:
     def _execute_jsonl_egress(self, node: NodeSpec) -> NodeExecutionResult:
         import duckdb_core
 
-        sql = str(node.resolved_sql or node.sql or "").strip()
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
         if not sql:
             raise RuntimeError(f"Export node '{node.name}' is missing SQL.")
         if node.refs:
@@ -1835,6 +1850,7 @@ class PipelineRuntime:
             response = duckdb_core.export_query_to_jsonl_with_artifact(
                 database=self.duckdb_path,
                 sql=sql,
+                sql_params=sql_params,
                 output_path=str(node.output_path or ""),
                 target_table=local_artifact_name,
                 overwrite=bool(node.overwrite),
@@ -1846,6 +1862,7 @@ class PipelineRuntime:
             response = duckdb_core.export_query_to_jsonl(
                 database=self.duckdb_path,
                 sql=sql,
+                sql_params=sql_params,
                 output_path=str(node.output_path or ""),
                 overwrite=bool(node.overwrite),
                 working_dir=self.working_dir,
@@ -1879,7 +1896,8 @@ class PipelineRuntime:
         )
 
     def _execute_scalar_duckdb_query(self, node: NodeSpec) -> Any:
-        sql = str(node.resolved_sql or node.sql or "").strip().rstrip(";")
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        sql = sql.strip().rstrip(";")
         if not sql:
             raise RuntimeError(f"Check node '{node.name}' is missing SQL.")
         if node.refs:
@@ -1892,7 +1910,7 @@ class PipelineRuntime:
         rows: list[tuple[Any, ...]] = []
         conn = self._open_tracked_duckdb_connection()
         try:
-            rows = conn.execute(sql).fetchall()
+            rows = conn.execute(sql, sql_params).fetchall()
         finally:
             self._close_tracked_duckdb_connection(conn)
         if len(rows) != 1:
@@ -1965,4 +1983,18 @@ class PipelineRuntime:
             row_count_out=None,
             warnings=[],
             details={"actual_value": actual_value},
+        )
+
+    def _render_node_sql(self, node: NodeSpec, *, placeholder_style: str) -> tuple[str, list[Any]]:
+        sql_text = str(node.resolved_sql or node.sql or "")
+        if placeholder_style == "format":
+            return render_runtime_sql(
+                sql_text,
+                runtime_vars=self.runtime_vars,
+                placeholder_factory=lambda _index: "%s",
+            )
+        return render_runtime_sql(
+            sql_text,
+            runtime_vars=self.runtime_vars,
+            placeholder_factory=lambda _index: "?",
         )

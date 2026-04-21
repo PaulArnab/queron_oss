@@ -77,6 +77,319 @@ class VerifyQueronCliTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             queron.compile_pipeline("pipeline.py", artifact_path="override-not-allowed.duckdb")
 
+    def test_compile_pipeline_collects_runtime_vars_in_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=f\"\"\"
+SELECT 1
+WHERE dt >= {queron.var("start_date")}
+  AND state IN ({queron.var("states")})
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertFalse(any(str(item.get("level")) == "error" for item in compiled.diagnostics))
+            self.assertIsNotNone(compiled.contract)
+            self.assertEqual(
+                [item.model_dump() for item in compiled.contract.vars_json],
+                [
+                    {
+                        "name": "start_date",
+                        "kind": "scalar",
+                        "required": True,
+                        "default": None,
+                        "used_in_nodes": ["seed"],
+                    },
+                    {
+                        "name": "states",
+                        "kind": "list",
+                        "required": True,
+                        "default": None,
+                        "used_in_nodes": ["seed"],
+                    },
+                ],
+            )
+
+    def test_compile_pipeline_rejects_runtime_var_in_forbidden_sql_position(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=f\"\"\"
+SELECT * FROM {queron.var("table_name")}
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertTrue(any(str(item.get("code")) == "invalid_runtime_var_placement" for item in compiled.diagnostics))
+            self.assertIsNone(compiled.contract)
+
+    def test_compile_pipeline_rejects_conflicting_runtime_var_kinds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed_a',
+    out='seed_a',
+    query=f\"\"\"
+SELECT 1
+WHERE state IN ({queron.var("states")})
+\"\"\",
+)
+def seed_a():
+    pass
+
+@queron.model.sql(
+    name='seed_b',
+    out='seed_b',
+    query=f\"\"\"
+SELECT 1
+WHERE state = {queron.var("states")}
+\"\"\",
+)
+def seed_b():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertTrue(any(str(item.get("code")) == "conflicting_runtime_var_kind" for item in compiled.diagnostics))
+            self.assertIsNone(compiled.contract)
+
+    def test_run_pipeline_executes_model_with_runtime_vars(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=f\"\"\"
+SELECT *
+FROM (
+    VALUES
+        ('TX', DATE '2026-01-01'),
+        ('CA', DATE '2026-01-02'),
+        ('WA', DATE '2026-01-03')
+) AS src(state, dt)
+WHERE state IN ({queron.var("states")})
+  AND dt >= {queron.var("start_date")}
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+            self.assertIsNotNone(compiled.contract)
+
+            result = queron.run_pipeline(
+                pipeline_path,
+                runtime_vars={"states": ["TX", "CA"], "start_date": "2026-01-02"},
+            )
+
+            node = queron.inspect_node(result.artifact_path, "seed", run_id=result.run_id)
+
+            self.assertEqual(int(node.nodes[0].get("row_count_out") or 0), 1)
+
+    def test_run_pipeline_requires_missing_runtime_var(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=f\"\"\"
+SELECT 1
+WHERE 1 = {queron.var("required_value")}
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+            self.assertIsNotNone(compiled.contract)
+
+            with self.assertRaisesRegex(RuntimeError, "Missing required runtime var 'required_value'"):
+                queron.run_pipeline(pipeline_path, runtime_vars={})
+
+    def test_cli_run_accepts_vars_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=f\"\"\"
+SELECT *
+FROM (VALUES ('TX'), ('CA'), ('WA')) AS src(state)
+WHERE state IN ({queron.var("states")})
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            self._compile_pipeline(pipeline_path)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--vars-json",
+                        "{\"states\": [\"TX\", \"CA\"]}",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Run succeeded.", stdout.getvalue())
+
+    def test_cli_run_accepts_vars_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            vars_path = root / "vars.json"
+            vars_path.write_text(json.dumps({"states": ["CA"]}), encoding="utf-8")
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=f\"\"\"
+SELECT *
+FROM (VALUES ('TX'), ('CA'), ('WA')) AS src(state)
+WHERE state IN ({queron.var("states")})
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            self._compile_pipeline(pipeline_path)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--vars-file",
+                        str(vars_path),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Run succeeded.", stdout.getvalue())
+
+    def test_cli_run_rejects_vars_json_and_vars_file_together(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            vars_path = root / "vars.json"
+            vars_path.write_text(json.dumps({"states": ["CA"]}), encoding="utf-8")
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=f\"\"\"
+SELECT *
+FROM (VALUES ('TX'), ('CA'), ('WA')) AS src(state)
+WHERE state IN ({queron.var("states")})
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            self._compile_pipeline(pipeline_path)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--vars-json",
+                        "{\"states\": [\"TX\"]}",
+                        "--vars-file",
+                        str(vars_path),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("Use either --vars-json or --vars-file, not both.", stderr.getvalue())
+
     def test_inspect_functions_accept_artifact_path_input(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)

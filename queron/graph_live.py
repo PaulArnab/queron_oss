@@ -78,6 +78,16 @@ def _graph_event_from_log(event: PipelineLogEvent) -> dict[str, Any]:
         "node_kind": event.node_kind,
         "artifact_name": event.artifact_name,
     }
+
+
+def _normalize_runtime_vars_payload(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RuntimeError("runtime_vars must be a JSON object.")
+    return {str(key): item for key, item in value.items()}
+
+
 def resolve_graph_live_context(pipeline_path: str | Path) -> GraphLiveContext:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
     if not resolved_pipeline_path.exists() or not resolved_pipeline_path.is_file():
@@ -678,6 +688,7 @@ def run_graph_pipeline(
     pipeline_path: str | Path,
     *,
     clean_existing: bool = False,
+    runtime_vars: dict[str, Any] | None = None,
     on_log: Any = None,
 ) -> dict[str, Any]:
     runtime_bindings = _runtime_bindings_from_file(pipeline_path)
@@ -685,6 +696,7 @@ def run_graph_pipeline(
         compiled, existing_outputs, artifact_path = list_existing_outputs_for_file(
             pipeline_path,
             runtime_bindings=runtime_bindings,
+            runtime_vars=runtime_vars,
         )
         if has_compile_errors(compiled):
             diagnostics = list(compiled.diagnostics)
@@ -706,6 +718,7 @@ def run_graph_pipeline(
         clean_existing=bool(clean_existing),
         set_final=True,
         runtime_bindings=runtime_bindings,
+        runtime_vars=runtime_vars,
         on_log=on_log,
     )
     return {
@@ -719,10 +732,16 @@ def run_graph_pipeline(
     }
 
 
-def resume_graph_pipeline(pipeline_path: str | Path, *, on_log: Any = None) -> dict[str, Any]:
+def resume_graph_pipeline(
+    pipeline_path: str | Path,
+    *,
+    runtime_vars: dict[str, Any] | None = None,
+    on_log: Any = None,
+) -> dict[str, Any]:
     result = resume_pipeline(
         pipeline_path,
         runtime_bindings=_runtime_bindings_from_file(pipeline_path),
+        runtime_vars=runtime_vars,
         on_log=on_log,
     )
     return {
@@ -1037,11 +1056,13 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
             payload = self._read_json_body()
             if parsed.path == "/api/run":
                 clean_existing = bool(payload.get("clean_existing"))
+                runtime_vars = _normalize_runtime_vars_payload(payload.get("runtime_vars"))
                 try:
                     self._write_json(
                         run_graph_pipeline(
                             context.pipeline_path,
                             clean_existing=clean_existing,
+                            runtime_vars=runtime_vars,
                             on_log=self._emit_runtime_log,
                         )
                     )
@@ -1059,7 +1080,14 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
                     raise
                 return
             if parsed.path == "/api/resume":
-                self._write_json(resume_graph_pipeline(context.pipeline_path, on_log=self._emit_runtime_log))
+                runtime_vars = _normalize_runtime_vars_payload(payload.get("runtime_vars"))
+                self._write_json(
+                    resume_graph_pipeline(
+                        context.pipeline_path,
+                        runtime_vars=runtime_vars,
+                        on_log=self._emit_runtime_log,
+                    )
+                )
                 return
             if parsed.path == "/api/stop":
                 reason = str(payload.get("reason") or "").strip() or None

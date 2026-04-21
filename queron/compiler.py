@@ -6,13 +6,14 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import site
 import sys
 import sysconfig
 from typing import Any
 
 from .config import load_config, resolve_source_relation, resolve_target, try_resolve_egress_relation
-from .runtime_models import CompiledContractRecord
+from .runtime_models import CompiledContractRecord, PipelineVarRecord
 from .specs import NodeSpec, PipelineSpec
 from .templates import extract_refs, extract_sources, find_raw_compound_relations, has_raw_reference_to_name, render_sql
 
@@ -22,6 +23,14 @@ _FILE_INGRESS_KIND_TO_FORMAT = {
     "parquet.ingress": "parquet",
 }
 _ALL_FILE_INGRESS_KINDS = set(_FILE_INGRESS_KIND_TO_FORMAT) | {"file.ingress"}
+_VAR_PATTERN = re.compile(
+    r"\{\{\s*queron\.var\(\s*(?P<quote>['\"])(?P<name>[^'\"]+)(?P=quote)\s*\)\s*\}\}",
+    re.IGNORECASE,
+)
+_SQL_VAR_VALUE_PRECEDERS = {"=", "<>", "!=", ">", ">=", "<", "<=", "(", ",", "between", "and", "like", "ilike"}
+_SQL_VAR_FORBIDDEN_PRECEDERS = {"from", "join", "update", "into", "table", "select", "order", "group", "by", "as"}
+_SQL_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
+_SQL_OPERATOR_RE = re.compile(r"(<>|!=|>=|<=|=|>|<|\(|,)$")
 
 
 @dataclass
@@ -258,6 +267,165 @@ def _tracked_config_entry(
     return _hash_json({"exists": exists, "content": config_text or ""}), tracked_files
 
 
+def _previous_meaningful_sql_token(sql_text: str, start_index: int) -> str | None:
+    prefix = str(sql_text or "")[: max(0, int(start_index))]
+    stripped = prefix.rstrip()
+    if not stripped:
+        return None
+    operator_match = _SQL_OPERATOR_RE.search(stripped)
+    if operator_match:
+        return operator_match.group(1).lower()
+    word_match = _SQL_WORD_RE.search(stripped)
+    if word_match:
+        return word_match.group(0).lower()
+    return None
+
+
+def _sql_var_previous_context(sql_text: str, start_index: int) -> tuple[str | None, str | None]:
+    previous_token = _previous_meaningful_sql_token(sql_text, start_index)
+    previous_non_group_token = previous_token
+    if previous_token == "(":
+        prefix = str(sql_text or "")[: max(0, int(start_index))]
+        open_index = prefix.rstrip().rfind("(")
+        if open_index >= 0:
+            previous_non_group_token = _previous_meaningful_sql_token(prefix, open_index)
+    return previous_token, previous_non_group_token
+
+
+def _infer_sql_var_kind(sql_text: str, start_index: int) -> str:
+    previous_token, previous_non_group_token = _sql_var_previous_context(sql_text, start_index)
+    if previous_token == "in" or previous_non_group_token == "in":
+        return "list"
+    if previous_token in _SQL_VAR_VALUE_PRECEDERS:
+        return "scalar"
+    return "scalar"
+
+
+def _extract_node_var_references(node: NodeSpec) -> list[dict[str, Any]]:
+    existing = node.metadata.get("queron_vars")
+    if isinstance(existing, list):
+        return [item for item in existing if isinstance(item, dict)]
+    sql_text = str(getattr(node, "sql", "") or "").strip()
+    if not sql_text:
+        return []
+    refs: list[dict[str, Any]] = []
+    for match in _VAR_PATTERN.finditer(sql_text):
+        name = str(match.group("name") or "").strip()
+        if not name:
+            continue
+        refs.append(
+            {
+                "name": name,
+                "kind": _infer_sql_var_kind(sql_text, match.start()),
+            }
+        )
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in refs:
+        deduped[(str(item["name"]), str(item["kind"]))] = item
+    return list(deduped.values())
+
+
+def _validate_node_var_references(node: NodeSpec) -> list[dict[str, Any]]:
+    sql_text = str(getattr(node, "sql", "") or "").strip()
+    node_refs: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
+    if not sql_text:
+        node.metadata["queron_vars"] = node_refs
+        return diagnostics
+
+    for match in _VAR_PATTERN.finditer(sql_text):
+        name = str(match.group("name") or "").strip()
+        if not name:
+            continue
+        previous_token, previous_non_group_token = _sql_var_previous_context(sql_text, match.start())
+        if previous_token in _SQL_VAR_FORBIDDEN_PRECEDERS or previous_non_group_token in _SQL_VAR_FORBIDDEN_PRECEDERS:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "code": "invalid_runtime_var_placement",
+                    "message": (
+                        f"Node '{node.name}' uses runtime var '{name}' in a forbidden SQL position near '{previous_non_group_token or previous_token}'. "
+                        "Runtime vars are allowed only in SQL value positions."
+                    ),
+                    "node_name": node.name,
+                }
+            )
+            continue
+        if previous_non_group_token != "in" and previous_token not in _SQL_VAR_VALUE_PRECEDERS:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "code": "unsupported_runtime_var_placement",
+                    "message": (
+                        f"Node '{node.name}' uses runtime var '{name}' in an unsupported SQL position. "
+                        "Allowed placements are scalar value positions and explicit IN-list positions."
+                    ),
+                    "node_name": node.name,
+                }
+            )
+            continue
+        node_refs.append(
+            {
+                "name": name,
+                "kind": "list" if previous_non_group_token == "in" else "scalar",
+            }
+        )
+
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in node_refs:
+        deduped[(str(item["name"]), str(item["kind"]))] = item
+    node.metadata["queron_vars"] = list(deduped.values())
+    return diagnostics
+
+
+def _collect_pipeline_var_records(nodes: list[NodeSpec]) -> tuple[list[PipelineVarRecord], list[dict[str, Any]]]:
+    by_name: dict[str, dict[str, Any]] = {}
+    diagnostics: list[dict[str, Any]] = []
+    for node in nodes:
+        for ref in _extract_node_var_references(node):
+            name = str(ref.get("name") or "").strip()
+            if not name:
+                continue
+            record = by_name.setdefault(
+                name,
+                {
+                    "name": name,
+                    "kind": str(ref.get("kind") or "scalar"),
+                    "required": True,
+                    "default": None,
+                    "used_in_nodes": [],
+                },
+            )
+            ref_kind = str(ref.get("kind") or "scalar")
+            if str(record["kind"]) != ref_kind:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "conflicting_runtime_var_kind",
+                        "message": (
+                            f"Runtime var '{name}' is used as both '{record['kind']}' and '{ref_kind}' in the pipeline. "
+                            "A runtime var must keep one usage kind across the whole pipeline."
+                        ),
+                        "node_name": node.name,
+                    }
+                )
+            if ref_kind == "list":
+                record["kind"] = "list"
+            if node.name not in record["used_in_nodes"]:
+                record["used_in_nodes"].append(node.name)
+    records = [
+        PipelineVarRecord(
+            name=item["name"],
+            kind=item["kind"],
+            required=bool(item["required"]),
+            default=item["default"],
+            used_in_nodes=sorted(str(value) for value in item["used_in_nodes"] if str(value).strip()),
+        )
+        for item in sorted(by_name.values(), key=lambda entry: entry["name"])
+    ]
+    return records, diagnostics
+
+
 def _normalized_node_payload(node: NodeSpec) -> dict[str, Any]:
     return {
         "name": node.name,
@@ -289,6 +457,7 @@ def _normalized_node_payload(node: NodeSpec) -> dict[str, Any]:
         "refs": sorted(node.refs),
         "sources": sorted(node.sources),
         "resolved_sources": dict(sorted((node.resolved_sources or {}).items())),
+        "vars": _extract_node_var_references(node),
     }
 
 
@@ -337,10 +506,14 @@ def _build_compile_contract(
 
     edges_json = sorted([[dependency, node.name] for node in spec.nodes for dependency in node.dependencies])
     edge_hash = _hash_json(edges_json)
+    vars_json, var_diagnostics = _collect_pipeline_var_records(spec.nodes)
+    if _has_error_diagnostics(var_diagnostics):
+        return None, var_diagnostics
     spec_json = {
         "pipeline_id": spec.pipeline_id,
         "target": spec.target,
         "nodes": normalized_nodes,
+        "vars": [item.model_dump() for item in vars_json],
     }
     contract_hash = _hash_json(
         {
@@ -350,6 +523,7 @@ def _build_compile_contract(
             "edge_hash": edge_hash,
             "config_hash": config_hash,
             "project_python_hash": project_python_hash,
+            "vars": [item.model_dump() for item in vars_json],
         }
     )
     contract = CompiledContractRecord(
@@ -368,6 +542,7 @@ def _build_compile_contract(
         edges_json=edges_json,
         tracked_files_json=tracked_files,
         external_dependencies_json=external_dependencies,
+        vars_json=vars_json,
         spec_json=spec_json,
         diagnostics_json=list(diagnostics),
     )
@@ -685,6 +860,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
             node.dependencies.append(producer.name)
 
         if node.kind in query_node_kinds:
+            diagnostics.extend(_validate_node_var_references(node))
             for relation in find_raw_compound_relations(node.sql):
                 diagnostics.append(
                     {
@@ -704,6 +880,18 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                             "node_name": node.name,
                         }
                     )
+        elif _VAR_PATTERN.search(str(node.sql or "")):
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "code": "runtime_vars_not_allowed_in_node_kind",
+                    "message": (
+                        f"Node '{node.name}' of kind '{node.kind}' uses queron.var(...), "
+                        "but runtime vars are only allowed in SQL-bearing nodes."
+                    ),
+                    "node_name": node.name,
+                }
+            )
 
         if node.kind in query_node_kinds or node.kind in {"postgres.ingress", "db2.ingress", "model.sql"}:
             try:

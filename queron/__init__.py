@@ -389,6 +389,14 @@ def source(name: str) -> str:
     return f'{{{{ queron.source("{name}") }}}}'
 
 
+def var(name: str) -> str:
+    text = str(name or "").strip()
+    if not text:
+        raise ValueError("queron.var(...) requires a non-empty variable name.")
+    escaped = text.replace('"', '\\"')
+    return f'{{{{ queron.var("{escaped}") }}}}'
+
+
 postgres = _PostgresNamespace()
 db2 = _Db2Namespace()
 csv = _CsvNamespace()
@@ -437,6 +445,7 @@ __all__ = [
     "postgres",
     "python",
     "ref",
+    "var",
     "reset_all",
     "reset_downstream",
     "reset_upstream",

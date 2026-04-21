@@ -390,6 +390,43 @@ def _normalize_postgres_source_type(raw_type: str) -> str:
     return normalized
 
 
+_POSTGRES_OID_TYPE_NAMES: dict[int, str] = {
+    16: "boolean",
+    17: "bytea",
+    20: "bigint",
+    21: "smallint",
+    23: "integer",
+    25: "text",
+    700: "real",
+    701: "double precision",
+    1042: "character",
+    1043: "character varying",
+    1082: "date",
+    1083: "time without time zone",
+    1114: "timestamp without time zone",
+    1184: "timestamp with time zone",
+    1186: "interval",
+    1266: "time with time zone",
+    1700: "numeric",
+    2950: "uuid",
+    3802: "jsonb",
+}
+
+
+def _postgres_type_name_from_code(type_code: Any) -> str:
+    if type_code is None:
+        return "UNKNOWN"
+    if isinstance(type_code, int):
+        return _POSTGRES_OID_TYPE_NAMES.get(type_code, str(type_code))
+    oid = getattr(type_code, "oid", None)
+    if isinstance(oid, int):
+        return _POSTGRES_OID_TYPE_NAMES.get(oid, str(oid))
+    name = getattr(type_code, "name", None)
+    if str(name or "").strip():
+        return str(name).strip()
+    return str(type_code).strip() or "UNKNOWN"
+
+
 def _map_postgres_type_to_duckdb(raw_type: str) -> tuple[str, list[str], bool | None]:
     normalized = _normalize_postgres_source_type(raw_type)
     warnings: list[str] = []
@@ -585,6 +622,17 @@ def _inspect_postgres_result_columns(uri: str, sql: str, **connect_kwargs) -> li
         )
         for row in rows
     ]
+
+
+def _column_meta_from_description(description: Any) -> list[ColumnMeta]:
+    columns: list[ColumnMeta] = []
+    for item in list(description or []):
+        name = str(getattr(item, "name", None) or item[0] or "").strip() or "column"
+        type_code = getattr(item, "type_code", None)
+        if type_code is None and len(item) > 1:
+            type_code = item[1]
+        columns.append(ColumnMeta(name=name, data_type=_postgres_type_name_from_code(type_code), nullable=True))
+    return columns
 
 
 def _column_meta_from_cursor(conn, cursor) -> list[ColumnMeta]:
@@ -859,6 +907,7 @@ def ingest_query_to_duckdb(
     source_connection_id: str,
     duckdb_connection_id: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     target_table: str,
     replace: bool,
     chunk_size: int,
@@ -882,12 +931,16 @@ def ingest_query_to_duckdb(
         if on_interrupt_open is not None:
             source_interrupt_token = on_interrupt_open(_build_postgres_interruptor(source_conn))
         source_cur = source_conn.cursor()
-        source_cur.execute(_strip_sql_terminator(sql))
+        source_cur.execute(_strip_sql_terminator(sql), list(sql_params or []))
         if source_cur.description is None:
             raise RuntimeError("Source query did not return a result set.")
 
         try:
-            source_columns = _inspect_postgres_result_columns(cfg["uri"], sql, **connect_kwargs)
+            if sql_params:
+                source_columns = _column_meta_from_description(source_cur.description)
+                warnings.append("Used cursor metadata while inspecting parameterized PostgreSQL result metadata.")
+            else:
+                source_columns = _inspect_postgres_result_columns(cfg["uri"], sql, **connect_kwargs)
         except Exception:
             source_columns = _column_meta_from_cursor(source_conn, source_cur)
             warnings.append("Fell back to cursor metadata while inspecting PostgreSQL result metadata.")
@@ -975,6 +1028,7 @@ def egress_query_from_duckdb(
     target_connection_id: str,
     duckdb_database: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     target_table: str,
     mode: str = "replace",
     chunk_size: int = 1000,
@@ -1018,7 +1072,7 @@ def egress_query_from_duckdb(
         if on_interrupt_open is not None:
             duck_interrupt_token = on_interrupt_open(_build_duckdb_interruptor(duck_conn))
         duck_cur = duck_conn.cursor()
-        duck_cur.execute(_strip_sql_terminator(sql))
+        duck_cur.execute(_strip_sql_terminator(sql), list(sql_params or []))
         if duck_cur.description is None:
             raise RuntimeError("DuckDB egress query did not return a result set.")
         column_meta = _duckdb_column_meta_from_cursor(duck_cur)

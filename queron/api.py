@@ -21,6 +21,7 @@ from .runtime_models import (
     normalize_log_event,
     utc_now_timestamp,
 )
+from .runtime_vars import validate_runtime_var_values
 from .specs import PipelineSpec
 from .templates import build_init_config_text, build_init_gitignore_text, build_init_pipeline_text
 
@@ -1038,6 +1039,7 @@ def _build_runtime_for_pipeline(
     run_label: str | None,
     compile_id: str | None,
     runtime_bindings: dict[str, Any] | None,
+    runtime_vars: dict[str, Any] | None,
     connections_path: str | Path | None,
     on_log: Callable[[PipelineLogEvent], None] | None,
 ) -> tuple[PipelineRuntime, Path]:
@@ -1057,6 +1059,10 @@ def _build_runtime_for_pipeline(
         spec=compiled.spec,
         module_globals=compiled.module_globals,
         runtime_bindings=runtime_bindings,
+        runtime_vars=validate_runtime_var_values(
+            getattr(compiled.contract, "vars_json", None),
+            runtime_vars,
+        ),
         connections_path=_resolve_connections_path(pipeline_path, connections_path),
         on_log=on_log,
     )
@@ -2358,6 +2364,7 @@ def _run_pipeline_impl(
     config_path: str | Path | None = None,
     connections_path: str | Path | None = None,
     runtime_bindings: dict[str, Any] | None = None,
+    runtime_vars: dict[str, Any] | None = None,
     target: str | None = None,
     artifact_path: str | Path | None = None,
     target_node: str | None = None,
@@ -2460,6 +2467,7 @@ def _run_pipeline_impl(
         run_label=normalized_run_label,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
+        runtime_vars=runtime_vars,
         connections_path=connections_path,
         on_log=on_log,
     )
@@ -2511,6 +2519,7 @@ def run_pipeline(
     config_path: str | Path | None = None,
     connections_path: str | Path | None = None,
     runtime_bindings: dict[str, Any] | None = None,
+    runtime_vars: dict[str, Any] | None = None,
     target: str | None = None,
     target_node: str | None = None,
     clean_existing: bool = False,
@@ -2524,6 +2533,7 @@ def run_pipeline(
         config_path=config_path,
         connections_path=connections_path,
         runtime_bindings=runtime_bindings,
+        runtime_vars=runtime_vars,
         target=target,
         artifact_path=None,
         target_node=target_node,
@@ -2541,6 +2551,7 @@ def _resume_pipeline_impl(
     config_path: str | Path | None = None,
     connections_path: str | Path | None = None,
     runtime_bindings: dict[str, Any] | None = None,
+    runtime_vars: dict[str, Any] | None = None,
     target: str | None = None,
     artifact_path: str | Path | None = None,
     on_log: Callable[[PipelineLogEvent], None] | None = None,
@@ -2592,6 +2603,7 @@ def _resume_pipeline_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
+        runtime_vars=runtime_vars,
         connections_path=connections_path,
         on_log=on_log,
     )
@@ -2612,6 +2624,7 @@ def resume_pipeline(
     config_path: str | Path | None = None,
     connections_path: str | Path | None = None,
     runtime_bindings: dict[str, Any] | None = None,
+    runtime_vars: dict[str, Any] | None = None,
     target: str | None = None,
     on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> RunPipelineResult:
@@ -2620,6 +2633,7 @@ def resume_pipeline(
         config_path=config_path,
         connections_path=connections_path,
         runtime_bindings=runtime_bindings,
+        runtime_vars=runtime_vars,
         target=target,
         artifact_path=None,
         on_log=on_log,
@@ -2667,6 +2681,7 @@ def _reset_node_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
+        runtime_vars=None,
         connections_path=None,
         on_log=on_log,
     )
@@ -2752,6 +2767,7 @@ def _reset_downstream_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
+        runtime_vars=None,
         connections_path=None,
         on_log=on_log,
     )
@@ -2983,6 +2999,7 @@ def _reset_upstream_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
+        runtime_vars=None,
         connections_path=None,
         on_log=on_log,
     )
@@ -3083,6 +3100,7 @@ def _reset_all_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
+        runtime_vars=None,
         connections_path=None,
         on_log=on_log,
     )
@@ -3147,6 +3165,7 @@ def list_existing_outputs_for_file(
     config_path: str | Path | None = None,
     connections_path: str | Path | None = None,
     runtime_bindings: dict[str, Any] | None = None,
+    runtime_vars: dict[str, Any] | None = None,
     target: str | None = None,
     artifact_path: str | Path | None = None,
 ) -> tuple[CompiledPipeline, list[str], str]:
@@ -3167,6 +3186,7 @@ def list_existing_outputs_for_file(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
+        runtime_vars=runtime_vars,
         connections_path=connections_path,
         on_log=None,
     )

@@ -699,6 +699,7 @@ def ingest_query_to_duckdb(
     source_connection_id: str,
     duckdb_connection_id: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     target_table: str,
     replace: bool,
     chunk_size: int,
@@ -725,7 +726,10 @@ def ingest_query_to_duckdb(
         if on_interrupt_open is not None:
             source_interruptor, source_interrupt_state = _build_db2_interruptor(source_conn, source_cur)
             source_interrupt_token = on_interrupt_open(source_interruptor)
-        source_cur.execute(sql)
+        if sql_params:
+            source_cur.execute(sql, tuple(sql_params))
+        else:
+            source_cur.execute(sql)
 
         if source_cur.description is None:
             raise RuntimeError("Source query did not return a result set.")
@@ -814,6 +818,7 @@ def egress_query_from_duckdb(
     target_connection_id: str,
     duckdb_database: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     target_table: str,
     mode: str = "replace",
     chunk_size: int = 1000,
@@ -859,7 +864,7 @@ def egress_query_from_duckdb(
         if on_interrupt_open is not None:
             duck_interrupt_token = on_interrupt_open(_build_duckdb_interruptor(duck_conn))
         duck_cur = duck_conn.cursor()
-        duck_cur.execute(_strip_sql_terminator(sql))
+        duck_cur.execute(_strip_sql_terminator(sql), list(sql_params or []))
         if duck_cur.description is None:
             raise RuntimeError("DuckDB egress query did not return a result set.")
         column_meta = _duckdb_column_meta_from_cursor(duck_cur)

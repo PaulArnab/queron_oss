@@ -15,6 +15,7 @@ OnWarningPolicy = Literal["continue"]
 DownstreamHardFailurePolicy = Literal["skip"]
 LogSeverity = Literal["debug", "info", "warning", "error"]
 LogSource = Literal["queron", "connector", "driver", "app", "cli"]
+VarUsageKind = Literal["scalar", "list"]
 
 
 class WarningCode:
@@ -357,6 +358,14 @@ class NodeStateRecord(BaseModel):
     details_json: dict[str, Any] = Field(default_factory=dict)
 
 
+class PipelineVarRecord(BaseModel):
+    name: str = Field(min_length=1)
+    kind: VarUsageKind = "scalar"
+    required: bool = True
+    default: Any | None = None
+    used_in_nodes: list[str] = Field(default_factory=list)
+
+
 class CompiledContractRecord(BaseModel):
     compile_id: str | None = None
     pipeline_id: str = Field(min_length=1)
@@ -375,6 +384,7 @@ class CompiledContractRecord(BaseModel):
     edges_json: list[list[str]] = Field(default_factory=list)
     tracked_files_json: list[dict[str, Any]] = Field(default_factory=list)
     external_dependencies_json: list[dict[str, Any]] = Field(default_factory=list)
+    vars_json: list[PipelineVarRecord] = Field(default_factory=list)
     spec_json: dict[str, Any] = Field(default_factory=dict)
     diagnostics_json: list[dict[str, Any]] = Field(default_factory=list)
 

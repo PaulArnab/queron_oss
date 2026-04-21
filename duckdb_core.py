@@ -527,9 +527,10 @@ def _resolve_export_path(path: str, *, working_dir: str | None = None) -> Path:
     return resolved
 
 
-def _load_query_row_count(conn, *, sql: str) -> int:
+def _load_query_row_count(conn, *, sql: str, sql_params: list[Any] | None = None) -> int:
     row = conn.execute(
-        f"SELECT COUNT(*) FROM ({_strip_sql_terminator(sql)}) AS queron_export_count"
+        f"SELECT COUNT(*) FROM ({_strip_sql_terminator(sql)}) AS queron_export_count",
+        list(sql_params or []),
     ).fetchone()
     if not row:
         return 0
@@ -1009,6 +1010,7 @@ def _compiled_contracts_create_sql(*, table_name: str) -> str:
             edges_json VARCHAR,
             tracked_files_json VARCHAR,
             external_dependencies_json VARCHAR,
+            vars_json VARCHAR,
             spec_json VARCHAR,
             diagnostics_json VARCHAR
         )
@@ -1128,6 +1130,10 @@ def _ensure_queron_meta_tables(conn) -> None:
         pass
     try:
         conn.execute(f"ALTER TABLE {node_runs_name} ADD COLUMN IF NOT EXISTS details_json VARCHAR")
+    except Exception:
+        pass
+    try:
+        conn.execute(f"ALTER TABLE {compiled_contracts_name} ADD COLUMN IF NOT EXISTS vars_json VARCHAR")
     except Exception:
         pass
     _migrate_table_if_needed(
@@ -1425,9 +1431,10 @@ def _persist_compiled_contract(
             edges_json,
             tracked_files_json,
             external_dependencies_json,
+            vars_json,
             spec_json,
             diagnostics_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             compile_id,
@@ -1447,6 +1454,7 @@ def _persist_compiled_contract(
             json.dumps(item.edges_json),
             json.dumps(item.tracked_files_json),
             json.dumps(item.external_dependencies_json),
+            json.dumps([entry.model_dump() for entry in item.vars_json]),
             json.dumps(item.spec_json),
             json.dumps(item.diagnostics_json),
         ),
@@ -1794,6 +1802,7 @@ def load_active_compiled_contract(
                 edges_json,
                 tracked_files_json,
                 external_dependencies_json,
+                vars_json,
                 spec_json,
                 diagnostics_json
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('compiled_contracts')}
@@ -1839,8 +1848,9 @@ def load_active_compiled_contract(
         edges_json=_load_json_list(row[14]),
         tracked_files_json=_load_json_list(row[15]),
         external_dependencies_json=_load_json_list(row[16]),
-        spec_json=_load_json_dict(row[17]),
-        diagnostics_json=_load_json_list(row[18]),
+        vars_json=_load_json_list(row[17]),
+        spec_json=_load_json_dict(row[18]),
+        diagnostics_json=_load_json_list(row[19]),
     )
 
 
@@ -1877,6 +1887,7 @@ def load_compiled_contract_by_id(
                 edges_json,
                 tracked_files_json,
                 external_dependencies_json,
+                vars_json,
                 spec_json,
                 diagnostics_json
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('compiled_contracts')}
@@ -1922,8 +1933,9 @@ def load_compiled_contract_by_id(
         edges_json=_load_json_list(row[14]),
         tracked_files_json=_load_json_list(row[15]),
         external_dependencies_json=_load_json_list(row[16]),
-        spec_json=_load_json_dict(row[17]),
-        diagnostics_json=_load_json_list(row[18]),
+        vars_json=_load_json_list(row[17]),
+        spec_json=_load_json_dict(row[18]),
+        diagnostics_json=_load_json_list(row[19]),
     )
 
 
@@ -2067,6 +2079,7 @@ def materialize_egress_artifact(
     *,
     database: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     target_table: str,
     replace: bool = True,
     on_interrupt_open: Any = None,
@@ -2085,7 +2098,10 @@ def materialize_egress_artifact(
         target_ident = _quote_compound_identifier(normalized_target)
         if replace:
             conn.execute(f"DROP TABLE IF EXISTS {target_ident}")
-        conn.execute(f"CREATE TABLE {target_ident} AS {_strip_sql_terminator(sql)}")
+        conn.execute(
+            f"CREATE TABLE {target_ident} AS SELECT * FROM ({_strip_sql_terminator(sql)}) AS queron_runtime_egress",
+            list(sql_params or []),
+        )
         row = conn.execute(f"SELECT COUNT(*) FROM {target_ident}").fetchone()
     finally:
         if callable(on_interrupt_close):
@@ -2098,6 +2114,7 @@ def export_query_to_parquet_with_artifact(
     *,
     database: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     output_path: str,
     target_table: str,
     overwrite: bool = False,
@@ -2109,6 +2126,7 @@ def export_query_to_parquet_with_artifact(
     materialize_egress_artifact(
         database=database,
         sql=sql,
+        sql_params=sql_params,
         target_table=target_table,
         replace=True,
         on_interrupt_open=on_interrupt_open,
@@ -2131,6 +2149,7 @@ def export_query_to_csv_with_artifact(
     *,
     database: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     output_path: str,
     target_table: str,
     overwrite: bool = False,
@@ -2143,6 +2162,7 @@ def export_query_to_csv_with_artifact(
     materialize_egress_artifact(
         database=database,
         sql=sql,
+        sql_params=sql_params,
         target_table=target_table,
         replace=True,
         on_interrupt_open=on_interrupt_open,
@@ -2166,6 +2186,7 @@ def export_query_to_jsonl_with_artifact(
     *,
     database: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     output_path: str,
     target_table: str,
     overwrite: bool = False,
@@ -2176,6 +2197,7 @@ def export_query_to_jsonl_with_artifact(
     materialize_egress_artifact(
         database=database,
         sql=sql,
+        sql_params=sql_params,
         target_table=target_table,
         replace=True,
         on_interrupt_open=on_interrupt_open,
@@ -2197,6 +2219,7 @@ def export_query_to_parquet(
     *,
     database: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     output_path: str,
     overwrite: bool = False,
     compression: str | None = None,
@@ -2214,13 +2237,13 @@ def export_query_to_parquet(
             if not overwrite:
                 raise RuntimeError(f"Export path '{resolved_output_path}' already exists.")
             resolved_output_path.unlink()
-        row_count = _load_query_row_count(conn, sql=sql)
+        row_count = _load_query_row_count(conn, sql=sql, sql_params=sql_params)
         options = ["FORMAT PARQUET"]
         if compression is not None:
             options.append(f"COMPRESSION '{_sanitize_copy_option_token(compression, label='Parquet compression')}'")
         conn.execute(
             f"COPY ({_strip_sql_terminator(sql)}) TO ? ({', '.join(options)})",
-            (str(resolved_output_path),),
+            [*list(sql_params or []), str(resolved_output_path)],
         )
     finally:
         if callable(on_interrupt_close):
@@ -2239,6 +2262,7 @@ def export_query_to_csv(
     *,
     database: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     output_path: str,
     overwrite: bool = False,
     header: bool = True,
@@ -2260,14 +2284,14 @@ def export_query_to_csv(
             if not overwrite:
                 raise RuntimeError(f"Export path '{resolved_output_path}' already exists.")
             resolved_output_path.unlink()
-        row_count = _load_query_row_count(conn, sql=sql)
+        row_count = _load_query_row_count(conn, sql=sql, sql_params=sql_params)
         escaped_delim = delim.replace("'", "''")
         conn.execute(
             (
                 f"COPY ({_strip_sql_terminator(sql)}) TO ? "
                 f"(FORMAT CSV, HEADER {'TRUE' if header else 'FALSE'}, DELIMITER '{escaped_delim}')"
             ),
-            (str(resolved_output_path),),
+            [*list(sql_params or []), str(resolved_output_path)],
         )
     finally:
         if callable(on_interrupt_close):
@@ -2286,6 +2310,7 @@ def export_query_to_jsonl(
     *,
     database: str,
     sql: str,
+    sql_params: list[Any] | None = None,
     output_path: str,
     overwrite: bool = False,
     working_dir: str | None = None,
@@ -2340,10 +2365,10 @@ def export_query_to_json(
             if not overwrite:
                 raise RuntimeError(f"Export path '{resolved_output_path}' already exists.")
             resolved_output_path.unlink()
-        row_count = _load_query_row_count(conn, sql=sql)
+        row_count = _load_query_row_count(conn, sql=sql, sql_params=sql_params)
         conn.execute(
             f"COPY ({_strip_sql_terminator(sql)}) TO ? (FORMAT JSON, ARRAY true)",
-            (str(resolved_output_path),),
+            [*list(sql_params or []), str(resolved_output_path)],
         )
     finally:
         if callable(on_interrupt_close):

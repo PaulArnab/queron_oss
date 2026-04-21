@@ -10,7 +10,7 @@ import {
 } from "@xyflow/react";
 import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown, Square, Terminal, Download } from "lucide-react";
+import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown, Square, Terminal, Download, Braces } from "lucide-react";
 import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
 import "ag-grid-community/styles/ag-grid.css";
@@ -1703,10 +1703,55 @@ function PipelineLogsPanel({
   );
 }
 
+function RuntimeVarsPanel({
+  open,
+  onClose,
+  value,
+  onChange,
+  pipelineId = null,
+  error = "",
+}) {
+  if (!open) return null;
+  return (
+    <div className="pointer-events-none fixed inset-y-0 right-0 z-40 flex">
+      <div className="pointer-events-auto h-full w-[560px] max-w-[92vw] border-l border-slate-200 bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Runtime Vars</div>
+            <div className="mt-1 truncate text-[12px] font-medium text-slate-700">{pipelineId || "-"}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+          >
+            <X size={14} strokeWidth={2.25} />
+            <span>Close</span>
+          </button>
+        </div>
+        <div className="flex h-[calc(100%-61px)] flex-col gap-3 px-4 py-3">
+          <div className="text-[12px] text-slate-500">
+            Enter a JSON object. Example: <span className="font-mono">{"{\"states\":[\"TX\",\"CA\"],\"start_date\":\"2026-01-02\"}"}</span>
+          </div>
+          <textarea
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            spellCheck={false}
+            className="min-h-0 flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 font-mono text-[12px] leading-5 text-slate-700 outline-none transition focus:border-slate-300 focus:bg-white"
+            placeholder="{}"
+          />
+          {error ? <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">{error}</div> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GraphCanvas({
   graphData,
   graphLoading,
   graphError,
+  layoutVersion,
   selectedNodeId,
   onSelectNode,
   sheetOpen,
@@ -1739,7 +1784,7 @@ function GraphCanvas({
     }));
     const baseEdges = liveEdges.map(([source, target]) => buildFlowEdgeFromApi(source, target, nodeById));
     return layoutElements(baseNodes, baseEdges);
-  }, [graphData, selectedNodeId]);
+  }, [graphData, layoutVersion, selectedNodeId]);
 
   return (
     <div className="relative h-full w-full overflow-hidden">
@@ -2044,6 +2089,10 @@ export default function App() {
   const [pipelineLogs, setPipelineLogs] = useState([]);
   const [pipelineLogsLoading, setPipelineLogsLoading] = useState(false);
   const [pipelineLogsError, setPipelineLogsError] = useState("");
+  const [runtimeVarsOpen, setRuntimeVarsOpen] = useState(false);
+  const [runtimeVarsText, setRuntimeVarsText] = useState("{}");
+  const [runtimeVarsError, setRuntimeVarsError] = useState("");
+  const [layoutVersion, setLayoutVersion] = useState(0);
   const [runOptions, setRunOptions] = useState([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [runMenuOpen, setRunMenuOpen] = useState(false);
@@ -2069,6 +2118,10 @@ export default function App() {
   const sheetOpenRef = useRef(false);
   const activeTabRef = useRef("query");
   const artifactPageOpenRef = useRef(false);
+  const runtimeVarsStorageKey = useMemo(() => {
+    const pipelineId = String(graphData?.pipeline_id || "").trim();
+    return pipelineId ? `queron.runtimeVars.${pipelineId}` : "";
+  }, [graphData?.pipeline_id]);
 
   function buildRunScopedPath(path, params = {}) {
     const search = new URLSearchParams();
@@ -2365,6 +2418,21 @@ export default function App() {
   }, [artifactPageOpen]);
 
   useEffect(() => {
+    if (!runtimeVarsStorageKey) return;
+    try {
+      const stored = window.localStorage.getItem(runtimeVarsStorageKey);
+      if (stored !== null) {
+        setRuntimeVarsText(stored);
+        setRuntimeVarsError("");
+      } else {
+        setRuntimeVarsText("{}");
+      }
+    } catch (_error) {
+      setRuntimeVarsText("{}");
+    }
+  }, [runtimeVarsStorageKey]);
+
+  useEffect(() => {
     if (!pipelineLogsOpen) return;
     void loadPipelineLogs();
   }, [pipelineLogsOpen, selectedRunId]);
@@ -2387,6 +2455,11 @@ export default function App() {
         if (String(payload.code || "").trim().toLowerCase() === "pipeline_execution_started") {
           setArtifactPreview(null);
           setArtifactPreviewError("");
+          if (!String(selectedRunIdRef.current || "").trim()) {
+            window.setTimeout(() => {
+              void refreshGraphAndDrawer({ refreshActiveTab: true, showPageRefresh: false });
+            }, 0);
+          }
         }
 
         const code = String(payload.code || "").trim().toLowerCase();
@@ -2443,11 +2516,31 @@ export default function App() {
     await ensurePanelTabLoaded(nextTab);
   }
 
+  function parsedRuntimeVarsOrThrow() {
+    const text = String(runtimeVarsText || "").trim();
+    if (!text) return null;
+    let parsed = {};
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      throw new Error(`Runtime vars must be valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Runtime vars must be a JSON object.");
+    }
+    return parsed;
+  }
+
   async function runAction(endpoint, nodeName = "") {
     setPendingAction(endpoint);
     setActionError("");
+    setRuntimeVarsError("");
     try {
-      const requestBody = nodeName ? { node_name: nodeName } : {};
+      const runtimeVars = endpoint === "/api/run" || endpoint === "/api/resume" ? parsedRuntimeVarsOrThrow() : null;
+      const requestBody = {
+        ...(nodeName ? { node_name: nodeName } : {}),
+        ...((endpoint === "/api/run" || endpoint === "/api/resume") ? { runtime_vars: runtimeVars } : {}),
+      };
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2465,7 +2558,7 @@ export default function App() {
           const cleanResponse = await fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ clean_existing: true }),
+            body: JSON.stringify({ clean_existing: true, runtime_vars: runtimeVars }),
           });
           const cleanPayload = await cleanResponse.json();
           if (!cleanResponse.ok || cleanPayload.ok === false) {
@@ -2473,6 +2566,13 @@ export default function App() {
           }
         } else {
           throw new Error(payload.error || "Action failed.");
+        }
+      }
+      if ((endpoint === "/api/run" || endpoint === "/api/resume") && runtimeVarsStorageKey) {
+        try {
+          window.localStorage.setItem(runtimeVarsStorageKey, String(runtimeVarsText || "{}"));
+        } catch (_error) {
+          // Ignore local storage failures.
         }
       }
       if (endpoint === "/api/stop") {
@@ -2485,7 +2585,11 @@ export default function App() {
         await refreshGraphAndDrawer();
       }
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (endpoint === "/api/run" || endpoint === "/api/resume") {
+        setRuntimeVarsError(message);
+      }
+      setActionError(message);
     } finally {
       setPendingAction("");
     }
@@ -2705,6 +2809,7 @@ export default function App() {
                           {runOptions.map((item) => {
                             const runId = String(item?.run_id || "").trim();
                             if (!runId) return null;
+                            if (runId === String(graphData?.run_id || "").trim()) return null;
                             const runLabel = String(item?.run_label || "").trim();
                             const label = runLabel ? `${runId} • ${runLabel}` : runId;
                             const isSelected = runId === selectedRunId;
@@ -2787,6 +2892,24 @@ export default function App() {
               <div className="mx-1 h-6 w-px bg-slate-200" aria-hidden="true" />
               <button
                 type="button"
+                onClick={() => setRuntimeVarsOpen(true)}
+                title="Runtime Vars"
+                aria-label="Runtime Vars"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-[12px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+              >
+                <Braces size={15} strokeWidth={1.9} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setLayoutVersion((current) => current + 1)}
+                title="Re-evaluate Layout"
+                aria-label="Re-evaluate Layout"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-[12px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+              >
+                <RefreshCw size={15} strokeWidth={1.9} />
+              </button>
+              <button
+                type="button"
                 onClick={() => {
                   setArtifactPageOpen(true);
                   void loadArtifactList();
@@ -2822,6 +2945,7 @@ export default function App() {
             graphData={graphData}
             graphLoading={graphLoading}
             graphError={graphError}
+            layoutVersion={layoutVersion}
             selectedNodeId={selectedNodeId}
             onSelectNode={handleSelectNode}
             sheetOpen={sheetOpen}
@@ -2876,6 +3000,17 @@ export default function App() {
           error={pipelineLogsError}
           runId={selectedRunOption?.run_id || graphData?.run_id || null}
           runLabel={selectedRunOption?.run_label || graphData?.run_label || null}
+        />
+        <RuntimeVarsPanel
+          open={runtimeVarsOpen}
+          onClose={() => setRuntimeVarsOpen(false)}
+          value={runtimeVarsText}
+          onChange={(nextValue) => {
+            setRuntimeVarsText(nextValue);
+            setRuntimeVarsError("");
+          }}
+          pipelineId={graphData?.pipeline_id || null}
+          error={runtimeVarsError}
         />
     </div>
   );

@@ -32,6 +32,37 @@ from .api import (
 from .runtime_models import format_log_event
 
 
+def _load_runtime_vars(
+    *,
+    vars_json: str | None,
+    vars_file: str | None,
+) -> dict[str, Any] | None:
+    raw_json = str(vars_json or "").strip()
+    raw_file = str(vars_file or "").strip()
+    if raw_json and raw_file:
+        raise RuntimeError("Use either --vars-json or --vars-file, not both.")
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+        except Exception as exc:
+            raise RuntimeError(f"--vars-json is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError("--vars-json must decode to an object.")
+        return {str(key): value for key, value in parsed.items()}
+    if raw_file:
+        resolved = Path(raw_file).expanduser().resolve()
+        if not resolved.exists() or not resolved.is_file():
+            raise RuntimeError(f"Runtime vars file '{resolved}' was not found.")
+        try:
+            parsed = json.loads(resolved.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"Runtime vars file '{resolved}' is not valid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise RuntimeError(f"Runtime vars file '{resolved}' must contain a JSON object.")
+        return {str(key): value for key, value in parsed.items()}
+    return None
+
+
 def _load_pipeline_namespace(pipeline_path: str | Path) -> dict[str, Any]:
     namespace: dict[str, Any] = {"__name__": "__queron_cli_pipeline__"}
     resolved = Path(pipeline_path).expanduser().resolve()
@@ -220,6 +251,18 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="stream_logs",
         help="Stream pipeline logs to the console while the run executes.",
     )
+    run_parser.add_argument(
+        "--vars-json",
+        dest="vars_json",
+        default=None,
+        help="Runtime vars as a JSON object string.",
+    )
+    run_parser.add_argument(
+        "--vars-file",
+        dest="vars_file",
+        default=None,
+        help="Path to a JSON file containing runtime vars.",
+    )
     run_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     run_parser.set_defaults(handler=_handle_run)
 
@@ -239,6 +282,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="stream_logs",
         help="Stream pipeline logs to the console while the resume executes.",
+    )
+    resume_parser.add_argument(
+        "--vars-json",
+        dest="vars_json",
+        default=None,
+        help="Runtime vars as a JSON object string.",
+    )
+    resume_parser.add_argument(
+        "--vars-file",
+        dest="vars_file",
+        default=None,
+        help="Path to a JSON file containing runtime vars.",
     )
     resume_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     resume_parser.set_defaults(handler=_handle_resume)
@@ -668,7 +723,17 @@ def _handle_run(args: argparse.Namespace) -> int:
         sys.stderr.write(format_log_event(event))
         sys.stderr.flush()
 
-    runtime_bindings = _runtime_bindings_from_file(args.pipeline)
+    try:
+        runtime_bindings = _runtime_bindings_from_file(args.pipeline)
+        runtime_vars = _load_runtime_vars(
+            vars_json=getattr(args, "vars_json", None),
+            vars_file=getattr(args, "vars_file", None),
+        )
+    except Exception as exc:
+        if args.json_output:
+            return _emit_json({"ok": False, "error": str(exc)})
+        print(f"Run failed: {exc}", file=sys.stderr)
+        return 1
     requires_full_purge = args.target_node is None
     if requires_full_purge and not bool(getattr(args, "clean_existing", False)):
         compiled, existing_outputs, artifact_path = list_existing_outputs_for_file(
@@ -676,6 +741,7 @@ def _handle_run(args: argparse.Namespace) -> int:
             config_path=args.config_path,
             connections_path=args.connections_path,
             runtime_bindings=runtime_bindings,
+            runtime_vars=runtime_vars,
             target=args.target,
         )
         if has_compile_errors(compiled):
@@ -720,6 +786,7 @@ def _handle_run(args: argparse.Namespace) -> int:
             config_path=args.config_path,
             connections_path=args.connections_path,
             runtime_bindings=runtime_bindings,
+            runtime_vars=runtime_vars,
             target=args.target,
             target_node=args.target_node,
             clean_existing=bool(args.clean_existing or requires_full_purge),
@@ -766,13 +833,24 @@ def _handle_resume(args: argparse.Namespace) -> int:
         sys.stderr.write(format_log_event(event))
         sys.stderr.flush()
 
-    runtime_bindings = _runtime_bindings_from_file(args.pipeline)
+    try:
+        runtime_bindings = _runtime_bindings_from_file(args.pipeline)
+        runtime_vars = _load_runtime_vars(
+            vars_json=getattr(args, "vars_json", None),
+            vars_file=getattr(args, "vars_file", None),
+        )
+    except Exception as exc:
+        if args.json_output:
+            return _emit_json({"ok": False, "error": str(exc)})
+        print(f"Resume failed: {exc}", file=sys.stderr)
+        return 1
     try:
         result = resume_pipeline(
             args.pipeline,
             config_path=args.config_path,
             connections_path=args.connections_path,
             runtime_bindings=runtime_bindings,
+            runtime_vars=runtime_vars,
             target=args.target,
             on_log=_log if bool(getattr(args, "stream_logs", False)) and not args.json_output else None,
         )
