@@ -6,6 +6,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 from queue import Empty, Queue
+import tempfile
 import threading
 from datetime import date, datetime, time
 from typing import Any
@@ -193,6 +194,96 @@ def _execute_artifact_query(database_path: str | Path, sql: str) -> dict[str, An
         }
     finally:
         conn.close()
+
+
+def _artifact_query_context(
+    artifact_path: str | Path,
+    node_name: str,
+    *,
+    sql: str,
+    run_id: str | None = None,
+    run_label: str | None = None,
+) -> dict[str, Any]:
+    selected = _selected_node_artifact_record(
+        artifact_path,
+        node_name,
+        run_id=run_id,
+        run_label=run_label,
+    )
+    validated_sql = _validate_read_only_sql(sql).replace(
+        "{{artifact}}",
+        _qualified_artifact_name(selected["artifact_name"]),
+    )
+    return {
+        **selected,
+        "sql": validated_sql,
+    }
+
+
+def _download_filename(*, node_name: str, run_id: str | None, export_format: str) -> str:
+    extension = "json" if export_format == "json" else export_format
+    suffix = f"_{str(run_id).strip()}" if str(run_id or "").strip() else ""
+    return f"{str(node_name or 'artifact').strip()}{suffix}.{extension}"
+
+
+def export_node_artifact_query_panel(
+    artifact_path: str | Path,
+    node_name: str,
+    *,
+    sql: str,
+    format: str,
+    run_id: str | None = None,
+    run_label: str | None = None,
+) -> dict[str, Any]:
+    query_context = _artifact_query_context(
+        artifact_path,
+        node_name,
+        sql=sql,
+        run_id=run_id,
+        run_label=run_label,
+    )
+    export_format = str(format or "").strip().lower()
+    if export_format not in {"csv", "parquet", "json"}:
+        raise RuntimeError("format must be one of: csv, parquet, json.")
+
+    import duckdb_core
+
+    temp_dir = Path(tempfile.gettempdir()).resolve()
+    output_path = temp_dir / f"queron_graph_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.{ 'json' if export_format == 'json' else export_format }"
+    try:
+        if export_format == "csv":
+            export = duckdb_core.export_query_to_csv(
+                database=query_context["artifact_path"],
+                sql=query_context["sql"],
+                output_path=str(output_path),
+                overwrite=True,
+            )
+            content_type = "text/csv; charset=utf-8"
+        elif export_format == "parquet":
+            export = duckdb_core.export_query_to_parquet(
+                database=query_context["artifact_path"],
+                sql=query_context["sql"],
+                output_path=str(output_path),
+                overwrite=True,
+            )
+            content_type = "application/octet-stream"
+        else:
+            export = duckdb_core.export_query_to_json(
+                database=query_context["artifact_path"],
+                sql=query_context["sql"],
+                output_path=str(output_path),
+                overwrite=True,
+            )
+            content_type = "application/json; charset=utf-8"
+        file_bytes = Path(export.output_path).read_bytes()
+        return {
+            "filename": _download_filename(node_name=node_name, run_id=query_context["run_id"], export_format=export_format),
+            "content_type": content_type,
+            "body": file_bytes,
+        }
+    finally:
+        if output_path.exists():
+            output_path.unlink(missing_ok=True)
 
 
 def get_graph_panel(
@@ -478,12 +569,7 @@ def get_node_artifact_preview_panel(
     run_label: str | None = None,
     limit: int = 5,
     ) -> dict[str, Any]:
-    selected = _selected_node_artifact_record(
-        artifact_path,
-        node_name,
-        run_id=run_id,
-        run_label=run_label,
-    )
+    selected = _selected_node_artifact_record(artifact_path, node_name, run_id=run_id, run_label=run_label)
     query_result = _execute_artifact_query(
         selected["artifact_path"],
         _artifact_preview_query(selected["artifact_name"], limit=limit),
@@ -509,27 +595,24 @@ def query_node_artifact_panel(
     run_id: str | None = None,
     run_label: str | None = None,
 ) -> dict[str, Any]:
-    selected = _selected_node_artifact_record(
+    query_context = _artifact_query_context(
         artifact_path,
         node_name,
+        sql=sql,
         run_id=run_id,
         run_label=run_label,
     )
-    validated_sql = _validate_read_only_sql(sql).replace(
-        "{{artifact}}",
-        _qualified_artifact_name(selected["artifact_name"]),
-    )
-    query_result = _execute_artifact_query(selected["artifact_path"], validated_sql)
+    query_result = _execute_artifact_query(query_context["artifact_path"], query_context["sql"])
     return {
         "ok": True,
         "node_name": node_name,
-        "run_id": selected["run_id"],
-        "run_label": selected["run_label"],
-        "run_status": selected["run_status"],
-        "artifact_path": selected["artifact_path"],
-        "artifact_name": selected["artifact_name"],
-        "logical_artifact": selected["logical_artifact"],
-        "sql": validated_sql,
+        "run_id": query_context["run_id"],
+        "run_label": query_context["run_label"],
+        "run_status": query_context["run_status"],
+        "artifact_path": query_context["artifact_path"],
+        "artifact_name": query_context["artifact_name"],
+        "logical_artifact": query_context["logical_artifact"],
+        "sql": query_context["sql"],
         **query_result,
     }
 
@@ -744,6 +827,14 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _write_download(self, *, body: bytes, content_type: str, filename: str, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -1008,6 +1099,28 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
                         run_id=run_id,
                         run_label=run_label,
                     )
+                )
+                return
+            if parsed.path == "/api/node/artifact-download":
+                node_name = str(payload.get("node_name") or "").strip()
+                if not node_name:
+                    raise RuntimeError("node_name is required.")
+                sql = str(payload.get("sql") or "").strip()
+                run_id = str(payload.get("run_id") or "").strip() or None
+                run_label = str(payload.get("run_label") or "").strip() or None
+                export_format = str(payload.get("format") or "csv").strip() or "csv"
+                download = export_node_artifact_query_panel(
+                    context.artifact_path,
+                    node_name,
+                    sql=sql,
+                    run_id=run_id,
+                    run_label=run_label,
+                    format=export_format,
+                )
+                self._write_download(
+                    body=download["body"],
+                    content_type=str(download["content_type"]),
+                    filename=str(download["filename"]),
                 )
                 return
             self._write_json({"ok": False, "error": "not_found"}, status=404)

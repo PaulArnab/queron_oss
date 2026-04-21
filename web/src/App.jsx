@@ -10,7 +10,7 @@ import {
 } from "@xyflow/react";
 import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown, Square, Terminal } from "lucide-react";
+import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown, Square, Terminal, Download } from "lucide-react";
 import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
 import "ag-grid-community/styles/ag-grid.css";
@@ -1795,6 +1795,7 @@ function ArtifactExplorerPage({
   onQueryChange,
   onClose,
   onExecute,
+  onDownload,
   result,
   loading = false,
   error,
@@ -1837,6 +1838,15 @@ function ArtifactExplorerPage({
               className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
             >
               <Play size={16} strokeWidth={1.9} />
+            </button>
+            <button
+              type="button"
+              onClick={onDownload}
+              title="Download query result"
+              aria-label="Download query result"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+            >
+              <Download size={16} strokeWidth={1.9} />
             </button>
             <button
               type="button"
@@ -2602,6 +2612,50 @@ export default function App() {
     }
   };
 
+  const downloadArtifactQuery = async (format = "csv") => {
+    if (!selectedNodeId) {
+      setArtifactError("Select a node with a materialized artifact first.");
+      return;
+    }
+    try {
+      const sqlToExecute = lastArtifactQueryStatement(artifactQuery);
+      if (!sqlToExecute) {
+        throw new Error("Write a query first.");
+      }
+      const runId = currentRunIdForNodePanel();
+      const response = await fetch("/api/node/artifact-download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_name: selectedNodeId, sql: sqlToExecute, run_id: runId, format }),
+      });
+      if (!response.ok) {
+        let message = "Artifact download failed.";
+        try {
+          const payload = await response.json();
+          message = payload.error || message;
+        } catch (_error) {
+          // Ignore non-JSON error response.
+        }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const match = disposition.match(/filename=\"?([^"]+)\"?/i);
+      const filename = match?.[1] || `query_result.${format}`;
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+      setArtifactError("");
+    } catch (error) {
+      setArtifactError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   return (
     <div className="relative h-screen w-full overflow-hidden bg-slate-100">
       <div className="flex h-full w-full min-h-0 flex-col bg-white">
@@ -2803,6 +2857,7 @@ export default function App() {
           onQueryChange={setArtifactQuery}
           onClose={() => setArtifactPageOpen(false)}
           onExecute={executeArtifactQuery}
+          onDownload={() => void downloadArtifactQuery("csv")}
           result={artifactResult}
           loading={artifactQueryLoading}
           error={artifactError}
