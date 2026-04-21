@@ -58,6 +58,115 @@ def _runtime_bindings_from_file(pipeline_path: str | Path) -> dict[str, Any] | N
     return bindings if isinstance(bindings, dict) else None
 
 
+def _resolve_cli_cwd(cwd: str | Path | None = None) -> Path:
+    return Path(cwd).expanduser().resolve() if cwd is not None else Path.cwd().resolve()
+
+
+def _find_local_pipeline_file(*, cwd: str | Path | None = None, filename: str = "pipeline.py") -> Path:
+    resolved_cwd = _resolve_cli_cwd(cwd)
+    pipeline_path = (resolved_cwd / filename).resolve()
+    if not pipeline_path.exists() or not pipeline_path.is_file():
+        raise RuntimeError(
+            f"No local pipeline file was found at '{pipeline_path}'. Run this command from a pipeline folder or pass explicit selectors."
+        )
+    return pipeline_path
+
+
+def _resolve_local_pipeline_id(*, cwd: str | Path | None = None, filename: str = "pipeline.py") -> str:
+    return _pipeline_id_from_file(_find_local_pipeline_file(cwd=cwd, filename=filename))
+
+
+def _resolve_artifact_path_from_pipeline_id(
+    pipeline_id: str,
+    *,
+    cwd: str | Path | None = None,
+) -> Path:
+    normalized_pipeline_id = str(pipeline_id or "").strip()
+    if not normalized_pipeline_id:
+        raise RuntimeError("pipeline_id is required.")
+    resolved_cwd = _resolve_cli_cwd(cwd)
+    artifact_path = (resolved_cwd / ".queron" / normalized_pipeline_id / "artifact.duckdb").resolve()
+    if not artifact_path.exists() or not artifact_path.is_file():
+        raise RuntimeError(
+            f"Artifact database '{artifact_path}' was not found. Compile or run the local pipeline first, or check --pipeline-id."
+        )
+    return artifact_path
+
+
+def _resolve_latest_run_id_for_pipeline(artifact_path: str | Path) -> str | None:
+    _resolved_artifact_path, _active_contract, runs = _inspect_pipeline_runs(artifact_path, limit=1)
+    if not runs:
+        return None
+    latest_run_id = str(runs[0].get("run_id") or "").strip()
+    return latest_run_id or None
+
+
+def _resolve_cli_pipeline_and_run(
+    *,
+    pipeline_id: str | None = None,
+    run_id: str | None = None,
+    cwd: str | Path | None = None,
+    filename: str = "pipeline.py",
+) -> dict[str, Any]:
+    explicit_pipeline_id = str(pipeline_id or "").strip() or None
+    explicit_run_id = str(run_id or "").strip() or None
+    local_pipeline_path: Path | None = None
+    if explicit_pipeline_id is None:
+        local_pipeline_path = _find_local_pipeline_file(cwd=cwd, filename=filename)
+        resolved_pipeline_id = _pipeline_id_from_file(local_pipeline_path)
+        artifact_root = local_pipeline_path.parent
+    else:
+        if not explicit_run_id:
+            raise RuntimeError("--run-id is required when --pipeline-id is passed explicitly.")
+        resolved_pipeline_id = explicit_pipeline_id
+        artifact_root = _resolve_cli_cwd(cwd)
+    artifact_path = _resolve_artifact_path_from_pipeline_id(resolved_pipeline_id, cwd=artifact_root)
+    selected_run_id = explicit_run_id or _resolve_latest_run_id_for_pipeline(artifact_path)
+    return {
+        "pipeline_path": str(local_pipeline_path) if local_pipeline_path is not None else None,
+        "pipeline_id": resolved_pipeline_id,
+        "artifact_path": str(artifact_path),
+        "run_id": selected_run_id,
+    }
+
+
+def _resolve_cli_pipeline_artifact(
+    *,
+    pipeline_id: str | None = None,
+    cwd: str | Path | None = None,
+    filename: str = "pipeline.py",
+) -> dict[str, Any]:
+    explicit_pipeline_id = str(pipeline_id or "").strip() or None
+    local_pipeline_path: Path | None = None
+    if explicit_pipeline_id is None:
+        local_pipeline_path = _find_local_pipeline_file(cwd=cwd, filename=filename)
+        resolved_pipeline_id = _pipeline_id_from_file(local_pipeline_path)
+        artifact_root = local_pipeline_path.parent
+    else:
+        resolved_pipeline_id = explicit_pipeline_id
+        artifact_root = _resolve_cli_cwd(cwd)
+    artifact_path = _resolve_artifact_path_from_pipeline_id(resolved_pipeline_id, cwd=artifact_root)
+    return {
+        "pipeline_path": str(local_pipeline_path) if local_pipeline_path is not None else None,
+        "pipeline_id": resolved_pipeline_id,
+        "artifact_path": str(artifact_path),
+    }
+
+
+def _resolve_cli_run_selector(args: argparse.Namespace) -> dict[str, Any]:
+    run_label = str(getattr(args, "run_label", None) or "").strip() or None
+    resolved = _resolve_cli_pipeline_and_run(
+        pipeline_id=getattr(args, "pipeline_id", None),
+        run_id=getattr(args, "run_id", None),
+    )
+    selected_run_id = getattr(args, "run_id", None) or (None if run_label else resolved["run_id"])
+    return {
+        **resolved,
+        "selected_run_id": selected_run_id,
+        "selected_run_label": run_label,
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="queron", description="Compile and run Queron OSS pipelines.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -207,7 +316,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_runs",
         help="List recorded runs for one pipeline artifact database.",
     )
-    inspect_runs_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
+    _add_pipeline_selector_flags(inspect_runs_parser, include_run_id=False, include_run_label=False, action_label="inspect")
     inspect_runs_parser.add_argument(
         "--limit",
         dest="limit",
@@ -221,19 +330,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_logs",
         help="Show persisted logs for one pipeline run.",
     )
-    inspect_logs_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
-    inspect_logs_parser.add_argument(
-        "--run-id",
-        dest="run_id",
-        default=None,
-        help="Run ID to inspect. Defaults to the latest run when omitted.",
-    )
-    inspect_logs_parser.add_argument(
-        "--run-label",
-        dest="run_label",
-        default=None,
-        help="Unique run label to inspect within this pipeline.",
-    )
+    _add_pipeline_selector_flags(inspect_logs_parser, include_run_id=True, include_run_label=True, action_label="inspect")
     inspect_logs_parser.add_argument(
         "--tail",
         dest="tail",
@@ -254,39 +351,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_dag",
         help="Show the compiled DAG and the current node state view for one pipeline run.",
     )
-    inspect_dag_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
-    inspect_dag_parser.add_argument(
-        "--run-id",
-        dest="run_id",
-        default=None,
-        help="Run ID to inspect. Defaults to the latest run when omitted.",
-    )
-    inspect_dag_parser.add_argument(
-        "--run-label",
-        dest="run_label",
-        default=None,
-        help="Unique run label to inspect within this pipeline.",
-    )
+    _add_pipeline_selector_flags(inspect_dag_parser, include_run_id=True, include_run_label=True, action_label="inspect")
     inspect_dag_parser.set_defaults(handler=_handle_inspect_dag)
 
     inspect_node_parser = subparsers.add_parser(
         "inspect_node",
         help="Show one pipeline node or its upstream/downstream slice for a selected run.",
     )
-    inspect_node_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
     inspect_node_parser.add_argument("node_name", help="Pipeline node name to inspect.")
-    inspect_node_parser.add_argument(
-        "--run-id",
-        dest="run_id",
-        default=None,
-        help="Run ID to inspect. Defaults to the latest run when omitted.",
-    )
-    inspect_node_parser.add_argument(
-        "--run-label",
-        dest="run_label",
-        default=None,
-        help="Unique run label to inspect within this pipeline.",
-    )
+    _add_pipeline_selector_flags(inspect_node_parser, include_run_id=True, include_run_label=True, action_label="inspect")
     inspect_node_parser.add_argument(
         "--upstream",
         action="store_true",
@@ -305,40 +378,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_node_history",
         help="Show the state timeline for one pipeline node in a selected run.",
     )
-    inspect_node_history_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
     inspect_node_history_parser.add_argument("node_name", help="Pipeline node name to inspect.")
-    inspect_node_history_parser.add_argument(
-        "--run-id",
-        dest="run_id",
-        default=None,
-        help="Run ID to inspect. Defaults to the latest run when omitted.",
-    )
-    inspect_node_history_parser.add_argument(
-        "--run-label",
-        dest="run_label",
-        default=None,
-        help="Unique run label to inspect within this pipeline.",
-    )
+    _add_pipeline_selector_flags(inspect_node_history_parser, include_run_id=True, include_run_label=True, action_label="inspect")
     inspect_node_history_parser.set_defaults(handler=_handle_inspect_node_history)
 
     inspect_node_logs_parser = subparsers.add_parser(
         "inspect_node_logs",
         help="Show log events for one pipeline node in a selected run.",
     )
-    inspect_node_logs_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
     inspect_node_logs_parser.add_argument("node_name", help="Pipeline node name to inspect.")
-    inspect_node_logs_parser.add_argument(
-        "--run-id",
-        dest="run_id",
-        default=None,
-        help="Run ID to inspect. Defaults to the latest run when omitted.",
-    )
-    inspect_node_logs_parser.add_argument(
-        "--run-label",
-        dest="run_label",
-        default=None,
-        help="Unique run label to inspect within this pipeline.",
-    )
+    _add_pipeline_selector_flags(inspect_node_logs_parser, include_run_id=True, include_run_label=True, action_label="inspect")
     inspect_node_logs_parser.add_argument(
         "--tail",
         dest="tail",
@@ -351,27 +400,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect_node_query",
         help="Show the original and resolved SQL for one pipeline node in a selected run.",
     )
-    inspect_node_query_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
     inspect_node_query_parser.add_argument("node_name", help="Pipeline node name to inspect.")
-    inspect_node_query_parser.add_argument(
-        "--run-id",
-        dest="run_id",
-        default=None,
-        help="Run ID to inspect. Defaults to the latest run when omitted.",
-    )
-    inspect_node_query_parser.add_argument(
-        "--run-label",
-        dest="run_label",
-        default=None,
-        help="Unique run label to inspect within this pipeline.",
-    )
+    _add_pipeline_selector_flags(inspect_node_query_parser, include_run_id=True, include_run_label=True, action_label="inspect")
     inspect_node_query_parser.set_defaults(handler=_handle_inspect_node_query)
 
     export_artifact_parser = subparsers.add_parser(
         "export_artifact",
         help="Export one materialized artifact table to a file.",
     )
-    export_artifact_parser.add_argument("artifact", help="Path to the Queron artifact database to inspect.")
+    _add_pipeline_selector_flags(export_artifact_parser, include_run_id=True, include_run_label=True, action_label="export")
     export_artifact_parser.add_argument(
         "--node-name",
         dest="node_name",
@@ -383,18 +420,6 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="artifact_name",
         default=None,
         help="Physical artifact table name to export, such as main.policy_core.",
-    )
-    export_artifact_parser.add_argument(
-        "--run-id",
-        dest="run_id",
-        default=None,
-        help="Run ID to export from. Defaults to the latest run when omitted.",
-    )
-    export_artifact_parser.add_argument(
-        "--run-label",
-        dest="run_label",
-        default=None,
-        help="Unique run label to export from within this pipeline.",
     )
     export_artifact_parser.add_argument(
         "--format",
@@ -461,6 +486,35 @@ def _add_common_compile_flags(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Override the target environment used for source resolution.",
     )
+
+
+def _add_pipeline_selector_flags(
+    parser: argparse.ArgumentParser,
+    *,
+    include_run_id: bool,
+    include_run_label: bool,
+    action_label: str,
+) -> None:
+    parser.add_argument(
+        "--pipeline-id",
+        dest="pipeline_id",
+        default=None,
+        help=f"Pipeline ID to {action_label}. Defaults to the local pipeline.py in the current folder.",
+    )
+    if include_run_id:
+        parser.add_argument(
+            "--run-id",
+            dest="run_id",
+            default=None,
+            help=f"Run ID to {action_label}. Defaults to the latest run only when pipeline_id is resolved from the local pipeline.",
+        )
+    if include_run_label:
+        parser.add_argument(
+            "--run-label",
+            dest="run_label",
+            default=None,
+            help=f"Unique run label to {action_label} within this pipeline.",
+        )
 
 
 def _pipeline_summary(compiled) -> dict[str, Any]:
@@ -854,8 +908,9 @@ def _handle_inspect_runs(args: argparse.Namespace) -> int:
     try:
         if args.limit is not None and int(args.limit) <= 0:
             raise RuntimeError("--limit must be a positive integer.")
+        resolved = _resolve_cli_pipeline_artifact(pipeline_id=args.pipeline_id)
         artifact_path, active_contract, runs = _inspect_pipeline_runs(
-            args.artifact,
+            resolved["artifact_path"],
             limit=args.limit,
         )
     except Exception as exc:
@@ -883,10 +938,11 @@ def _handle_inspect_runs(args: argparse.Namespace) -> int:
 
 def _handle_inspect_logs(args: argparse.Namespace) -> int:
     try:
+        resolved = _resolve_cli_run_selector(args)
         artifact_path, active_contract, selected_run, lines = _inspect_pipeline_logs(
-            args.artifact,
-            run_id=args.run_id,
-            run_label=args.run_label,
+            resolved["artifact_path"],
+            run_id=resolved["selected_run_id"],
+            run_label=resolved["selected_run_label"],
             tail=args.tail,
         )
     except Exception as exc:
@@ -958,10 +1014,11 @@ def _handle_inspect_logs(args: argparse.Namespace) -> int:
 
 def _handle_inspect_dag(args: argparse.Namespace) -> int:
     try:
+        resolved = _resolve_cli_run_selector(args)
         result = inspect_dag(
-            args.artifact,
-            run_id=args.run_id,
-            run_label=args.run_label,
+            resolved["artifact_path"],
+            run_id=resolved["selected_run_id"],
+            run_label=resolved["selected_run_label"],
         )
     except Exception as exc:
         print(f"Inspect dag failed: {exc}", file=sys.stderr)
@@ -1003,11 +1060,12 @@ def _handle_inspect_dag(args: argparse.Namespace) -> int:
 
 def _handle_inspect_node(args: argparse.Namespace) -> int:
     try:
+        resolved = _resolve_cli_run_selector(args)
         result = inspect_node(
-            args.artifact,
+            resolved["artifact_path"],
             args.node_name,
-            run_id=args.run_id,
-            run_label=args.run_label,
+            run_id=resolved["selected_run_id"],
+            run_label=resolved["selected_run_label"],
             upstream=bool(args.upstream),
             downstream=bool(args.downstream),
         )
@@ -1063,11 +1121,12 @@ def _handle_inspect_node(args: argparse.Namespace) -> int:
 
 def _handle_inspect_node_history(args: argparse.Namespace) -> int:
     try:
+        resolved = _resolve_cli_run_selector(args)
         result = inspect_node_history(
-            args.artifact,
+            resolved["artifact_path"],
             args.node_name,
-            run_id=args.run_id,
-            run_label=args.run_label,
+            run_id=resolved["selected_run_id"],
+            run_label=resolved["selected_run_label"],
         )
     except Exception as exc:
         print(f"Inspect node history failed: {exc}", file=sys.stderr)
@@ -1117,11 +1176,12 @@ def _handle_inspect_node_history(args: argparse.Namespace) -> int:
 
 def _handle_inspect_node_query(args: argparse.Namespace) -> int:
     try:
+        resolved = _resolve_cli_run_selector(args)
         result = inspect_node_query(
-            args.artifact,
+            resolved["artifact_path"],
             args.node_name,
-            run_id=args.run_id,
-            run_label=args.run_label,
+            run_id=resolved["selected_run_id"],
+            run_label=resolved["selected_run_label"],
         )
     except Exception as exc:
         print(f"Inspect node query failed: {exc}", file=sys.stderr)
@@ -1160,11 +1220,12 @@ def _handle_inspect_node_query(args: argparse.Namespace) -> int:
 
 def _handle_inspect_node_logs(args: argparse.Namespace) -> int:
     try:
+        resolved = _resolve_cli_run_selector(args)
         result = inspect_node_logs(
-            args.artifact,
+            resolved["artifact_path"],
             args.node_name,
-            run_id=args.run_id,
-            run_label=args.run_label,
+            run_id=resolved["selected_run_id"],
+            run_label=resolved["selected_run_label"],
             tail=args.tail,
         )
     except Exception as exc:
@@ -1204,12 +1265,13 @@ def _handle_inspect_node_logs(args: argparse.Namespace) -> int:
 
 def _handle_export_artifact(args: argparse.Namespace) -> int:
     try:
+        resolved = _resolve_cli_run_selector(args)
         result = export_artifact(
-            args.artifact,
+            resolved["artifact_path"],
             node_name=args.node_name,
             artifact_name=args.artifact_name,
-            run_id=args.run_id,
-            run_label=args.run_label,
+            run_id=resolved["selected_run_id"],
+            run_label=resolved["selected_run_label"],
             format=args.format,
             output_path=args.output_path,
             overwrite=bool(args.overwrite),
