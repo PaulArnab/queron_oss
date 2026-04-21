@@ -472,7 +472,6 @@ def _map_postgres_type_to_duckdb(raw_type: str) -> tuple[str, list[str], bool | 
         )
         return "VARCHAR", warnings, True
     if normalized in {"numeric", "decimal"}:
-        warnings.append(f"PostgreSQL {raw_type} was normalized to DuckDB DECIMAL(38,10).")
         return "DECIMAL(38,10)", warnings, False
 
     if normalized.endswith("[]"):
@@ -939,7 +938,6 @@ def ingest_query_to_duckdb(
             source_columns = _column_meta_from_description(source_cur.description)
         except Exception:
             source_columns = _column_meta_from_cursor(source_conn, source_cur)
-            warnings.append("Fell back to cursor metadata while inspecting PostgreSQL result metadata.")
 
         mapped_columns = _map_postgres_columns_to_duckdb(source_columns)
         warnings = _collect_mapping_warnings(mapped_columns, warnings)

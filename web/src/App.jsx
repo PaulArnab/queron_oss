@@ -1904,6 +1904,7 @@ function ArtifactExplorerPage({
   onSelectArtifact,
   runId,
 }) {
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
   const artifactBlocked = !artifactsLoading && (!artifacts || artifacts.length === 0);
   const selectedArtifact = Array.isArray(artifacts)
     ? artifacts.find((artifact) => artifact.artifactName === selectedArtifactName) || null
@@ -1937,15 +1938,39 @@ function ArtifactExplorerPage({
             >
               <Play size={16} strokeWidth={1.9} />
             </button>
-            <button
-              type="button"
-              onClick={onDownload}
-              title="Download query result"
-              aria-label="Download query result"
-              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
-            >
-              <Download size={16} strokeWidth={1.9} />
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setDownloadMenuOpen((current) => !current)}
+                title="Download query result"
+                aria-label="Download query result"
+                className="inline-flex h-9 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
+              >
+                <Download size={16} strokeWidth={1.9} />
+                <ChevronDown size={14} strokeWidth={1.9} />
+              </button>
+              {downloadMenuOpen ? (
+                <div className="absolute right-0 top-11 z-20 min-w-[132px] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+                  {[
+                    ["csv", "CSV"],
+                    ["parquet", "Parquet"],
+                    ["json", "JSON"],
+                  ].map(([format, label]) => (
+                    <button
+                      key={format}
+                      type="button"
+                      onClick={() => {
+                        setDownloadMenuOpen(false);
+                        onDownload?.(format);
+                      }}
+                      className="block w-full px-3 py-2 text-left text-[12px] font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               onClick={onClose}
@@ -3034,7 +3059,7 @@ export default function App() {
           onQueryChange={setArtifactQuery}
           onClose={() => setArtifactPageOpen(false)}
           onExecute={executeArtifactQuery}
-          onDownload={() => void downloadArtifactQuery("csv")}
+          onDownload={(format) => void downloadArtifactQuery(format || "csv")}
           result={artifactResult}
           loading={artifactQueryLoading}
           error={artifactError}
