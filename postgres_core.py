@@ -936,11 +936,7 @@ def ingest_query_to_duckdb(
             raise RuntimeError("Source query did not return a result set.")
 
         try:
-            if sql_params:
-                source_columns = _column_meta_from_description(source_cur.description)
-                warnings.append("Used cursor metadata while inspecting parameterized PostgreSQL result metadata.")
-            else:
-                source_columns = _inspect_postgres_result_columns(cfg["uri"], sql, **connect_kwargs)
+            source_columns = _column_meta_from_description(source_cur.description)
         except Exception:
             source_columns = _column_meta_from_cursor(source_conn, source_cur)
             warnings.append("Fell back to cursor metadata while inspecting PostgreSQL result metadata.")
