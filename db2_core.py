@@ -197,6 +197,7 @@ def _conn_str_from_parts(
     username: str,
     password: str,
     connect_timeout_seconds: int | None = None,
+    extra_keywords: dict[str, Any] | None = None,
 ) -> str:
     parts = [
         f"DATABASE={_sanitize_conn_value(database)}",
@@ -210,6 +211,11 @@ def _conn_str_from_parts(
         parts.append(f"UID={_sanitize_conn_value(username)}")
     if password:
         parts.append(f"PWD={password}")
+    for key, value in dict(extra_keywords or {}).items():
+        text = _sanitize_conn_value(value)
+        if not text:
+            continue
+        parts.append(f"{_sanitize_conn_value(key)}={text}")
     return ";".join(parts) + ";"
 
 
@@ -237,6 +243,11 @@ def _parse_jdbc_url(raw: str) -> str | None:
 def _conn_str_has_credentials(conn_str: str) -> bool:
     normalized = conn_str.upper()
     return "UID=" in normalized or "PWD=" in normalized
+
+
+def _conn_str_has_keyword(conn_str: str, keyword: str) -> bool:
+    normalized = conn_str.upper()
+    return f"{str(keyword).upper()}=" in normalized
 
 
 def _infer_db2_auth_mode(cfg: Db2ConnectRequest) -> str:
@@ -280,9 +291,20 @@ def _validate_db2_auth_request(cfg: Db2ConnectRequest, auth_mode: str) -> None:
             )
 
 
+def _build_db2_auth_keywords(cfg: Db2ConnectRequest, auth_mode: str) -> dict[str, Any]:
+    if auth_mode == "basic":
+        return {}
+    keywords: dict[str, Any] = {"Security": "SSL"}
+    ssl_server_certificate = str(getattr(cfg, "ssl_server_certificate", "") or "").strip()
+    if ssl_server_certificate:
+        keywords["SSLServerCertificate"] = ssl_server_certificate
+    return keywords
+
+
 def _resolved_db2_connect_config(cfg: Db2ConnectRequest) -> dict[str, Any]:
     auth_mode = _infer_db2_auth_mode(cfg)
     _validate_db2_auth_request(cfg, auth_mode)
+    auth_keywords = _build_db2_auth_keywords(cfg, auth_mode)
     if cfg.url:
         raw = cfg.url.strip()
         conn_str = _parse_jdbc_url(raw) or raw
@@ -300,6 +322,12 @@ def _resolved_db2_connect_config(cfg: Db2ConnectRequest) -> dict[str, Any]:
             if not conn_str.endswith(";"):
                 conn_str += ";"
             conn_str += f"CONNECTTIMEOUT={int(cfg.connect_timeout_seconds)};"
+        for key, value in auth_keywords.items():
+            if _conn_str_has_keyword(conn_str, key):
+                continue
+            if not conn_str.endswith(";"):
+                conn_str += ";"
+            conn_str += f"{key}={_sanitize_conn_value(value)};"
         return {"auth_mode": auth_mode, "conn_str": conn_str}
 
     return {
@@ -311,6 +339,7 @@ def _resolved_db2_connect_config(cfg: Db2ConnectRequest) -> dict[str, Any]:
             username=cfg.username,
             password=cfg.password,
             connect_timeout_seconds=cfg.connect_timeout_seconds,
+            extra_keywords=auth_keywords,
         ),
     }
 
