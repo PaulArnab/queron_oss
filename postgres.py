@@ -11,6 +11,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import psycopg
 import pyarrow as pa
@@ -82,35 +83,81 @@ _PG_TYPE_NAMES: dict[int, str] = {
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _build_connection_uri(raw_url: str, username: str | None, password: str | None) -> str:
+    raw = (raw_url or "").strip()
+    if not raw:
+        raise RuntimeError("PostgreSQL connection URL is required.")
+    if raw.startswith("jdbc:"):
+        raw = raw[len("jdbc:"):]
+
+    parts = urlsplit(raw)
+    if not parts.scheme:
+        return raw
+    if parts.username:
+        return raw
+    if not username:
+        return raw
+
+    host = parts.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    port = f":{parts.port}" if parts.port else ""
+    user = quote(username, safe="")
+    pwd = quote(password or "", safe="")
+    userinfo = f"{user}:{pwd}" if (password or "") else user
+    netloc = f"{userinfo}@{host}{port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _infer_postgres_auth_mode(cfg: PgConnectRequest) -> str:
+    explicit = str(getattr(cfg, "auth_mode", "") or "").strip().lower()
+    if explicit:
+        return explicit
+    if str(getattr(cfg, "sslcert", "") or "").strip() or str(getattr(cfg, "sslkey", "") or "").strip():
+        return "mtls"
+    if (
+        str(getattr(cfg, "sslmode", "") or "").strip()
+        or str(getattr(cfg, "sslrootcert", "") or "").strip()
+        or str(getattr(cfg, "sslpassword", "") or "").strip()
+    ):
+        return "tls"
+    return "basic"
+
+
+def _ssl_kwargs_from_config(cfg: PgConnectRequest, auth_mode: str) -> dict[str, Any]:
+    if auth_mode not in {"tls", "mtls"}:
+        return {}
+    kwargs: dict[str, Any] = {}
+    for field_name in ("sslmode", "sslrootcert", "sslcert", "sslkey", "sslpassword"):
+        value = getattr(cfg, field_name, None)
+        if value is None:
+            continue
+        text = str(value).strip() if isinstance(value, str) else value
+        if text in {"", None}:
+            continue
+        kwargs[field_name] = text
+    return kwargs
+
+
 def _dsn_from_config(cfg: PgConnectRequest) -> tuple[str, dict[str, Any]]:
     """Build a libpq DSN + optional kwargs from the request payload.
 
     Returns (dsn, extra_kwargs) where extra_kwargs may contain
     ``user`` and ``password`` when connecting via URL.
     """
-    if cfg.url:
-        # Strip JDBC prefix if the user pasted a JDBC URL
-        raw = cfg.url
-        if raw.startswith("jdbc:"):
-            raw = raw[len("jdbc:"):]
-        kwargs: dict[str, Any] = {}
-        if cfg.username:
-            kwargs["user"] = cfg.username
-        if cfg.password:
-            kwargs["password"] = cfg.password
-        if cfg.connect_timeout_seconds is not None:
-            kwargs["connect_timeout"] = int(cfg.connect_timeout_seconds)
-        if cfg.statement_timeout_ms is not None:
-            kwargs["options"] = f"-c statement_timeout={int(cfg.statement_timeout_ms)}"
-        return raw, kwargs
+    auth_mode = _infer_postgres_auth_mode(cfg)
     kwargs: dict[str, Any] = {}
     if cfg.connect_timeout_seconds is not None:
         kwargs["connect_timeout"] = int(cfg.connect_timeout_seconds)
     if cfg.statement_timeout_ms is not None:
         kwargs["options"] = f"-c statement_timeout={int(cfg.statement_timeout_ms)}"
-    return (
-        f"host={cfg.host} port={cfg.port} dbname={cfg.database} "
-        f"user={cfg.username} password={cfg.password}"
+    kwargs.update(_ssl_kwargs_from_config(cfg, auth_mode))
+    if cfg.url:
+        return _build_connection_uri(cfg.url, cfg.username or None, cfg.password or None), kwargs
+    return _build_connection_uri(
+        f"postgresql://{cfg.host}:{cfg.port}/{cfg.database}",
+        cfg.username or None,
+        cfg.password or None,
     ), kwargs
 
 
