@@ -73,6 +73,7 @@ _DEFAULT_QUERY_CHUNK_SIZE = DEFAULT_QUERY_CHUNK_SIZE
 _DECIMAL_WITH_ARGS_RE = re.compile(r"^(?:numeric|decimal)\s*\((\d+)\s*,\s*(\d+)\s*\)$", re.IGNORECASE)
 _OPAQUE_TYPE_RE = re.compile(r"type_name=([a-z0-9_ ]+)", re.IGNORECASE)
 _DUCKDB_DECIMAL_RE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
+_VALID_PG_SSLMODES = {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
 
 
 @dataclass
@@ -185,9 +186,18 @@ def _infer_postgres_auth_mode(req: PgConnectRequest) -> str:
 def _validate_postgres_auth_request(req: PgConnectRequest, auth_mode: str) -> None:
     if auth_mode not in {"basic", "tls", "mtls", "kerberos"}:
         raise RuntimeError(f"Unsupported PostgreSQL auth_mode '{auth_mode}'.")
+    sslmode = str(getattr(req, "sslmode", "") or "").strip().lower()
+    sslrootcert = str(getattr(req, "sslrootcert", "") or "").strip()
+    sslcert = str(getattr(req, "sslcert", "") or "").strip()
+    sslkey = str(getattr(req, "sslkey", "") or "").strip()
+    if sslmode and sslmode not in _VALID_PG_SSLMODES:
+        valid = ", ".join(sorted(_VALID_PG_SSLMODES))
+        raise RuntimeError(f"Unsupported PostgreSQL sslmode '{req.sslmode}'. Expected one of: {valid}.")
+    if auth_mode in {"tls", "mtls"} and sslmode == "disable":
+        raise RuntimeError("PostgreSQL TLS auth_mode cannot use sslmode='disable'.")
+    if auth_mode in {"tls", "mtls"} and sslmode in {"verify-ca", "verify-full"} and not sslrootcert:
+        raise RuntimeError(f"PostgreSQL {auth_mode} with sslmode='{sslmode}' requires sslrootcert.")
     if auth_mode == "mtls":
-        sslcert = str(getattr(req, "sslcert", "") or "").strip()
-        sslkey = str(getattr(req, "sslkey", "") or "").strip()
         if bool(sslcert) != bool(sslkey):
             raise RuntimeError("PostgreSQL mTLS requires both sslcert and sslkey.")
 

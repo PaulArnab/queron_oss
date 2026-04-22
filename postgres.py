@@ -49,6 +49,7 @@ _connections: dict[str, dict[str, Any]] = {}
 _query_sessions: dict[str, dict[str, Any]] = {}
 _QUERY_SESSION_IDLE_TTL_SECONDS = 300
 _DEFAULT_QUERY_CHUNK_SIZE = DEFAULT_QUERY_CHUNK_SIZE
+_VALID_PG_SSLMODES = {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
 
 # ---------------------------------------------------------------------------
 # PostgreSQL OID -> type name mapping (common types)
@@ -139,6 +140,24 @@ def _ssl_kwargs_from_config(cfg: PgConnectRequest, auth_mode: str) -> dict[str, 
     return kwargs
 
 
+def _validate_postgres_auth_config(cfg: PgConnectRequest, auth_mode: str) -> None:
+    if auth_mode not in {"basic", "tls", "mtls", "kerberos"}:
+        raise RuntimeError(f"Unsupported PostgreSQL auth_mode '{auth_mode}'.")
+    sslmode = str(getattr(cfg, "sslmode", "") or "").strip().lower()
+    sslrootcert = str(getattr(cfg, "sslrootcert", "") or "").strip()
+    sslcert = str(getattr(cfg, "sslcert", "") or "").strip()
+    sslkey = str(getattr(cfg, "sslkey", "") or "").strip()
+    if sslmode and sslmode not in _VALID_PG_SSLMODES:
+        valid = ", ".join(sorted(_VALID_PG_SSLMODES))
+        raise RuntimeError(f"Unsupported PostgreSQL sslmode '{cfg.sslmode}'. Expected one of: {valid}.")
+    if auth_mode in {"tls", "mtls"} and sslmode == "disable":
+        raise RuntimeError("PostgreSQL TLS auth_mode cannot use sslmode='disable'.")
+    if auth_mode in {"tls", "mtls"} and sslmode in {"verify-ca", "verify-full"} and not sslrootcert:
+        raise RuntimeError(f"PostgreSQL {auth_mode} with sslmode='{sslmode}' requires sslrootcert.")
+    if auth_mode == "mtls" and bool(sslcert) != bool(sslkey):
+        raise RuntimeError("PostgreSQL mTLS requires both sslcert and sslkey.")
+
+
 def _dsn_from_config(cfg: PgConnectRequest) -> tuple[str, dict[str, Any]]:
     """Build a libpq DSN + optional kwargs from the request payload.
 
@@ -146,6 +165,7 @@ def _dsn_from_config(cfg: PgConnectRequest) -> tuple[str, dict[str, Any]]:
     ``user`` and ``password`` when connecting via URL.
     """
     auth_mode = _infer_postgres_auth_mode(cfg)
+    _validate_postgres_auth_config(cfg, auth_mode)
     kwargs: dict[str, Any] = {}
     if cfg.connect_timeout_seconds is not None:
         kwargs["connect_timeout"] = int(cfg.connect_timeout_seconds)
