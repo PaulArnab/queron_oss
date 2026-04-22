@@ -98,6 +98,7 @@ ConnectorEgressResponse = getattr(_base_models, "ConnectorEgressResponse", _Fall
 _connections: dict[str, dict[str, Any]] = {}
 _DUCKDB_DECIMAL_RE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 _DBAPI_TYPE_OBJECT_RE = re.compile(r"^DBAPITYPEOBJECT\((.+)\)$", re.IGNORECASE)
+_VALID_DB2_AUTH_MODES = {"basic", "tls", "certificate"}
 
 
 @dataclass
@@ -238,7 +239,50 @@ def _conn_str_has_credentials(conn_str: str) -> bool:
     return "UID=" in normalized or "PWD=" in normalized
 
 
-def _dsn_from_config(cfg: Db2ConnectRequest) -> str:
+def _infer_db2_auth_mode(cfg: Db2ConnectRequest) -> str:
+    explicit = str(getattr(cfg, "auth_mode", "") or "").strip().lower()
+    if explicit:
+        if explicit not in _VALID_DB2_AUTH_MODES:
+            raise RuntimeError(f"Unsupported DB2 auth_mode '{cfg.auth_mode}'.")
+        return explicit
+    if (
+        str(getattr(cfg, "ssl_client_keystoredb", "") or "").strip()
+        or str(getattr(cfg, "ssl_client_keystash", "") or "").strip()
+        or str(getattr(cfg, "ssl_client_keystore_password", "") or "").strip()
+        or str(getattr(cfg, "ssl_client_label", "") or "").strip()
+    ):
+        return "certificate"
+    if str(getattr(cfg, "ssl_server_certificate", "") or "").strip():
+        return "tls"
+    return "basic"
+
+
+def _validate_db2_auth_request(cfg: Db2ConnectRequest, auth_mode: str) -> None:
+    if auth_mode not in _VALID_DB2_AUTH_MODES:
+        raise RuntimeError(f"Unsupported DB2 auth_mode '{auth_mode}'.")
+    ssl_server_certificate = str(getattr(cfg, "ssl_server_certificate", "") or "").strip()
+    ssl_client_keystoredb = str(getattr(cfg, "ssl_client_keystoredb", "") or "").strip()
+    ssl_client_keystash = str(getattr(cfg, "ssl_client_keystash", "") or "").strip()
+    ssl_client_keystore_password = str(getattr(cfg, "ssl_client_keystore_password", "") or "").strip()
+    ssl_client_label = str(getattr(cfg, "ssl_client_label", "") or "").strip()
+    if auth_mode == "tls" and not ssl_server_certificate:
+        raise RuntimeError("DB2 tls auth_mode requires ssl_server_certificate.")
+    if auth_mode == "certificate":
+        if not ssl_server_certificate:
+            raise RuntimeError("DB2 certificate auth_mode requires ssl_server_certificate.")
+        if not ssl_client_keystoredb:
+            raise RuntimeError("DB2 certificate auth_mode requires ssl_client_keystoredb.")
+        if not ssl_client_label:
+            raise RuntimeError("DB2 certificate auth_mode requires ssl_client_label.")
+        if not ssl_client_keystash and not ssl_client_keystore_password:
+            raise RuntimeError(
+                "DB2 certificate auth_mode requires ssl_client_keystash or ssl_client_keystore_password."
+            )
+
+
+def _resolved_db2_connect_config(cfg: Db2ConnectRequest) -> dict[str, Any]:
+    auth_mode = _infer_db2_auth_mode(cfg)
+    _validate_db2_auth_request(cfg, auth_mode)
     if cfg.url:
         raw = cfg.url.strip()
         conn_str = _parse_jdbc_url(raw) or raw
@@ -256,16 +300,23 @@ def _dsn_from_config(cfg: Db2ConnectRequest) -> str:
             if not conn_str.endswith(";"):
                 conn_str += ";"
             conn_str += f"CONNECTTIMEOUT={int(cfg.connect_timeout_seconds)};"
-        return conn_str
+        return {"auth_mode": auth_mode, "conn_str": conn_str}
 
-    return _conn_str_from_parts(
-        host=cfg.host,
-        port=cfg.port,
-        database=cfg.database,
-        username=cfg.username,
-        password=cfg.password,
-        connect_timeout_seconds=cfg.connect_timeout_seconds,
-    )
+    return {
+        "auth_mode": auth_mode,
+        "conn_str": _conn_str_from_parts(
+            host=cfg.host,
+            port=cfg.port,
+            database=cfg.database,
+            username=cfg.username,
+            password=cfg.password,
+            connect_timeout_seconds=cfg.connect_timeout_seconds,
+        ),
+    }
+
+
+def _dsn_from_config(cfg: Db2ConnectRequest) -> str:
+    return str(_resolved_db2_connect_config(cfg)["conn_str"])
 
 
 def _config_from_connection_id(connection_id: str) -> str:
