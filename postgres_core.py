@@ -206,6 +206,7 @@ def _build_postgres_ssl_kwargs(req: PgConnectRequest, auth_mode: str) -> dict[st
     kwargs: dict[str, Any] = {}
     if auth_mode not in {"tls", "mtls"}:
         return kwargs
+    kwargs["sslmode"] = str(getattr(req, "sslmode", "") or "").strip() or "require"
     for field_name in ("sslmode", "sslrootcert", "sslcert", "sslkey", "sslpassword"):
         value = getattr(req, field_name, None)
         if value is None:

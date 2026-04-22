@@ -129,6 +129,7 @@ def _ssl_kwargs_from_config(cfg: PgConnectRequest, auth_mode: str) -> dict[str, 
     if auth_mode not in {"tls", "mtls"}:
         return {}
     kwargs: dict[str, Any] = {}
+    kwargs["sslmode"] = str(getattr(cfg, "sslmode", "") or "").strip() or "require"
     for field_name in ("sslmode", "sslrootcert", "sslcert", "sslkey", "sslpassword"):
         value = getattr(cfg, field_name, None)
         if value is None:
