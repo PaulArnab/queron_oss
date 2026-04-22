@@ -73,6 +73,12 @@ def ensure_db2_binding(binding: dict[str, Any], config_name: str) -> str:
         "username": binding.get("username", "db2inst1"),
         "password": binding.get("password", ""),
         "url": binding.get("url"),
+        "auth_mode": binding.get("auth_mode"),
+        "ssl_server_certificate": binding.get("ssl_server_certificate"),
+        "ssl_client_keystoredb": binding.get("ssl_client_keystoredb"),
+        "ssl_client_keystash": binding.get("ssl_client_keystash"),
+        "ssl_client_keystore_password": binding.get("ssl_client_keystore_password"),
+        "ssl_client_label": binding.get("ssl_client_label"),
         "connect_timeout_seconds": binding.get("connect_timeout_seconds"),
         "save_password": False,
     }

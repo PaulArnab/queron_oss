@@ -38,6 +38,12 @@ class Db2ConnectRequest(BaseModel):
     username: str = "db2inst1"
     password: str = ""
     url: str | None = None
+    auth_mode: str | None = None
+    ssl_server_certificate: str | None = None
+    ssl_client_keystoredb: str | None = None
+    ssl_client_keystash: str | None = None
+    ssl_client_keystore_password: str | None = None
+    ssl_client_label: str | None = None
     connect_timeout_seconds: int | None = None
     save_password: bool = True
 

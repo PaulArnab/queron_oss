@@ -67,6 +67,11 @@ def resolve_runtime_binding_payload(config_name: str, payload: Mapping[str, Any]
             "sslcert": payload.get("sslcert"),
             "sslkey": payload.get("sslkey"),
             "sslpassword": payload.get("sslpassword"),
+            "ssl_server_certificate": payload.get("ssl_server_certificate"),
+            "ssl_client_keystoredb": payload.get("ssl_client_keystoredb"),
+            "ssl_client_keystash": payload.get("ssl_client_keystash"),
+            "ssl_client_keystore_password": payload.get("ssl_client_keystore_password"),
+            "ssl_client_label": payload.get("ssl_client_label"),
             "connect_timeout_seconds": payload.get("connect_timeout_seconds"),
             "statement_timeout_ms": payload.get("statement_timeout_ms"),
         }
@@ -91,6 +96,11 @@ class RuntimeBinding:
     sslcert: str | None = None
     sslkey: str | None = None
     sslpassword: str | None = None
+    ssl_server_certificate: str | None = None
+    ssl_client_keystoredb: str | None = None
+    ssl_client_keystash: str | None = None
+    ssl_client_keystore_password: str | None = None
+    ssl_client_label: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def resolve_config(self, config_name: str) -> dict[str, Any]:
@@ -110,6 +120,11 @@ class RuntimeBinding:
                 "sslcert": self.sslcert,
                 "sslkey": self.sslkey,
                 "sslpassword": self.sslpassword,
+                "ssl_server_certificate": self.ssl_server_certificate,
+                "ssl_client_keystoredb": self.ssl_client_keystoredb,
+                "ssl_client_keystash": self.ssl_client_keystash,
+                "ssl_client_keystore_password": self.ssl_client_keystore_password,
+                "ssl_client_label": self.ssl_client_label,
                 **self.extras,
             }
         )
@@ -173,6 +188,12 @@ class Db2Binding(RuntimeBinding):
         username: str | None = None,
         password: str | None = None,
         url: str | None = None,
+        auth_mode: str | None = None,
+        ssl_server_certificate: str | None = None,
+        ssl_client_keystoredb: str | None = None,
+        ssl_client_keystash: str | None = None,
+        ssl_client_keystore_password: str | None = None,
+        ssl_client_label: str | None = None,
         **extras: Any,
     ) -> None:
         super().__init__(
@@ -185,6 +206,12 @@ class Db2Binding(RuntimeBinding):
             username=username,
             password=password,
             url=url,
+            auth_mode=auth_mode,
+            ssl_server_certificate=ssl_server_certificate,
+            ssl_client_keystoredb=ssl_client_keystoredb,
+            ssl_client_keystash=ssl_client_keystash,
+            ssl_client_keystore_password=ssl_client_keystore_password,
+            ssl_client_label=ssl_client_label,
             extras=extras,
         )
 
