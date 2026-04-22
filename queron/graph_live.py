@@ -314,6 +314,7 @@ def get_graph_panel(
         "run_label": result.run_label,
         "run_status": result.run_status,
         "is_final": result.is_final,
+        "runtime_vars_contract": result.runtime_vars_contract,
         "node_count": len(result.nodes),
         "nodes": result.nodes,
         "edges": result.edges,

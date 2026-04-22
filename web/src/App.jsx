@@ -10,7 +10,7 @@ import {
 } from "@xyflow/react";
 import { AllCommunityModule, ModuleRegistry } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
-import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown, Square, Terminal, Download, Braces } from "lucide-react";
+import { CirclePlay, SkipForward, RotateCcw, RefreshCw, History, Database, Play, X, ChevronDown, Square, Terminal, Download } from "lucide-react";
 import dagre from "dagre";
 import "@xyflow/react/dist/style.css";
 import "ag-grid-community/styles/ag-grid.css";
@@ -1759,45 +1759,134 @@ function PipelineLogsPanel({
 function RuntimeVarsPanel({
   open,
   onClose,
-  value,
-  onChange,
+  contract = [],
+  values = {},
+  onChangeValue,
   pipelineId = null,
   error = "",
+  submitLabel = "",
+  onSubmit,
+  submitDisabled = false,
 }) {
-  if (!open) return null;
+  const items = Array.isArray(contract) ? contract : [];
   return (
-    <div className="pointer-events-none fixed inset-y-0 right-0 z-40 flex">
-      <div className="pointer-events-auto h-full w-[560px] max-w-[92vw] border-l border-slate-200 bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+    <div
+      className={`pointer-events-none fixed inset-y-0 right-0 z-40 flex transform-gpu transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        open ? "translate-x-0 opacity-100" : "translate-x-full opacity-0"
+      }`}
+    >
+      <div className="pointer-events-auto h-full w-[560px] max-w-[92vw] border-l border-slate-200 bg-gradient-to-b from-white to-slate-50 shadow-xl">
+        <div className="flex items-center justify-between border-b border-slate-200 bg-white/90 px-5 py-4">
           <div className="min-w-0">
             <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Runtime Vars</div>
-            <div className="mt-1 truncate text-[12px] font-medium text-slate-700">{pipelineId || "-"}</div>
+            <div className="mt-1 truncate text-[13px] font-semibold tracking-[-0.01em] text-slate-800">{pipelineId || "-"}</div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
-          >
-            <X size={14} strokeWidth={2.25} />
-            <span>Close</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {submitLabel ? (
+              <button
+                type="button"
+                onClick={onSubmit}
+                disabled={submitDisabled}
+                className={`inline-flex items-center rounded-lg px-3 py-1.5 text-[12px] font-semibold transition ${
+                  submitDisabled
+                    ? "cursor-not-allowed bg-slate-200 text-slate-400"
+                    : "bg-slate-900 text-white hover:bg-slate-800"
+                }`}
+              >
+                {submitLabel}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+            >
+              <X size={14} strokeWidth={2.25} />
+              <span>Close</span>
+            </button>
+          </div>
         </div>
-        <div className="flex h-[calc(100%-61px)] flex-col gap-3 px-4 py-3">
-          <div className="text-[12px] text-slate-500">
-            Enter a JSON object. Example: <span className="font-mono">{"{\"states\":[\"TX\",\"CA\"],\"start_date\":\"2026-01-02\"}"}</span>
+        <div className="flex h-[calc(100%-69px)] flex-col gap-4 px-5 py-5">
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-[12px] text-slate-500 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+            Enter values for the declared runtime vars. List inputs accept comma-separated values or JSON arrays.
           </div>
-          <textarea
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            spellCheck={false}
-            className="min-h-0 flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 font-mono text-[12px] leading-5 text-slate-700 outline-none transition focus:border-slate-300 focus:bg-white"
-            placeholder="{}"
-          />
-          {error ? <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">{error}</div> : null}
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            {items.length ? (
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+                {items.map((item) => {
+                  const name = String(item?.name || "").trim();
+                  const kind = String(item?.kind || "scalar").trim().toLowerCase();
+                  const currentValue = String(values?.[name] || "");
+                  const defaultValue =
+                    item?.default !== undefined && item?.default !== null
+                      ? (Array.isArray(item.default) ? item.default.join(", ") : String(item.default))
+                      : "";
+                  return (
+                    <div key={name} className="border-b border-slate-200 px-4 py-3 last:border-b-0">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-semibold text-slate-900">{name}</div>
+                          <div className="mt-0.5 text-[10px] uppercase tracking-[0.12em] text-slate-400">
+                            {kind === "list" ? "List" : "Scalar"}
+                          </div>
+                        </div>
+                        {item?.required ? (
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-slate-500">
+                            Required
+                          </span>
+                        ) : null}
+                      </div>
+                      {defaultValue ? (
+                        <div className="mt-1.5 text-[10px] text-slate-400">
+                          Default: <span className="font-mono text-slate-500">{defaultValue}</span>
+                        </div>
+                      ) : null}
+                      <div className="mt-2">
+                      {kind === "list" ? (
+                        <textarea
+                          value={currentValue}
+                          onChange={(event) => onChangeValue?.(name, event.target.value)}
+                          spellCheck={false}
+                          className="min-h-[92px] w-full resize-y rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[11px] leading-5 text-slate-700 outline-none transition focus:border-slate-300 focus:bg-white"
+                          placeholder={defaultValue || "TX, CA, WA"}
+                        />
+                      ) : (
+                        <input
+                          value={currentValue}
+                          onChange={(event) => onChangeValue?.(name, event.target.value)}
+                          spellCheck={false}
+                          className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[11px] leading-5 text-slate-700 outline-none transition focus:border-slate-300 focus:bg-white"
+                          placeholder={defaultValue || "value"}
+                        />
+                      )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-[12px] text-slate-500 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+                No runtime vars declared for this pipeline.
+              </div>
+            )}
+          </div>
+          {error ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[12px] text-rose-700">{error}</div> : null}
         </div>
       </div>
     </div>
   );
+}
+
+function buildRuntimeVarInputDefaults(contract) {
+  const items = Array.isArray(contract) ? contract : [];
+  const defaults = {};
+  for (const item of items) {
+    const name = String(item?.name || "").trim();
+    if (!name) continue;
+    if (item?.default === undefined || item?.default === null) continue;
+    defaults[name] = Array.isArray(item.default) ? item.default.join(", ") : String(item.default);
+  }
+  return defaults;
 }
 
 function GraphCanvas({
@@ -2168,7 +2257,8 @@ export default function App() {
   const [pipelineLogsLoading, setPipelineLogsLoading] = useState(false);
   const [pipelineLogsError, setPipelineLogsError] = useState("");
   const [runtimeVarsOpen, setRuntimeVarsOpen] = useState(false);
-  const [runtimeVarsText, setRuntimeVarsText] = useState("{}");
+  const [runtimeVarsSubmitEndpoint, setRuntimeVarsSubmitEndpoint] = useState("");
+  const [runtimeVarInputs, setRuntimeVarInputs] = useState({});
   const [runtimeVarsError, setRuntimeVarsError] = useState("");
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [runOptions, setRunOptions] = useState([]);
@@ -2200,6 +2290,14 @@ export default function App() {
     const pipelineId = String(graphData?.pipeline_id || "").trim();
     return pipelineId ? `queron.runtimeVars.${pipelineId}` : "";
   }, [graphData?.pipeline_id]);
+  const runtimeVarsContract = useMemo(
+    () => (Array.isArray(graphData?.runtime_vars_contract) ? graphData.runtime_vars_contract : []),
+    [graphData?.runtime_vars_contract],
+  );
+  const runtimeVarInputDefaults = useMemo(
+    () => buildRuntimeVarInputDefaults(runtimeVarsContract),
+    [runtimeVarsContract],
+  );
 
   function buildRunScopedPath(path, params = {}) {
     const search = new URLSearchParams();
@@ -2500,15 +2598,20 @@ export default function App() {
     try {
       const stored = window.localStorage.getItem(runtimeVarsStorageKey);
       if (stored !== null) {
-        setRuntimeVarsText(stored);
+        const parsed = JSON.parse(stored);
+        setRuntimeVarInputs(
+          parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? { ...runtimeVarInputDefaults, ...parsed }
+            : { ...runtimeVarInputDefaults },
+        );
         setRuntimeVarsError("");
       } else {
-        setRuntimeVarsText("{}");
+        setRuntimeVarInputs({ ...runtimeVarInputDefaults });
       }
     } catch (_error) {
-      setRuntimeVarsText("{}");
+      setRuntimeVarInputs({ ...runtimeVarInputDefaults });
     }
-  }, [runtimeVarsStorageKey]);
+  }, [runtimeVarsStorageKey, runtimeVarInputDefaults]);
 
   useEffect(() => {
     if (!pipelineLogsOpen) return;
@@ -2594,19 +2697,70 @@ export default function App() {
     await ensurePanelTabLoaded(nextTab);
   }
 
-  function parsedRuntimeVarsOrThrow() {
-    const text = String(runtimeVarsText || "").trim();
-    if (!text) return null;
-    let parsed = {};
+  function parseRuntimeVarScalar(rawValue) {
+    const text = String(rawValue || "").trim();
+    if (!text) return undefined;
     try {
-      parsed = JSON.parse(text);
-    } catch (error) {
-      throw new Error(`Runtime vars must be valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+      const parsed = JSON.parse(text);
+      if (parsed !== null && typeof parsed === "object") {
+        return text;
+      }
+      return parsed;
+    } catch (_error) {
+      return text;
     }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("Runtime vars must be a JSON object.");
+  }
+
+  function parseRuntimeVarList(rawValue) {
+    const text = String(rawValue || "").trim();
+    if (!text) return undefined;
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch (_error) {
+      // fall through to split parsing
     }
-    return parsed;
+    return text
+      .split(/[\n,]/)
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .map((item) => parseRuntimeVarScalar(item));
+  }
+
+  function parsedRuntimeVarsOrThrow() {
+    const payload = {};
+    for (const item of runtimeVarsContract) {
+      const name = String(item?.name || "").trim();
+      if (!name) continue;
+      const kind = String(item?.kind || "scalar").trim().toLowerCase();
+      const rawValue = runtimeVarInputs?.[name];
+      const parsedValue = kind === "list" ? parseRuntimeVarList(rawValue) : parseRuntimeVarScalar(rawValue);
+      if (parsedValue !== undefined) {
+        payload[name] = parsedValue;
+      }
+    }
+    return Object.keys(payload).length ? payload : null;
+  }
+
+  function handleRuntimeVarInputChange(name, nextValue) {
+    setRuntimeVarInputs((current) => ({
+      ...(current || {}),
+      [name]: nextValue,
+    }));
+    setRuntimeVarsError("");
+  }
+
+  function requestRunAction(endpoint) {
+    const requiresRuntimeVars = (endpoint === "/api/run" || endpoint === "/api/resume") && runtimeVarsContract.length > 0;
+    if (requiresRuntimeVars) {
+      setRuntimeVarsSubmitEndpoint(endpoint);
+      setRuntimeVarsError("");
+      setRuntimeVarsOpen(true);
+      return;
+    }
+    void runAction(endpoint);
   }
 
   async function runAction(endpoint, nodeName = "") {
@@ -2648,10 +2802,12 @@ export default function App() {
       }
       if ((endpoint === "/api/run" || endpoint === "/api/resume") && runtimeVarsStorageKey) {
         try {
-          window.localStorage.setItem(runtimeVarsStorageKey, String(runtimeVarsText || "{}"));
+          window.localStorage.setItem(runtimeVarsStorageKey, JSON.stringify(runtimeVarInputs || {}));
         } catch (_error) {
           // Ignore local storage failures.
         }
+        setRuntimeVarsOpen(false);
+        setRuntimeVarsSubmitEndpoint("");
       }
       if (endpoint === "/api/stop") {
         setActionError("Stop requested.");
@@ -2928,13 +3084,13 @@ export default function App() {
               <HeaderActionButton
                 title="Run from Scratch"
                 icon={CirclePlay}
-                onClick={() => runAction("/api/run")}
+                onClick={() => requestRunAction("/api/run")}
                 disabled={controlsDisabled || !canRun}
               />
               <HeaderActionButton
                 title="Resume"
                 icon={SkipForward}
-                onClick={() => runAction("/api/resume")}
+                onClick={() => requestRunAction("/api/resume")}
                 disabled={controlsDisabled || !canResume}
               />
               <HeaderActionButton
@@ -2968,24 +3124,6 @@ export default function App() {
                 disabled={controlsDisabled || !canResetUpstream}
               />
               <div className="mx-1 h-6 w-px bg-slate-200" aria-hidden="true" />
-              <button
-                type="button"
-                onClick={() => setRuntimeVarsOpen(true)}
-                title="Runtime Vars"
-                aria-label="Runtime Vars"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-[12px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
-              >
-                <Braces size={15} strokeWidth={1.9} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setLayoutVersion((current) => current + 1)}
-                title="Re-evaluate Layout"
-                aria-label="Re-evaluate Layout"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-[12px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
-              >
-                <RefreshCw size={15} strokeWidth={1.9} />
-              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -3081,14 +3219,27 @@ export default function App() {
         />
         <RuntimeVarsPanel
           open={runtimeVarsOpen}
-          onClose={() => setRuntimeVarsOpen(false)}
-          value={runtimeVarsText}
-          onChange={(nextValue) => {
-            setRuntimeVarsText(nextValue);
-            setRuntimeVarsError("");
+          onClose={() => {
+            setRuntimeVarsOpen(false);
+            setRuntimeVarsSubmitEndpoint("");
           }}
+          contract={runtimeVarsContract}
+          values={runtimeVarInputs}
+          onChangeValue={handleRuntimeVarInputChange}
           pipelineId={graphData?.pipeline_id || null}
           error={runtimeVarsError}
+          submitLabel={
+            runtimeVarsSubmitEndpoint === "/api/resume"
+              ? "Resume"
+              : runtimeVarsSubmitEndpoint === "/api/run"
+                ? "Run"
+                : ""
+          }
+          onSubmit={() => {
+            if (!runtimeVarsSubmitEndpoint) return;
+            void runAction(runtimeVarsSubmitEndpoint);
+          }}
+          submitDisabled={Boolean(pendingAction) || !runtimeVarsSubmitEndpoint}
         />
     </div>
   );

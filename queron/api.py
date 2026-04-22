@@ -73,6 +73,7 @@ class InspectDagResult:
     run_status: str | None = None
     archived_artifact_path: str | None = None
     is_final: bool = False
+    runtime_vars_contract: list[dict[str, Any]] = field(default_factory=list)
     nodes: list[dict[str, Any]] = field(default_factory=list)
     edges: list[list[str]] = field(default_factory=list)
 
@@ -2306,6 +2307,10 @@ def inspect_dag(
         run_status=run_metadata["run_status"],
         archived_artifact_path=run_metadata["archived_artifact_path"],
         is_final=bool(run_metadata["is_final"]),
+        runtime_vars_contract=[
+            item.model_dump() if hasattr(item, "model_dump") else dict(item)
+            for item in list(getattr(contract, "vars_json", []) or [])
+        ],
         nodes=nodes,
         edges=edges,
     )
