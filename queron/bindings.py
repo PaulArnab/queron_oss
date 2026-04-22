@@ -85,6 +85,12 @@ class RuntimeBinding:
     username: str | None = None
     password: str | None = None
     url: str | None = None
+    auth_mode: str | None = None
+    sslmode: str | None = None
+    sslrootcert: str | None = None
+    sslcert: str | None = None
+    sslkey: str | None = None
+    sslpassword: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def resolve_config(self, config_name: str) -> dict[str, Any]:
@@ -98,6 +104,12 @@ class RuntimeBinding:
                 "username": self.username,
                 "password": self.password,
                 "url": self.url,
+                "auth_mode": self.auth_mode,
+                "sslmode": self.sslmode,
+                "sslrootcert": self.sslrootcert,
+                "sslcert": self.sslcert,
+                "sslkey": self.sslkey,
+                "sslpassword": self.sslpassword,
                 **self.extras,
             }
         )
@@ -121,6 +133,12 @@ class PostgresBinding(RuntimeBinding):
         username: str | None = None,
         password: str | None = None,
         url: str | None = None,
+        auth_mode: str | None = None,
+        sslmode: str | None = None,
+        sslrootcert: str | None = None,
+        sslcert: str | None = None,
+        sslkey: str | None = None,
+        sslpassword: str | None = None,
         **extras: Any,
     ) -> None:
         super().__init__(
@@ -133,6 +151,12 @@ class PostgresBinding(RuntimeBinding):
             username=username,
             password=password,
             url=url,
+            auth_mode=auth_mode,
+            sslmode=sslmode,
+            sslrootcert=sslrootcert,
+            sslcert=sslcert,
+            sslkey=sslkey,
+            sslpassword=sslpassword,
             extras=extras,
         )
 
