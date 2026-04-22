@@ -165,21 +165,58 @@ def _build_connection_uri(raw_url: str, username: str | None, password: str | No
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
-def _config_from_request(req: PgConnectRequest) -> dict[str, Any]:
+def _infer_postgres_auth_mode(req: PgConnectRequest) -> str:
+    explicit = str(getattr(req, "auth_mode", "") or "").strip().lower()
+    if explicit:
+        if explicit not in {"basic", "tls", "mtls", "kerberos"}:
+            raise RuntimeError(f"Unsupported PostgreSQL auth_mode '{req.auth_mode}'.")
+        return explicit
+    if str(getattr(req, "sslcert", "") or "").strip() or str(getattr(req, "sslkey", "") or "").strip():
+        return "mtls"
+    if (
+        str(getattr(req, "sslmode", "") or "").strip()
+        or str(getattr(req, "sslrootcert", "") or "").strip()
+        or str(getattr(req, "sslpassword", "") or "").strip()
+    ):
+        return "tls"
+    return "basic"
+
+
+def _validate_postgres_auth_request(req: PgConnectRequest, auth_mode: str) -> None:
+    if auth_mode not in {"basic", "tls", "mtls", "kerberos"}:
+        raise RuntimeError(f"Unsupported PostgreSQL auth_mode '{auth_mode}'.")
+    if auth_mode == "mtls":
+        sslcert = str(getattr(req, "sslcert", "") or "").strip()
+        sslkey = str(getattr(req, "sslkey", "") or "").strip()
+        if bool(sslcert) != bool(sslkey):
+            raise RuntimeError("PostgreSQL mTLS requires both sslcert and sslkey.")
+
+
+def _build_postgres_ssl_kwargs(req: PgConnectRequest, auth_mode: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if auth_mode not in {"tls", "mtls"}:
+        return kwargs
+    for field_name in ("sslmode", "sslrootcert", "sslcert", "sslkey", "sslpassword"):
+        value = getattr(req, field_name, None)
+        if value is None:
+            continue
+        text = str(value).strip() if isinstance(value, str) else value
+        if text in {"", None}:
+            continue
+        kwargs[field_name] = text
+    return kwargs
+
+
+def _resolved_postgres_connect_config(req: PgConnectRequest) -> dict[str, Any]:
+    auth_mode = _infer_postgres_auth_mode(req)
+    _validate_postgres_auth_request(req, auth_mode)
     if req.url:
         uri = _build_connection_uri(req.url, req.username or None, req.password or None)
-        return {
-            "uri": uri,
-            "connect_timeout": int(req.connect_timeout_seconds) if req.connect_timeout_seconds is not None else None,
-            "options": (
-                f"-c statement_timeout={int(req.statement_timeout_ms)}"
-                if req.statement_timeout_ms is not None
-                else None
-            ),
-        }
-    raw = f"postgresql://{req.host}:{req.port}/{req.database}"
-    uri = _build_connection_uri(raw, req.username or None, req.password or None)
+    else:
+        raw = f"postgresql://{req.host}:{req.port}/{req.database}"
+        uri = _build_connection_uri(raw, req.username or None, req.password or None)
     return {
+        "auth_mode": auth_mode,
         "uri": uri,
         "connect_timeout": int(req.connect_timeout_seconds) if req.connect_timeout_seconds is not None else None,
         "options": (
@@ -187,7 +224,12 @@ def _config_from_request(req: PgConnectRequest) -> dict[str, Any]:
             if req.statement_timeout_ms is not None
             else None
         ),
+        "ssl_kwargs": _build_postgres_ssl_kwargs(req, auth_mode),
     }
+
+
+def _config_from_request(req: PgConnectRequest) -> dict[str, Any]:
+    return _resolved_postgres_connect_config(req)
 
 
 def _config_from_connection_id(connection_id: str) -> dict[str, Any]:
@@ -210,6 +252,8 @@ def _pg_connect_kwargs(config: dict[str, Any]) -> dict[str, Any]:
         kwargs["connect_timeout"] = int(config["connect_timeout"])
     if config.get("options"):
         kwargs["options"] = str(config["options"])
+    for key, value in dict(config.get("ssl_kwargs") or {}).items():
+        kwargs[str(key)] = value
     return kwargs
 
 
