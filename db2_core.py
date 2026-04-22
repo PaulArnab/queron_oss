@@ -298,6 +298,20 @@ def _build_db2_auth_keywords(cfg: Db2ConnectRequest, auth_mode: str) -> dict[str
     ssl_server_certificate = str(getattr(cfg, "ssl_server_certificate", "") or "").strip()
     if ssl_server_certificate:
         keywords["SSLServerCertificate"] = ssl_server_certificate
+    if auth_mode == "certificate":
+        keywords["Authentication"] = "CERTIFICATE"
+        ssl_client_keystoredb = str(getattr(cfg, "ssl_client_keystoredb", "") or "").strip()
+        ssl_client_keystash = str(getattr(cfg, "ssl_client_keystash", "") or "").strip()
+        ssl_client_keystore_password = str(getattr(cfg, "ssl_client_keystore_password", "") or "").strip()
+        ssl_client_label = str(getattr(cfg, "ssl_client_label", "") or "").strip()
+        if ssl_client_keystoredb:
+            keywords["SSLClientKeystoredb"] = ssl_client_keystoredb
+        if ssl_client_keystash:
+            keywords["SSLClientKeystash"] = ssl_client_keystash
+        if ssl_client_keystore_password:
+            keywords["SSLClientKeyStoreDBPassword"] = ssl_client_keystore_password
+        if ssl_client_label:
+            keywords["SSLClientLabel"] = ssl_client_label
     return keywords
 
 
