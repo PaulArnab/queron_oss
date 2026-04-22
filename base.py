@@ -18,6 +18,12 @@ class PgConnectRequest(BaseModel):
     username: str = "postgres"
     password: str = ""
     url: str | None = None
+    auth_mode: str | None = None
+    sslmode: str | None = None
+    sslrootcert: str | None = None
+    sslcert: str | None = None
+    sslkey: str | None = None
+    sslpassword: str | None = None
     connect_timeout_seconds: int | None = None
     statement_timeout_ms: int | None = None
     save_password: bool = True

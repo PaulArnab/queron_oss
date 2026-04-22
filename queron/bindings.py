@@ -61,6 +61,12 @@ def resolve_runtime_binding_payload(config_name: str, payload: Mapping[str, Any]
             "username": payload.get("username"),
             "password": payload.get("password"),
             "url": payload.get("url"),
+            "auth_mode": payload.get("auth_mode"),
+            "sslmode": payload.get("sslmode"),
+            "sslrootcert": payload.get("sslrootcert"),
+            "sslcert": payload.get("sslcert"),
+            "sslkey": payload.get("sslkey"),
+            "sslpassword": payload.get("sslpassword"),
             "connect_timeout_seconds": payload.get("connect_timeout_seconds"),
             "statement_timeout_ms": payload.get("statement_timeout_ms"),
         }
