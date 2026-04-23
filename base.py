@@ -50,6 +50,23 @@ class Db2ConnectRequest(BaseModel):
     save_password: bool = True
 
 
+class MssqlConnectRequest(BaseModel):
+    connection_id: str | None = None
+    name: str | None = None
+    host: str = "localhost"
+    port: int = 1433
+    database: str = "master"
+    username: str | None = None
+    password: str | None = None
+    url: str | None = None
+    auth_mode: str | None = None
+    driver: str | None = None
+    encrypt: bool | None = None
+    trust_server_certificate: bool | None = None
+    timeout_seconds: int | None = None
+    save_password: bool = True
+
+
 class DuckDbConnectRequest(BaseModel):
     name: str | None = None
     database: str = ":memory:"

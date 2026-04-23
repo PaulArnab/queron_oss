@@ -736,14 +736,20 @@ def _handle_run(args: argparse.Namespace) -> int:
         return 1
     requires_full_purge = args.target_node is None
     if requires_full_purge and not bool(getattr(args, "clean_existing", False)):
-        compiled, existing_outputs, artifact_path = list_existing_outputs_for_file(
-            args.pipeline,
-            config_path=args.config_path,
-            connections_path=args.connections_path,
-            runtime_bindings=runtime_bindings,
-            runtime_vars=runtime_vars,
-            target=args.target,
-        )
+        try:
+            compiled, existing_outputs, artifact_path = list_existing_outputs_for_file(
+                args.pipeline,
+                config_path=args.config_path,
+                connections_path=args.connections_path,
+                runtime_bindings=runtime_bindings,
+                runtime_vars=runtime_vars,
+                target=args.target,
+            )
+        except Exception as exc:
+            if args.json_output:
+                return _emit_json({"ok": False, "error": str(exc)})
+            print(f"Run failed: {exc}", file=sys.stderr)
+            return 1
         if has_compile_errors(compiled):
             payload = {
                 **_pipeline_summary(compiled),

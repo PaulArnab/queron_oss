@@ -13,6 +13,8 @@ def normalize_binding_type(value: str | None) -> str:
         return "postgresql"
     if raw == "db2":
         return "db2"
+    if raw in {"mssql", "sqlserver", "sql_server"}:
+        return "mssql"
     raise RuntimeError(f"Unsupported runtime binding type '{value}'.")
 
 
@@ -74,6 +76,10 @@ def resolve_runtime_binding_payload(config_name: str, payload: Mapping[str, Any]
             "ssl_client_keystash": payload.get("ssl_client_keystash"),
             "ssl_client_keystore_password": payload.get("ssl_client_keystore_password"),
             "ssl_client_label": payload.get("ssl_client_label"),
+            "driver": payload.get("driver"),
+            "encrypt": payload.get("encrypt"),
+            "trust_server_certificate": payload.get("trust_server_certificate"),
+            "timeout_seconds": payload.get("timeout_seconds"),
             "connect_timeout_seconds": payload.get("connect_timeout_seconds"),
             "statement_timeout_ms": payload.get("statement_timeout_ms"),
         }
@@ -105,6 +111,10 @@ class RuntimeBinding:
     ssl_client_keystash: str | None = None
     ssl_client_keystore_password: str | None = None
     ssl_client_label: str | None = None
+    driver: str | None = None
+    encrypt: bool | None = None
+    trust_server_certificate: bool | None = None
+    timeout_seconds: int | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def resolve_config(self, config_name: str) -> dict[str, Any]:
@@ -131,6 +141,10 @@ class RuntimeBinding:
                 "ssl_client_keystash": self.ssl_client_keystash,
                 "ssl_client_keystore_password": self.ssl_client_keystore_password,
                 "ssl_client_label": self.ssl_client_label,
+                "driver": self.driver,
+                "encrypt": self.encrypt,
+                "trust_server_certificate": self.trust_server_certificate,
+                "timeout_seconds": self.timeout_seconds,
                 **self.extras,
             }
         )
@@ -222,6 +236,44 @@ class Db2Binding(RuntimeBinding):
             ssl_client_keystash=ssl_client_keystash,
             ssl_client_keystore_password=ssl_client_keystore_password,
             ssl_client_label=ssl_client_label,
+            extras=extras,
+        )
+
+
+class MssqlBinding(RuntimeBinding):
+    def __init__(
+        self,
+        *,
+        config_factory: ConfigFactory | None = None,
+        name: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+        database: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        url: str | None = None,
+        auth_mode: str | None = None,
+        driver: str | None = None,
+        encrypt: bool | None = None,
+        trust_server_certificate: bool | None = None,
+        timeout_seconds: int | None = None,
+        **extras: Any,
+    ) -> None:
+        super().__init__(
+            binding_type="mssql",
+            config_factory=config_factory,
+            name=name,
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            url=url,
+            auth_mode=auth_mode,
+            driver=driver,
+            encrypt=encrypt,
+            trust_server_certificate=trust_server_certificate,
+            timeout_seconds=timeout_seconds,
             extras=extras,
         )
 

@@ -109,6 +109,39 @@ class _Db2Namespace:
         return _node_decorator("db2.egress", payload)
 
 
+class _MssqlNamespace:
+    def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        return _node_decorator(
+            "mssql.ingress",
+            {
+                "config": _require_non_empty_string("config", config),
+                "name": _require_non_empty_string("name", name),
+                "out": _require_non_empty_string("out", out),
+                "sql": _require_non_empty_string("sql", sql),
+            },
+        )
+
+    def egress(
+        self,
+        *,
+        config: str,
+        name: str,
+        table: str,
+        sql: str,
+        mode: str = "replace",
+        out: str,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        payload = {
+            "config": _require_non_empty_string("config", config),
+            "name": _require_non_empty_string("name", name),
+            "table": _require_non_empty_string("table", table),
+            "sql": _require_non_empty_string("sql", sql),
+            "mode": _require_non_empty_string("mode", mode),
+            "out": _require_non_empty_string("out", out),
+        }
+        return _node_decorator("mssql.egress", payload)
+
+
 class _ModelNamespace:
     def sql(
         self,
@@ -401,6 +434,7 @@ def var(name: str, *, log_value: bool = False) -> str:
 
 postgres = _PostgresNamespace()
 db2 = _Db2Namespace()
+mssql = _MssqlNamespace()
 csv = _CsvNamespace()
 jsonl = _JsonlNamespace()
 parquet = _ParquetNamespace()

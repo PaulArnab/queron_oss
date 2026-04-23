@@ -196,7 +196,7 @@ class PipelineRuntime:
 
     def _active_node_force_interrupt_supported(self) -> bool:
         active_kind = str(self._active_node_kind or "").strip().lower()
-        return active_kind not in {"", "python.ingress", "db2.ingress", "db2.egress"}
+        return active_kind not in {"", "python.ingress", "db2.ingress", "db2.egress", "mssql.ingress", "mssql.egress"}
 
     def _resolve_log_path(self) -> Path:
         return Path(self.duckdb_path).resolve().parent / "logs" / f"{self.run_id}.jsonl"
@@ -359,11 +359,14 @@ class PipelineRuntime:
         reason = str(payload.get("reason") or "").strip() or "Force stopped by user."
         node_kind = str(node.kind or "").strip().lower() if node is not None else ""
         db2_fallback = bool(python_fallback and node_kind in {"db2.ingress", "db2.egress"})
+        mssql_fallback = bool(python_fallback and node_kind in {"mssql.ingress", "mssql.egress"})
         if interrupted_current_node and node is not None:
             message = f"{reason} Node '{node.name}' was interrupted."
         elif python_fallback and node is not None:
             if db2_fallback:
                 message = f"{reason} DB2 node '{node.name}' completed before stop was applied."
+            elif mssql_fallback:
+                message = f"{reason} MSSQL node '{node.name}' completed before stop was applied."
             else:
                 message = f"{reason} Python node '{node.name}' completed before stop was applied."
         elif completed_before_cancellation and node is not None:
@@ -426,7 +429,7 @@ class PipelineRuntime:
         stop_mode = str(payload.get("stop_mode") or "graceful").strip().lower()
         if stop_mode == "force":
             node_kind = str((node.kind if node is not None else None) or "").strip().lower()
-            fallback_node = node_kind in {"python.ingress", "db2.ingress", "db2.egress"}
+            fallback_node = node_kind in {"python.ingress", "db2.ingress", "db2.egress", "mssql.ingress", "mssql.egress"}
             with self._stop_request_lock:
                 target_node_name = self._active_force_target_node_name
                 interrupt_attempted = self._active_force_interrupt_attempted
@@ -594,6 +597,9 @@ class PipelineRuntime:
 
     def _resolve_db2_source_connection_id(self, node: NodeSpec, binding: dict[str, Any]) -> str:
         return adapters.ensure_db2_binding(binding, str(node.config or node.name))
+
+    def _resolve_mssql_source_connection_id(self, node: NodeSpec, binding: dict[str, Any]) -> str:
+        return adapters.ensure_mssql_binding(binding, str(node.config or node.name))
 
     def _node_lookup(self) -> dict[str, NodeSpec]:
         return self.spec.node_by_name()
@@ -1367,7 +1373,7 @@ class PipelineRuntime:
         )
         self._begin_active_node(node)
         try:
-            if node.kind in {"postgres.ingress", "db2.ingress"}:
+            if node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress"}:
                 return self._execute_ingress(node)
             if node.kind == "python.ingress":
                 return self._execute_python_ingress(node)
@@ -1377,6 +1383,8 @@ class PipelineRuntime:
                 return self._execute_postgres_egress(node)
             if node.kind == "db2.egress":
                 return self._execute_db2_egress(node)
+            if node.kind == "mssql.egress":
+                return self._execute_mssql_egress(node)
             if node.kind == "model.sql":
                 return self._execute_model(node)
             if node.kind == "parquet.egress":
@@ -1444,7 +1452,7 @@ class PipelineRuntime:
                 target_table=str(node.target_table or ""),
                 lineage=self._build_ingress_lineage(node),
             )
-        else:
+        elif node.kind == "db2.ingress":
             import duckdb_core
             import db2_core
 
@@ -1463,6 +1471,40 @@ class PipelineRuntime:
                     row_count=int(progress.get("row_count") or 0),
                     chunk_size=int(progress.get("chunk_size")) if progress.get("chunk_size") is not None else None,
                 ),
+            )
+            duckdb_core.record_ingest_column_mappings(
+                connection_id=duckdb_connection_id,
+                target_table=str(node.target_table or ""),
+                node_name=node.name,
+                node_kind=node.kind,
+                column_mappings=response.column_mappings,
+            )
+            duckdb_core.record_table_lineage(
+                connection_id=duckdb_connection_id,
+                target_table=str(node.target_table or ""),
+                lineage=self._build_ingress_lineage(node),
+            )
+        else:
+            import duckdb_core
+            import mssql_core
+
+            source_payload = adapters.build_mssql_request_payload(binding, str(node.config or node.name))
+            source_payload["connection_id"] = self._resolve_mssql_source_connection_id(node, binding)
+            response = mssql_core.ingest_query_to_duckdb(
+                mssql_core.MssqlConnectRequest(**source_payload),
+                sql=sql,
+                sql_params=sql_params,
+                duckdb_path=self.duckdb_path,
+                target_table=str(node.target_table or ""),
+                replace=False,
+                chunk_size=200,
+                on_progress=lambda progress: self._update_node_extract_progress(
+                    node,
+                    row_count=int(progress.get("row_count") or 0),
+                    chunk_size=int(progress.get("chunk_size")) if progress.get("chunk_size") is not None else None,
+                ),
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
             )
             duckdb_core.record_ingest_column_mappings(
                 connection_id=duckdb_connection_id,
@@ -1686,6 +1728,55 @@ class PipelineRuntime:
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
             message=f"Wrote {response.row_count} row(s) to DB2 target {response.target_name}.",
+            node=node,
+            artifact_name=local_artifact_name or response.target_name,
+            details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower()},
+        )
+        return NodeExecutionResult(
+            node_name=node.name,
+            node_kind=node.kind,
+            artifact_name=local_artifact_name or response.target_name,
+            row_count_in=int(response.row_count),
+            row_count_out=int(response.row_count),
+            warnings=self._normalize_runtime_warnings(
+                list(response.warnings or []),
+                default_code=WarningCode.EGRESS_WARNING,
+                default_source="connector",
+            ),
+            details={"mode": str(node.mode or "replace").lower()},
+        )
+
+    def _execute_mssql_egress(self, node: NodeSpec) -> NodeExecutionResult:
+        import mssql_core
+
+        binding = self._binding_for_node(node)
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        if not sql:
+            raise RuntimeError(f"Egress node '{node.name}' is missing SQL.")
+        if node.refs:
+            self._log_event(
+                code=LogCode.NODE_REFS_RESOLVED,
+                message=f"Resolved {len(node.refs)} ref(s) for node '{node.name}'.",
+                node=node,
+                details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
+            )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        target_payload = adapters.build_mssql_request_payload(binding, str(node.config or node.name))
+        target_payload["connection_id"] = self._resolve_mssql_source_connection_id(node, binding)
+        response = mssql_core.egress_query_from_duckdb(
+            target_request=mssql_core.MssqlConnectRequest(**target_payload),
+            duckdb_database=self.duckdb_path,
+            sql=sql,
+            sql_params=sql_params,
+            target_table=str(node.target_relation or ""),
+            mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
+            on_interrupt_open=self.register_active_interruptor,
+            on_interrupt_close=self.unregister_active_interruptor,
+        )
+        self._log_event(
+            code=LogCode.NODE_EGRESS_WRITTEN,
+            message=f"Wrote {response.row_count} row(s) to MSSQL target {response.target_name}.",
             node=node,
             artifact_name=local_artifact_name or response.target_name,
             details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower()},

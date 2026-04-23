@@ -12,6 +12,7 @@ setup(
         "db2_core",
         "duckdb_core",
         "duckdb_driver",
+        "mssql_core",
         "postgres",
         "postgres_core",
         "type_mapper",

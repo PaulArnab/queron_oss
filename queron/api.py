@@ -1922,6 +1922,8 @@ def inspect_node(
                     for item in dependencies
                     if str(item).strip()
                 ],
+                "operator": str(raw_node.get("operator") or "").strip() or None,
+                "value": raw_node.get("value"),
                 "dependents": sorted(
                     str(item).strip()
                     for item in dependents_by_name.get(name, [])

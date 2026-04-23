@@ -526,6 +526,8 @@ function buildInspectEntryFromApi(node, query = null) {
       resolvedSql: query?.resolved_sql || null,
       hasRuntimeVars: Boolean(node.has_runtime_vars || runtimeVarNames.length),
       runtimeVarNames,
+      checkOperator: node.operator || null,
+      checkValue: node.value ?? null,
       columnMappings: Array.isArray(node.column_mappings) ? node.column_mappings : [],
     },
     live: {
@@ -1263,9 +1265,10 @@ function highlightSqlVars(sqlText) {
   });
 }
 
-function QueryPanel({ rawSql, resolvedSql, hasRuntimeVars }) {
+function QueryPanel({ rawSql, resolvedSql, hasRuntimeVars, kind, checkOperator, checkValue }) {
   const [copied, setCopied] = useState(false);
   const primarySql = hasRuntimeVars && rawSql ? rawSql : resolvedSql;
+  const showCountCondition = String(kind || "").trim() === "check.count" && checkOperator && checkValue !== null && checkValue !== undefined;
 
   async function handleCopy() {
     if (!primarySql) return;
@@ -1299,6 +1302,14 @@ function QueryPanel({ rawSql, resolvedSql, hasRuntimeVars }) {
         <pre className="min-h-full whitespace-pre-wrap break-words px-4 py-4 font-mono text-[12px] leading-5 text-slate-700">
           {hasRuntimeVars && rawSql ? highlightSqlVars(rawSql) : resolvedSql}
         </pre>
+        {showCountCondition ? (
+          <div className="border-t border-slate-200 px-4 py-3 text-[12px] text-slate-600">
+            <span className="font-semibold text-slate-700">Threshold:</span>{" "}
+            <span className="font-mono">
+              count {String(checkOperator)} {String(checkValue)}
+            </span>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -1690,6 +1701,9 @@ function InspectBottomSheet({
                   rawSql={selected.rawSql}
                   resolvedSql={selected.resolvedSql}
                   hasRuntimeVars={selected.hasRuntimeVars}
+                  kind={selected.kind}
+                  checkOperator={selected.checkOperator}
+                  checkValue={selected.checkValue}
                 />
               ) : (
                 <FlatNodeTable items={tabItems} selectedId={selected.id} />

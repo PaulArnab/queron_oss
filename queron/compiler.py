@@ -753,11 +753,13 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
     artifact_node_kinds = {
         "postgres.ingress",
         "db2.ingress",
+        "mssql.ingress",
         "python.ingress",
         *list(_ALL_FILE_INGRESS_KINDS),
         "model.sql",
         "postgres.egress",
         "db2.egress",
+        "mssql.egress",
         "parquet.egress",
         "csv.egress",
         "jsonl.egress",
@@ -844,7 +846,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
 
         if node.kind in _ALL_FILE_INGRESS_KINDS:
             node.file_format = _file_format_for_kind(node.kind, value=node.file_format, path=node.input_path)
-        if node.kind in {"postgres.egress", "db2.egress"}:
+        if node.kind in {"postgres.egress", "db2.egress", "mssql.egress"}:
             raw_target_relation = str(node.target_relation or "").strip()
             if raw_target_relation:
                 try:
@@ -910,7 +912,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                 }
             )
 
-        if node.kind in query_node_kinds or node.kind in {"postgres.ingress", "db2.ingress", "model.sql"}:
+        if node.kind in query_node_kinds or node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress", "model.sql"}:
             try:
                 def _resolve_source(source_name: str) -> str:
                     relation = resolve_source_relation(source_name, config, spec.target)
@@ -934,7 +936,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
         else:
             node.resolved_sql = None
 
-        if node.kind in {"postgres.ingress", "db2.ingress", "postgres.egress", "db2.egress"} and not node.config:
+        if node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress", "postgres.egress", "db2.egress", "mssql.egress"} and not node.config:
             diagnostics.append(
                 {
                     "level": "error",
@@ -944,7 +946,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                 }
             )
 
-        if node.kind in {"postgres.egress", "db2.egress"}:
+        if node.kind in {"postgres.egress", "db2.egress", "mssql.egress"}:
             target_relation = str(node.target_relation or "").strip()
             if not target_relation:
                 diagnostics.append(

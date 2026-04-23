@@ -86,3 +86,37 @@ def ensure_db2_binding(binding: dict[str, Any], config_name: str) -> str:
     }
     db2_core.connect(Db2ConnectRequest(**payload))
     return connection_id
+
+
+def build_mssql_request_payload(binding: dict[str, Any], config_name: str) -> dict[str, Any]:
+    return {
+        "name": str(binding.get("name") or config_name or "mssql"),
+        "host": binding.get("host", "localhost"),
+        "port": binding.get("port", 1433),
+        "database": binding.get("database", "master"),
+        "username": binding.get("username"),
+        "password": binding.get("password"),
+        "url": binding.get("url"),
+        "auth_mode": binding.get("auth_mode"),
+        "driver": binding.get("driver"),
+        "encrypt": binding.get("encrypt"),
+        "trust_server_certificate": binding.get("trust_server_certificate"),
+        "timeout_seconds": binding.get("timeout_seconds"),
+        "save_password": False,
+    }
+
+
+def ensure_mssql_binding(binding: dict[str, Any], config_name: str) -> str:
+    import mssql_core
+    from base import MssqlConnectRequest
+
+    connection_id = str(binding.get("connection_id") or "").strip() or runtime_connection_id("mssql", config_name, binding)
+    if connection_id in mssql_core._connections:
+        return connection_id
+
+    payload = {
+        "connection_id": connection_id,
+        **build_mssql_request_payload(binding, config_name),
+    }
+    mssql_core.connect(MssqlConnectRequest(**payload))
+    return connection_id
