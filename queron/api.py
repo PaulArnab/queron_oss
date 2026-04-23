@@ -93,6 +93,24 @@ class InspectNodeResult:
     nodes: list[dict[str, Any]] = field(default_factory=list)
 
 
+_RUNTIME_VAR_PATTERN = re.compile(r"\{\{\s*queron\.var\(\s*['\"]([^'\"]+)['\"]\s*\)\s*\}\}")
+
+
+def _extract_runtime_var_names(sql: Any) -> list[str]:
+    text = str(sql or "")
+    if not text:
+        return []
+    seen: set[str] = set()
+    names: list[str] = []
+    for match in _RUNTIME_VAR_PATTERN.finditer(text):
+        name = str(match.group(1) or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
 def _split_relation_name(value: str) -> tuple[str, str]:
     text = str(value or "").strip()
     if not text or "." not in text:
@@ -925,7 +943,11 @@ def resume_compiled_pipeline(
     runtime.clear_selected_outputs(selected_nodes)
     runtime._log_event(
         code=LogCode.PIPELINE_EXECUTION_STARTED,
-        message="Executing resumed pipeline segment.",
+        message="Executing resumed pipeline segment."
+        + _format_pipeline_runtime_vars_for_log(
+            getattr(compiled.contract, "vars_json", None),
+            runtime.runtime_vars,
+        ),
         details={"run_id": runtime.run_id, "selected_nodes": sorted(selected_nodes)},
     )
     try:
@@ -1154,6 +1176,29 @@ def _build_runtime_for_pipeline(
         on_log=on_log,
     )
     return runtime, resolved_artifact_path
+
+
+def _format_pipeline_runtime_vars_for_log(
+    contract_vars: list[Any] | None,
+    runtime_vars: dict[str, Any] | None,
+) -> str:
+    records = [item for item in list(contract_vars or []) if str(getattr(item, "name", "") or "").strip()]
+    values = dict(runtime_vars or {})
+    if not records:
+        return ""
+    parts: list[str] = []
+    for record in records:
+        name = str(getattr(record, "name", "") or "").strip()
+        if not name:
+            continue
+        if bool(getattr(record, "log_value", False)) and name in values:
+            rendered = json.dumps(values.get(name), ensure_ascii=True, separators=(",", ":"))
+            if len(rendered) > 160:
+                rendered = rendered[:157] + "..."
+            parts.append(f"{name}={rendered}")
+        else:
+            parts.append(name)
+    return f" Runtime vars: {', '.join(parts)}." if parts else ""
 
 
 def _ensure_run_label_available(
@@ -1837,6 +1882,7 @@ def inspect_node(
         name = str(raw_node.get("name") or "").strip()
         if not name or name not in selected_names:
             continue
+        runtime_var_names = _extract_runtime_var_names(raw_node.get("sql"))
         node_run = node_runs_by_name.get(name, {})
         active_state = active_states_by_name.get(name, {})
         artifact_context = _resolve_node_artifact_context(
@@ -1882,6 +1928,8 @@ def inspect_node(
                     if str(item).strip()
                 ),
                 "column_mappings": column_mappings,
+                "has_runtime_vars": bool(runtime_var_names),
+                "runtime_var_names": runtime_var_names,
                 "started_at": str(node_run.get("started_at") or "").strip() or None,
                 "finished_at": str(node_run.get("finished_at") or "").strip() or None,
             }
@@ -2271,6 +2319,7 @@ def inspect_dag(
         name = str(raw_node.get("name") or "").strip()
         if not name:
             continue
+        runtime_var_names = _extract_runtime_var_names(raw_node.get("sql"))
         node_run = node_runs_by_name.get(name, {})
         active_state = active_states_by_name.get(name, {})
         artifact_context = _resolve_node_artifact_context(
@@ -2294,6 +2343,8 @@ def inspect_dag(
                 "finished_at": str(node_run.get("finished_at") or "").strip() or None,
                 "row_count_in": node_run.get("row_count_in"),
                 "row_count_out": node_run.get("row_count_out"),
+                "has_runtime_vars": bool(runtime_var_names),
+                "runtime_var_names": runtime_var_names,
             }
         )
 
@@ -2584,7 +2635,11 @@ def _run_pipeline_impl(
         )
     runtime._log_event(
         code=LogCode.PIPELINE_EXECUTION_STARTED,
-        message="Executing pipeline DAG.",
+        message="Executing pipeline DAG."
+        + _format_pipeline_runtime_vars_for_log(
+            getattr(compiled.contract, "vars_json", None),
+            runtime.runtime_vars,
+        ),
         details={"target_node": target_node, "clean_existing": bool(clean_existing)},
     )
     _register_active_runtime(runtime)

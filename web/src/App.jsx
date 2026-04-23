@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -468,6 +468,7 @@ function buildFlowNodeDataFromApi(node) {
   const status = String(node?.node_run_status || node?.current_state || "ready");
   const artifactName = node?.artifact_name || null;
   const rows = node?.row_count_out ?? null;
+  const runtimeVarNames = Array.isArray(node?.runtime_var_names) ? node.runtime_var_names : [];
   return {
     label: titleForNode(id, { artifact: artifactName, kind }),
     title: titleForNode(id, { artifact: artifactName, kind }),
@@ -480,6 +481,7 @@ function buildFlowNodeDataFromApi(node) {
     runtimeTone: runtimeTone(status, 0),
     runtimeLabel: runtimeLabel(status, 0),
     runtimeHint: artifactName || null,
+    hasRuntimeVars: Boolean(node?.has_runtime_vars || runtimeVarNames.length),
     rows,
     duration: timeLabel(node?.started_at, node?.finished_at),
   };
@@ -503,13 +505,14 @@ function buildFlowEdgeFromApi(source, target, nodeById) {
   };
 }
 
-function buildInspectEntryFromApi(node, resolvedSql = null) {
+function buildInspectEntryFromApi(node, query = null) {
   if (!node) return null;
   const id = String(node.name || "");
   const kind = String(node.kind || "");
   const status = String(node.node_run_status || node.current_state || "ready");
   const titleArtifact = node.logical_artifact || node.artifact_name || null;
   const artifactName = node.artifact_name || null;
+  const runtimeVarNames = Array.isArray(node.runtime_var_names) ? node.runtime_var_names : [];
   return {
     static: {
       id,
@@ -519,7 +522,10 @@ function buildInspectEntryFromApi(node, resolvedSql = null) {
       logicalArtifact: node.logical_artifact || null,
       dependencies: Array.isArray(node.dependencies) ? node.dependencies : [],
       dependents: Array.isArray(node.dependents) ? node.dependents : [],
-      resolvedSql,
+      rawSql: query?.sql || null,
+      resolvedSql: query?.resolved_sql || null,
+      hasRuntimeVars: Boolean(node.has_runtime_vars || runtimeVarNames.length),
+      runtimeVarNames,
       columnMappings: Array.isArray(node.column_mappings) ? node.column_mappings : [],
     },
     live: {
@@ -538,7 +544,7 @@ function buildInspectEntryFromApi(node, resolvedSql = null) {
 }
 
 function buildInspectPanelDataFromApi(payload) {
-  const selected = buildInspectEntryFromApi(payload?.selected, payload?.query?.resolved_sql || null);
+  const selected = buildInspectEntryFromApi(payload?.selected, payload?.query || null);
   return {
     run: {
       runId: payload?.run_id || null,
@@ -973,16 +979,41 @@ function FlowCardNode({ data, selected }) {
 
       <div className="flex items-start justify-between gap-2 px-3 pt-3 pb-2">
         <div className="min-w-0 flex-1 leading-tight">
-          <div
-            style={{
-              fontSize: 12,
-              fontWeight: 700,
-              color: "#2d3037",
-              marginBottom: 2,
-              lineHeight: 1.2,
-            }}
-          >
-            {data.title}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+            <div
+              style={{
+                minWidth: 0,
+                flex: 1,
+                overflow: "hidden",
+                whiteSpace: "nowrap",
+                textOverflow: "ellipsis",
+                paddingRight: 4,
+                fontSize: 12,
+                fontWeight: 700,
+                color: "#2d3037",
+                lineHeight: 1.2,
+              }}
+            >
+              {data.title}
+            </div>
+            {data.hasRuntimeVars ? (
+              <span
+                style={{
+                  flexShrink: 0,
+                  borderRadius: 999,
+                  background: "#fdebc8",
+                  color: "#9a5b00",
+                  padding: "4px 8px",
+                  fontSize: 9,
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  lineHeight: 1,
+                }}
+              >
+                Vars
+              </span>
+            ) : null}
           </div>
           <div
             style={{
@@ -1006,23 +1037,24 @@ function FlowCardNode({ data, selected }) {
           </div>
         </div>
 
-        <span
-          style={{
-            flexShrink: 0,
-            alignSelf: "flex-start",
-            borderRadius: 999,
-            background: stateStyles.bg,
-            color: stateStyles.text,
-            padding: "4px 8px",
-            fontSize: 9,
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            lineHeight: 1,
-          }}
-        >
-          {data.runtimeLabel}
-        </span>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 6, flexShrink: 0 }}>
+          <span
+            style={{
+              alignSelf: "flex-start",
+              borderRadius: 999,
+              background: stateStyles.bg,
+              color: stateStyles.text,
+              padding: "4px 8px",
+              fontSize: 9,
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              lineHeight: 1,
+            }}
+          >
+            {data.runtimeLabel}
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2 px-3 pb-3">
@@ -1208,13 +1240,37 @@ function FlatNodeTable({ items, selectedId }) {
   );
 }
 
-function QueryPanel({ resolvedSql }) {
+function highlightSqlVars(sqlText) {
+  const text = String(sqlText || "");
+  if (!text) return null;
+  const pattern = /(\{\{\s*queron\.var\(\s*["'][^"']+["']\s*\)\s*\}\})/g;
+  const parts = text.split(pattern);
+  return parts.map((part, index) => {
+    if (!part) return null;
+    if (pattern.test(part)) {
+      pattern.lastIndex = 0;
+      return (
+        <span
+          key={`var-${index}`}
+          className="rounded bg-amber-100 px-1 py-0.5 font-semibold text-amber-800"
+        >
+          {part}
+        </span>
+      );
+    }
+    pattern.lastIndex = 0;
+    return <Fragment key={`txt-${index}`}>{part}</Fragment>;
+  });
+}
+
+function QueryPanel({ rawSql, resolvedSql, hasRuntimeVars }) {
   const [copied, setCopied] = useState(false);
+  const primarySql = hasRuntimeVars && rawSql ? rawSql : resolvedSql;
 
   async function handleCopy() {
-    if (!resolvedSql) return;
+    if (!primarySql) return;
     try {
-      await navigator.clipboard.writeText(resolvedSql);
+      await navigator.clipboard.writeText(primarySql);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
     } catch (_error) {
@@ -1222,7 +1278,7 @@ function QueryPanel({ resolvedSql }) {
     }
   }
 
-  if (!resolvedSql) {
+  if (!primarySql && !resolvedSql) {
     return (
       <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
         No resolved SQL is available for this node.
@@ -1241,7 +1297,7 @@ function QueryPanel({ resolvedSql }) {
           {copied ? "Copied" : "Copy"}
         </button>
         <pre className="min-h-full whitespace-pre-wrap break-words px-4 py-4 font-mono text-[12px] leading-5 text-slate-700">
-          {resolvedSql}
+          {hasRuntimeVars && rawSql ? highlightSqlVars(rawSql) : resolvedSql}
         </pre>
       </div>
     </div>
@@ -1400,6 +1456,14 @@ function InspectBottomSheet({
                       </span>
                     </>
                   ) : null}
+                  {selected.hasRuntimeVars ? (
+                    <>
+                      <span className="text-slate-300">•</span>
+                      <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-amber-700">
+                        Vars
+                      </span>
+                    </>
+                  ) : null}
                 </div>
               </div>
               <span
@@ -1468,7 +1532,7 @@ function InspectBottomSheet({
                     : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
                 }`}
               >
-                Resolved SQL
+                SQL
               </button>
               <button
                 type="button"
@@ -1622,7 +1686,11 @@ function InspectBottomSheet({
                   </div>
                 )
               ) : activeTab === "query" ? (
-                <QueryPanel resolvedSql={selected.resolvedSql} />
+                <QueryPanel
+                  rawSql={selected.rawSql}
+                  resolvedSql={selected.resolvedSql}
+                  hasRuntimeVars={selected.hasRuntimeVars}
+                />
               ) : (
                 <FlatNodeTable items={tabItems} selectedId={selected.id} />
               )}
@@ -2347,7 +2415,27 @@ export default function App() {
       const response = await fetch(buildRunScopedPath("/api/node", { node_name: nodeId }));
       const payload = await response.json();
       if (!response.ok || payload.ok === false) throw new Error(payload.error || "Failed to load node details.");
-      setPanelData(buildInspectPanelDataFromApi(payload));
+      setPanelData((current) => {
+        const next = buildInspectPanelDataFromApi(payload);
+        if (
+          current?.selectedStatic?.id &&
+          next?.selectedStatic?.id &&
+          String(current.selectedStatic.id) === String(next.selectedStatic.id)
+        ) {
+          next.selectedStatic = {
+            ...next.selectedStatic,
+            rawSql: next.selectedStatic.rawSql ?? current.selectedStatic.rawSql ?? null,
+            resolvedSql: next.selectedStatic.resolvedSql ?? current.selectedStatic.resolvedSql ?? null,
+            hasRuntimeVars:
+              Boolean(next.selectedStatic.hasRuntimeVars) || Boolean(current.selectedStatic.hasRuntimeVars),
+            runtimeVarNames:
+              Array.isArray(next.selectedStatic.runtimeVarNames) && next.selectedStatic.runtimeVarNames.length
+                ? next.selectedStatic.runtimeVarNames
+                : (Array.isArray(current.selectedStatic.runtimeVarNames) ? current.selectedStatic.runtimeVarNames : []),
+          };
+        }
+        return next;
+      });
       setPanelError("");
     } catch (error) {
       setPanelData(null);
@@ -2379,7 +2467,9 @@ export default function App() {
             ...current,
             selectedStatic: {
               ...(current.selectedStatic || {}),
+              rawSql: payload?.query?.sql || null,
               resolvedSql: payload?.query?.resolved_sql || null,
+              hasRuntimeVars: Boolean(current.selectedStatic?.hasRuntimeVars || payload?.query?.sql?.includes("queron.var(")),
             },
           };
         }

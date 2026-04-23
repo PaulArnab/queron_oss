@@ -24,7 +24,7 @@ _FILE_INGRESS_KIND_TO_FORMAT = {
 }
 _ALL_FILE_INGRESS_KINDS = set(_FILE_INGRESS_KIND_TO_FORMAT) | {"file.ingress"}
 _VAR_PATTERN = re.compile(
-    r"\{\{\s*queron\.var\(\s*(?P<quote>['\"])(?P<name>[^'\"]+)(?P=quote)\s*\)\s*\}\}",
+    r"\{\{\s*queron\.var\(\s*(?P<quote>['\"])(?P<name>[^'\"]+)(?P=quote)(?:\s*,\s*log_value\s*=\s*(?P<log_value>true|false))?\s*\)\s*\}\}",
     re.IGNORECASE,
 )
 _SQL_VAR_VALUE_PRECEDERS = {"=", "<>", "!=", ">", ">=", "<", "<=", "(", ",", "between", "and", "like", "ilike"}
@@ -317,6 +317,7 @@ def _extract_node_var_references(node: NodeSpec) -> list[dict[str, Any]]:
             {
                 "name": name,
                 "kind": _infer_sql_var_kind(sql_text, match.start()),
+                "log_value": str(match.group("log_value") or "").strip().lower() == "true",
             }
         )
     deduped: dict[tuple[str, str], dict[str, Any]] = {}
@@ -368,6 +369,7 @@ def _validate_node_var_references(node: NodeSpec) -> list[dict[str, Any]]:
             {
                 "name": name,
                 "kind": "list" if previous_non_group_token == "in" else "scalar",
+                "log_value": str(match.group("log_value") or "").strip().lower() == "true",
             }
         )
 
@@ -393,6 +395,7 @@ def _collect_pipeline_var_records(nodes: list[NodeSpec]) -> tuple[list[PipelineV
                     "kind": str(ref.get("kind") or "scalar"),
                     "required": True,
                     "default": None,
+                    "log_value": bool(ref.get("log_value")),
                     "used_in_nodes": [],
                 },
             )
@@ -411,6 +414,19 @@ def _collect_pipeline_var_records(nodes: list[NodeSpec]) -> tuple[list[PipelineV
                 )
             if ref_kind == "list":
                 record["kind"] = "list"
+            ref_log_value = bool(ref.get("log_value"))
+            if bool(record["log_value"]) != ref_log_value:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "conflicting_runtime_var_log_value",
+                        "message": (
+                            f"Runtime var '{name}' uses conflicting log_value settings in the pipeline. "
+                            "A runtime var must keep one log_value setting across the whole pipeline."
+                        ),
+                        "node_name": node.name,
+                    }
+                )
             if node.name not in record["used_in_nodes"]:
                 record["used_in_nodes"].append(node.name)
     records = [
@@ -419,6 +435,7 @@ def _collect_pipeline_var_records(nodes: list[NodeSpec]) -> tuple[list[PipelineV
             kind=item["kind"],
             required=bool(item["required"]),
             default=item["default"],
+            log_value=bool(item["log_value"]),
             used_in_nodes=sorted(str(value) for value in item["used_in_nodes"] if str(value).strip()),
         )
         for item in sorted(by_name.values(), key=lambda entry: entry["name"])

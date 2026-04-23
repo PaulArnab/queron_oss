@@ -363,6 +363,7 @@ class PipelineVarRecord(BaseModel):
     kind: VarUsageKind = "scalar"
     required: bool = True
     default: Any | None = None
+    log_value: bool = False
     used_in_nodes: list[str] = Field(default_factory=list)
 
 

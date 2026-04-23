@@ -7,7 +7,7 @@ from .runtime_models import PipelineVarRecord
 
 
 _VAR_PATTERN = re.compile(
-    r"\{\{\s*queron\.var\(\s*(?P<quote>['\"])(?P<name>[^'\"]+)(?P=quote)\s*\)\s*\}\}",
+    r"\{\{\s*queron\.var\(\s*(?P<quote>['\"])(?P<name>[^'\"]+)(?P=quote)(?:\s*,\s*log_value\s*=\s*(?P<log_value>true|false))?\s*\)\s*\}\}",
     re.IGNORECASE,
 )
 

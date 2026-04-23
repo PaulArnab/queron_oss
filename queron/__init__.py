@@ -389,11 +389,13 @@ def source(name: str) -> str:
     return f'{{{{ queron.source("{name}") }}}}'
 
 
-def var(name: str) -> str:
+def var(name: str, *, log_value: bool = False) -> str:
     text = str(name or "").strip()
     if not text:
         raise ValueError("queron.var(...) requires a non-empty variable name.")
     escaped = text.replace('"', '\\"')
+    if log_value:
+        return f'{{{{ queron.var("{escaped}", log_value=True) }}}}'
     return f'{{{{ queron.var("{escaped}") }}}}'
 
 
