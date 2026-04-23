@@ -24,6 +24,8 @@ class PgConnectRequest(BaseModel):
     sslcert: str | None = None
     sslkey: str | None = None
     sslpassword: str | None = None
+    krbsrvname: str | None = None
+    gssencmode: str | None = None
     connect_timeout_seconds: int | None = None
     statement_timeout_ms: int | None = None
     save_password: bool = True

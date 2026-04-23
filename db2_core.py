@@ -98,7 +98,7 @@ ConnectorEgressResponse = getattr(_base_models, "ConnectorEgressResponse", _Fall
 _connections: dict[str, dict[str, Any]] = {}
 _DUCKDB_DECIMAL_RE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 _DBAPI_TYPE_OBJECT_RE = re.compile(r"^DBAPITYPEOBJECT\((.+)\)$", re.IGNORECASE)
-_VALID_DB2_AUTH_MODES = {"basic", "tls", "certificate"}
+_VALID_DB2_AUTH_MODES = {"basic", "tls"}
 
 
 @dataclass
@@ -198,6 +198,7 @@ def _conn_str_from_parts(
     password: str,
     connect_timeout_seconds: int | None = None,
     extra_keywords: dict[str, Any] | None = None,
+    include_credentials: bool = True,
 ) -> str:
     parts = [
         f"DATABASE={_sanitize_conn_value(database)}",
@@ -207,9 +208,9 @@ def _conn_str_from_parts(
     ]
     if connect_timeout_seconds is not None:
         parts.append(f"CONNECTTIMEOUT={int(connect_timeout_seconds)}")
-    if username:
+    if include_credentials and username:
         parts.append(f"UID={_sanitize_conn_value(username)}")
-    if password:
+    if include_credentials and password:
         parts.append(f"PWD={password}")
     for key, value in dict(extra_keywords or {}).items():
         text = _sanitize_conn_value(value)
@@ -257,13 +258,11 @@ def _infer_db2_auth_mode(cfg: Db2ConnectRequest) -> str:
             raise RuntimeError(f"Unsupported DB2 auth_mode '{cfg.auth_mode}'.")
         return explicit
     if (
-        str(getattr(cfg, "ssl_client_keystoredb", "") or "").strip()
+        str(getattr(cfg, "ssl_server_certificate", "") or "").strip()
+        or str(getattr(cfg, "ssl_client_keystoredb", "") or "").strip()
         or str(getattr(cfg, "ssl_client_keystash", "") or "").strip()
         or str(getattr(cfg, "ssl_client_keystore_password", "") or "").strip()
-        or str(getattr(cfg, "ssl_client_label", "") or "").strip()
     ):
-        return "certificate"
-    if str(getattr(cfg, "ssl_server_certificate", "") or "").strip():
         return "tls"
     return "basic"
 
@@ -275,20 +274,10 @@ def _validate_db2_auth_request(cfg: Db2ConnectRequest, auth_mode: str) -> None:
     ssl_client_keystoredb = str(getattr(cfg, "ssl_client_keystoredb", "") or "").strip()
     ssl_client_keystash = str(getattr(cfg, "ssl_client_keystash", "") or "").strip()
     ssl_client_keystore_password = str(getattr(cfg, "ssl_client_keystore_password", "") or "").strip()
-    ssl_client_label = str(getattr(cfg, "ssl_client_label", "") or "").strip()
-    if auth_mode == "tls" and not ssl_server_certificate:
-        raise RuntimeError("DB2 tls auth_mode requires ssl_server_certificate.")
-    if auth_mode == "certificate":
-        if not ssl_server_certificate:
-            raise RuntimeError("DB2 certificate auth_mode requires ssl_server_certificate.")
-        if not ssl_client_keystoredb:
-            raise RuntimeError("DB2 certificate auth_mode requires ssl_client_keystoredb.")
-        if not ssl_client_label:
-            raise RuntimeError("DB2 certificate auth_mode requires ssl_client_label.")
-        if not ssl_client_keystash and not ssl_client_keystore_password:
-            raise RuntimeError(
-                "DB2 certificate auth_mode requires ssl_client_keystash or ssl_client_keystore_password."
-            )
+    if auth_mode == "tls" and not ssl_server_certificate and not ssl_client_keystoredb:
+        raise RuntimeError("DB2 tls auth_mode requires ssl_server_certificate or ssl_client_keystoredb.")
+        if ssl_client_keystoredb and not ssl_client_keystash and not ssl_client_keystore_password:
+            raise RuntimeError("DB2 tls auth_mode with ssl_client_keystoredb requires ssl_client_keystash or ssl_client_keystore_password.")
 
 
 def _build_db2_auth_keywords(cfg: Db2ConnectRequest, auth_mode: str) -> dict[str, Any]:
@@ -296,22 +285,17 @@ def _build_db2_auth_keywords(cfg: Db2ConnectRequest, auth_mode: str) -> dict[str
         return {}
     keywords: dict[str, Any] = {"Security": "SSL"}
     ssl_server_certificate = str(getattr(cfg, "ssl_server_certificate", "") or "").strip()
+    ssl_client_keystoredb = str(getattr(cfg, "ssl_client_keystoredb", "") or "").strip()
+    ssl_client_keystash = str(getattr(cfg, "ssl_client_keystash", "") or "").strip()
+    ssl_client_keystore_password = str(getattr(cfg, "ssl_client_keystore_password", "") or "").strip()
     if ssl_server_certificate:
         keywords["SSLServerCertificate"] = ssl_server_certificate
-    if auth_mode == "certificate":
-        keywords["Authentication"] = "CERTIFICATE"
-        ssl_client_keystoredb = str(getattr(cfg, "ssl_client_keystoredb", "") or "").strip()
-        ssl_client_keystash = str(getattr(cfg, "ssl_client_keystash", "") or "").strip()
-        ssl_client_keystore_password = str(getattr(cfg, "ssl_client_keystore_password", "") or "").strip()
-        ssl_client_label = str(getattr(cfg, "ssl_client_label", "") or "").strip()
-        if ssl_client_keystoredb:
-            keywords["SSLClientKeystoredb"] = ssl_client_keystoredb
-        if ssl_client_keystash:
-            keywords["SSLClientKeystash"] = ssl_client_keystash
-        if ssl_client_keystore_password:
-            keywords["SSLClientKeyStoreDBPassword"] = ssl_client_keystore_password
-        if ssl_client_label:
-            keywords["SSLClientLabel"] = ssl_client_label
+    if ssl_client_keystoredb:
+        keywords["SSLClientKeystoredb"] = ssl_client_keystoredb
+    if ssl_client_keystash:
+        keywords["SSLClientKeystash"] = ssl_client_keystash
+    if ssl_client_keystore_password:
+        keywords["SSLClientKeyStoreDBPassword"] = ssl_client_keystore_password
     return keywords
 
 
@@ -358,15 +342,19 @@ def _resolved_db2_connect_config(cfg: Db2ConnectRequest) -> dict[str, Any]:
     }
 
 
-def _dsn_from_config(cfg: Db2ConnectRequest) -> str:
+def _db2_connection_string_from_request(cfg: Db2ConnectRequest) -> str:
     return str(_resolved_db2_connect_config(cfg)["conn_str"])
+
+
+def _dsn_from_config(cfg: Db2ConnectRequest) -> str:
+    return _db2_connection_string_from_request(cfg)
 
 
 def _config_from_connection_id(connection_id: str) -> str:
     cfg_dict = _connections.get(connection_id)
     if cfg_dict is None:
         raise LookupError("Connection not found. Please connect first.")
-    return _dsn_from_config(Db2ConnectRequest(**cfg_dict))
+    return _db2_connection_string_from_request(Db2ConnectRequest(**cfg_dict))
 
 
 def _dbapi_connect(conn_str: str):

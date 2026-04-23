@@ -50,6 +50,7 @@ _query_sessions: dict[str, dict[str, Any]] = {}
 _QUERY_SESSION_IDLE_TTL_SECONDS = 300
 _DEFAULT_QUERY_CHUNK_SIZE = DEFAULT_QUERY_CHUNK_SIZE
 _VALID_PG_SSLMODES = {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
+_VALID_PG_GSSENCMODES = {"disable", "prefer", "require"}
 
 # ---------------------------------------------------------------------------
 # PostgreSQL OID -> type name mapping (common types)
@@ -113,6 +114,8 @@ def _build_connection_uri(raw_url: str, username: str | None, password: str | No
 def _infer_postgres_auth_mode(cfg: PgConnectRequest) -> str:
     explicit = str(getattr(cfg, "auth_mode", "") or "").strip().lower()
     if explicit:
+        if explicit not in {"basic", "tls", "mtls", "kerberos", "sspi"}:
+            raise RuntimeError(f"Unsupported PostgreSQL auth_mode '{cfg.auth_mode}'.")
         return explicit
     if str(getattr(cfg, "sslcert", "") or "").strip() or str(getattr(cfg, "sslkey", "") or "").strip():
         return "mtls"
@@ -141,13 +144,30 @@ def _ssl_kwargs_from_config(cfg: PgConnectRequest, auth_mode: str) -> dict[str, 
     return kwargs
 
 
+# Experimental: Kerberos/GSSAPI and Windows SSPI support are wired for
+# libpq/psycopg kwargs, but they have not been validated end-to-end in this
+# repo because there is no Kerberos/Windows domain test environment here.
+def _kerberos_kwargs_from_config(cfg: PgConnectRequest, auth_mode: str) -> dict[str, Any]:
+    if auth_mode not in {"kerberos", "sspi"}:
+        return {}
+    kwargs: dict[str, Any] = {}
+    krbsrvname = str(getattr(cfg, "krbsrvname", "") or "").strip()
+    gssencmode = str(getattr(cfg, "gssencmode", "") or "").strip().lower()
+    if krbsrvname:
+        kwargs["krbsrvname"] = krbsrvname
+    if gssencmode:
+        kwargs["gssencmode"] = gssencmode
+    return kwargs
+
+
 def _validate_postgres_auth_config(cfg: PgConnectRequest, auth_mode: str) -> None:
-    if auth_mode not in {"basic", "tls", "mtls", "kerberos"}:
+    if auth_mode not in {"basic", "tls", "mtls", "kerberos", "sspi"}:
         raise RuntimeError(f"Unsupported PostgreSQL auth_mode '{auth_mode}'.")
     sslmode = str(getattr(cfg, "sslmode", "") or "").strip().lower()
     sslrootcert = str(getattr(cfg, "sslrootcert", "") or "").strip()
     sslcert = str(getattr(cfg, "sslcert", "") or "").strip()
     sslkey = str(getattr(cfg, "sslkey", "") or "").strip()
+    gssencmode = str(getattr(cfg, "gssencmode", "") or "").strip().lower()
     if sslmode and sslmode not in _VALID_PG_SSLMODES:
         valid = ", ".join(sorted(_VALID_PG_SSLMODES))
         raise RuntimeError(f"Unsupported PostgreSQL sslmode '{cfg.sslmode}'. Expected one of: {valid}.")
@@ -157,6 +177,10 @@ def _validate_postgres_auth_config(cfg: PgConnectRequest, auth_mode: str) -> Non
         raise RuntimeError(f"PostgreSQL {auth_mode} with sslmode='{sslmode}' requires sslrootcert.")
     if auth_mode == "mtls" and bool(sslcert) != bool(sslkey):
         raise RuntimeError("PostgreSQL mTLS requires both sslcert and sslkey.")
+    if auth_mode in {"kerberos", "sspi"}:
+        if gssencmode and gssencmode not in _VALID_PG_GSSENCMODES:
+            valid = ", ".join(sorted(_VALID_PG_GSSENCMODES))
+            raise RuntimeError(f"Unsupported PostgreSQL gssencmode '{cfg.gssencmode}'. Expected one of: {valid}.")
 
 
 def _dsn_from_config(cfg: PgConnectRequest) -> tuple[str, dict[str, Any]]:
@@ -173,12 +197,14 @@ def _dsn_from_config(cfg: PgConnectRequest) -> tuple[str, dict[str, Any]]:
     if cfg.statement_timeout_ms is not None:
         kwargs["options"] = f"-c statement_timeout={int(cfg.statement_timeout_ms)}"
     kwargs.update(_ssl_kwargs_from_config(cfg, auth_mode))
+    kwargs.update(_kerberos_kwargs_from_config(cfg, auth_mode))
+    password = None if auth_mode in {"kerberos", "sspi"} else (cfg.password or None)
     if cfg.url:
-        return _build_connection_uri(cfg.url, cfg.username or None, cfg.password or None), kwargs
+        return _build_connection_uri(cfg.url, cfg.username or None, password), kwargs
     return _build_connection_uri(
         f"postgresql://{cfg.host}:{cfg.port}/{cfg.database}",
         cfg.username or None,
-        cfg.password or None,
+        password,
     ), kwargs
 
 

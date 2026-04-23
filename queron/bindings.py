@@ -67,6 +67,8 @@ def resolve_runtime_binding_payload(config_name: str, payload: Mapping[str, Any]
             "sslcert": payload.get("sslcert"),
             "sslkey": payload.get("sslkey"),
             "sslpassword": payload.get("sslpassword"),
+            "krbsrvname": payload.get("krbsrvname"),
+            "gssencmode": payload.get("gssencmode"),
             "ssl_server_certificate": payload.get("ssl_server_certificate"),
             "ssl_client_keystoredb": payload.get("ssl_client_keystoredb"),
             "ssl_client_keystash": payload.get("ssl_client_keystash"),
@@ -96,6 +98,8 @@ class RuntimeBinding:
     sslcert: str | None = None
     sslkey: str | None = None
     sslpassword: str | None = None
+    krbsrvname: str | None = None
+    gssencmode: str | None = None
     ssl_server_certificate: str | None = None
     ssl_client_keystoredb: str | None = None
     ssl_client_keystash: str | None = None
@@ -120,6 +124,8 @@ class RuntimeBinding:
                 "sslcert": self.sslcert,
                 "sslkey": self.sslkey,
                 "sslpassword": self.sslpassword,
+                "krbsrvname": self.krbsrvname,
+                "gssencmode": self.gssencmode,
                 "ssl_server_certificate": self.ssl_server_certificate,
                 "ssl_client_keystoredb": self.ssl_client_keystoredb,
                 "ssl_client_keystash": self.ssl_client_keystash,
@@ -154,6 +160,8 @@ class PostgresBinding(RuntimeBinding):
         sslcert: str | None = None,
         sslkey: str | None = None,
         sslpassword: str | None = None,
+        krbsrvname: str | None = None,
+        gssencmode: str | None = None,
         **extras: Any,
     ) -> None:
         super().__init__(
@@ -172,6 +180,8 @@ class PostgresBinding(RuntimeBinding):
             sslcert=sslcert,
             sslkey=sslkey,
             sslpassword=sslpassword,
+            krbsrvname=krbsrvname,
+            gssencmode=gssencmode,
             extras=extras,
         )
 

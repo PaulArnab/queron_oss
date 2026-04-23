@@ -74,6 +74,7 @@ _DECIMAL_WITH_ARGS_RE = re.compile(r"^(?:numeric|decimal)\s*\((\d+)\s*,\s*(\d+)\
 _OPAQUE_TYPE_RE = re.compile(r"type_name=([a-z0-9_ ]+)", re.IGNORECASE)
 _DUCKDB_DECIMAL_RE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
 _VALID_PG_SSLMODES = {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
+_VALID_PG_GSSENCMODES = {"disable", "prefer", "require"}
 
 
 @dataclass
@@ -169,7 +170,7 @@ def _build_connection_uri(raw_url: str, username: str | None, password: str | No
 def _infer_postgres_auth_mode(req: PgConnectRequest) -> str:
     explicit = str(getattr(req, "auth_mode", "") or "").strip().lower()
     if explicit:
-        if explicit not in {"basic", "tls", "mtls", "kerberos"}:
+        if explicit not in {"basic", "tls", "mtls", "kerberos", "sspi"}:
             raise RuntimeError(f"Unsupported PostgreSQL auth_mode '{req.auth_mode}'.")
         return explicit
     if str(getattr(req, "sslcert", "") or "").strip() or str(getattr(req, "sslkey", "") or "").strip():
@@ -184,12 +185,13 @@ def _infer_postgres_auth_mode(req: PgConnectRequest) -> str:
 
 
 def _validate_postgres_auth_request(req: PgConnectRequest, auth_mode: str) -> None:
-    if auth_mode not in {"basic", "tls", "mtls", "kerberos"}:
+    if auth_mode not in {"basic", "tls", "mtls", "kerberos", "sspi"}:
         raise RuntimeError(f"Unsupported PostgreSQL auth_mode '{auth_mode}'.")
     sslmode = str(getattr(req, "sslmode", "") or "").strip().lower()
     sslrootcert = str(getattr(req, "sslrootcert", "") or "").strip()
     sslcert = str(getattr(req, "sslcert", "") or "").strip()
     sslkey = str(getattr(req, "sslkey", "") or "").strip()
+    gssencmode = str(getattr(req, "gssencmode", "") or "").strip().lower()
     if sslmode and sslmode not in _VALID_PG_SSLMODES:
         valid = ", ".join(sorted(_VALID_PG_SSLMODES))
         raise RuntimeError(f"Unsupported PostgreSQL sslmode '{req.sslmode}'. Expected one of: {valid}.")
@@ -200,6 +202,10 @@ def _validate_postgres_auth_request(req: PgConnectRequest, auth_mode: str) -> No
     if auth_mode == "mtls":
         if bool(sslcert) != bool(sslkey):
             raise RuntimeError("PostgreSQL mTLS requires both sslcert and sslkey.")
+    if auth_mode in {"kerberos", "sspi"}:
+        if gssencmode and gssencmode not in _VALID_PG_GSSENCMODES:
+            valid = ", ".join(sorted(_VALID_PG_GSSENCMODES))
+            raise RuntimeError(f"Unsupported PostgreSQL gssencmode '{req.gssencmode}'. Expected one of: {valid}.")
 
 
 def _build_postgres_ssl_kwargs(req: PgConnectRequest, auth_mode: str) -> dict[str, Any]:
@@ -218,14 +224,31 @@ def _build_postgres_ssl_kwargs(req: PgConnectRequest, auth_mode: str) -> dict[st
     return kwargs
 
 
+# Experimental: Kerberos/GSSAPI and Windows SSPI support are wired for
+# libpq/psycopg kwargs, but they have not been validated end-to-end in this
+# repo because there is no Kerberos/Windows domain test environment here.
+def _build_postgres_kerberos_kwargs(req: PgConnectRequest, auth_mode: str) -> dict[str, Any]:
+    if auth_mode not in {"kerberos", "sspi"}:
+        return {}
+    kwargs: dict[str, Any] = {}
+    krbsrvname = str(getattr(req, "krbsrvname", "") or "").strip()
+    gssencmode = str(getattr(req, "gssencmode", "") or "").strip().lower()
+    if krbsrvname:
+        kwargs["krbsrvname"] = krbsrvname
+    if gssencmode:
+        kwargs["gssencmode"] = gssencmode
+    return kwargs
+
+
 def _resolved_postgres_connect_config(req: PgConnectRequest) -> dict[str, Any]:
     auth_mode = _infer_postgres_auth_mode(req)
     _validate_postgres_auth_request(req, auth_mode)
+    password = None if auth_mode in {"kerberos", "sspi"} else (req.password or None)
     if req.url:
-        uri = _build_connection_uri(req.url, req.username or None, req.password or None)
+        uri = _build_connection_uri(req.url, req.username or None, password)
     else:
         raw = f"postgresql://{req.host}:{req.port}/{req.database}"
-        uri = _build_connection_uri(raw, req.username or None, req.password or None)
+        uri = _build_connection_uri(raw, req.username or None, password)
     return {
         "auth_mode": auth_mode,
         "uri": uri,
@@ -236,6 +259,7 @@ def _resolved_postgres_connect_config(req: PgConnectRequest) -> dict[str, Any]:
             else None
         ),
         "ssl_kwargs": _build_postgres_ssl_kwargs(req, auth_mode),
+        "kerberos_kwargs": _build_postgres_kerberos_kwargs(req, auth_mode),
     }
 
 
@@ -264,6 +288,8 @@ def _pg_connect_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     if config.get("options"):
         kwargs["options"] = str(config["options"])
     for key, value in dict(config.get("ssl_kwargs") or {}).items():
+        kwargs[str(key)] = value
+    for key, value in dict(config.get("kerberos_kwargs") or {}).items():
         kwargs[str(key)] = value
     return kwargs
 

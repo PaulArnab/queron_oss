@@ -48,6 +48,8 @@ def ensure_postgres_binding(binding: dict[str, Any], config_name: str) -> str:
         "sslcert": binding.get("sslcert"),
         "sslkey": binding.get("sslkey"),
         "sslpassword": binding.get("sslpassword"),
+        "krbsrvname": binding.get("krbsrvname"),
+        "gssencmode": binding.get("gssencmode"),
         "connect_timeout_seconds": binding.get("connect_timeout_seconds"),
         "statement_timeout_ms": binding.get("statement_timeout_ms"),
         "save_password": False,
