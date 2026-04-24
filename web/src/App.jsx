@@ -169,7 +169,8 @@ function humanize(text) {
 function normalizeTone(kind, nodeId) {
   const lowered = String(kind || "").trim().toLowerCase();
   if (nodeId.startsWith("source:") || lowered === "source") return "source";
-  if (lowered.includes("file.ingress")) return "file";
+  if (lowered.includes("file.ingress") || lowered.includes("csv.ingress") || lowered.includes("jsonl.ingress") || lowered.includes("parquet.ingress")) return "file";
+  if (lowered.includes("file.egress") || lowered.includes("csv.egress") || lowered.includes("jsonl.egress") || lowered.includes("parquet.egress")) return "fileEgress";
   if (lowered.includes("python")) return "python";
   if (lowered.includes("ingress")) return "ingress";
   if (lowered.includes("check")) return "check";
@@ -187,6 +188,7 @@ function toneClasses(tone) {
   if (tone === "source") return { border: "border-slate-300", bg: "bg-amber-50/80", badge: "bg-amber-100 text-amber-700", meta: "text-amber-700/80" };
   if (tone === "ingress") return { border: "border-slate-300", bg: "bg-blue-50/80", badge: "bg-blue-100 text-blue-700", meta: "text-blue-700/80" };
   if (tone === "file") return { border: "border-slate-300", bg: "bg-cyan-50/80", badge: "bg-cyan-100 text-cyan-700", meta: "text-cyan-700/80" };
+  if (tone === "fileEgress") return { border: "border-slate-300", bg: "bg-teal-50/80", badge: "bg-teal-100 text-teal-700", meta: "text-teal-700/80" };
   if (tone === "python") return { border: "border-slate-300", bg: "bg-green-50/80", badge: "bg-green-100 text-green-700", meta: "text-green-700/80" };
   if (tone === "check") return { border: "border-slate-300", bg: "bg-slate-50", badge: "bg-slate-200 text-slate-700", meta: "text-slate-500" };
   if (tone === "egress") return { border: "border-slate-300", bg: "bg-violet-50/80", badge: "bg-violet-100 text-violet-700", meta: "text-violet-700/80" };
@@ -808,6 +810,7 @@ function FlowCardNode({ data, selected }) {
     source: { accent: "#d3b165", tint: "#fdf5df", icon: "#7b5d18", badgeBg: "#f8e7b8", badgeText: "#7b5d18" },
     ingress: { accent: "#5eaef5", tint: "#eaf5ff", icon: "#165387", badgeBg: "#dbeeff", badgeText: "#165387" },
     file: { accent: "#59c4d8", tint: "#e7fbff", icon: "#116575", badgeBg: "#d7f6fb", badgeText: "#116575" },
+    fileEgress: { accent: "#2dd4bf", tint: "#ecfdf8", icon: "#0f766e", badgeBg: "#ccfbf1", badgeText: "#0f766e" },
     model: { accent: "#efb247", tint: "#fff6e7", icon: "#7c5710", badgeBg: "#fdebc8", badgeText: "#7c5710" },
     check: { accent: "#f39e8d", tint: "#fff0ec", icon: "#8a3e31", badgeBg: "#ffe0d9", badgeText: "#8a3e31" },
     python: { accent: "#b79df6", tint: "#f3edff", icon: "#5c45a5", badgeBg: "#e6ddff", badgeText: "#5c45a5" },
@@ -826,6 +829,7 @@ function FlowCardNode({ data, selected }) {
   const isDecisionNode = data.tone === "check";
 
   if (isDecisionNode) {
+    const decisionShape = "polygon(9% 0%, 91% 0%, 100% 50%, 91% 100%, 9% 100%, 0% 50%)";
     const decisionPalette = selected
       ? { border: "#bcb6b0", fill: "#ffffff", shadow: "drop-shadow(0 10px 30px rgba(15,23,42,0.10))" }
       : { border: "#dddfe3", fill: "#ffffff", shadow: "none" };
@@ -857,7 +861,7 @@ function FlowCardNode({ data, selected }) {
             position: "absolute",
             inset: 0,
             background: decisionPalette.border,
-            clipPath: "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)",
+            clipPath: decisionShape,
             filter: decisionPalette.shadow,
           }}
         />
@@ -867,13 +871,13 @@ function FlowCardNode({ data, selected }) {
             position: "absolute",
             inset: 2,
             background: decisionPalette.fill,
-            clipPath: "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)",
+            clipPath: decisionShape,
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
             textAlign: "center",
-            padding: "18px 34px",
+            padding: "16px 30px",
           }}
         >
           <div
@@ -883,6 +887,8 @@ function FlowCardNode({ data, selected }) {
               color: "#2d3037",
               lineHeight: 1.2,
               marginBottom: 6,
+              maxWidth: "100%",
+              overflowWrap: "anywhere",
             }}
           >
             {data.title}
@@ -894,6 +900,8 @@ function FlowCardNode({ data, selected }) {
               letterSpacing: 0.3,
               textTransform: "uppercase",
               marginBottom: 8,
+              maxWidth: "100%",
+              overflowWrap: "anywhere",
             }}
           >
             {data.id}
@@ -1126,6 +1134,7 @@ function kindDotStyle(tone) {
     source: { bg: "#d3b165" },
     ingress: { bg: "#3b82f6" },
     file: { bg: "#06b6d4" },
+    fileEgress: { bg: "#2dd4bf" },
     model: { bg: "#f59e0b" },
     check: { bg: "#8b5cf6" },
     python: { bg: "#a78bfa" },
@@ -1785,7 +1794,7 @@ function PipelineLogsPanel({
   if (!open) return null;
   return (
     <div className="pointer-events-none absolute inset-y-0 right-0 z-30 flex">
-      <div className="pointer-events-auto h-full w-[560px] max-w-[92vw] border-l border-slate-200 bg-white shadow-xl">
+      <div className="pointer-events-auto h-full w-[720px] max-w-[96vw] border-l border-slate-200 bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div className="min-w-0">
             <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Pipeline Logs</div>
@@ -1828,11 +1837,11 @@ function PipelineLogsPanel({
                           : "border-slate-200 bg-white"
                     }`}
                   >
-                    <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">
-                      <span>{timestamp}</span>
-                      <span>{severity}</span>
-                      <span>{code}</span>
-                      <span>{nodeName}</span>
+                    <div className="grid grid-cols-[minmax(155px,auto)_auto_minmax(130px,auto)_minmax(150px,1fr)] items-center gap-x-2 gap-y-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">
+                      <span className="whitespace-nowrap">{timestamp}</span>
+                      <span className="whitespace-nowrap">{severity}</span>
+                      <span className="break-words">{code}</span>
+                      <span className="break-words">{nodeName}</span>
                     </div>
                     <div
                       className={`mt-1 break-words text-[12px] font-medium leading-5 ${
