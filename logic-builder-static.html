@@ -8,20 +8,11 @@ import ReactFlow, {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import {
-  Database,
-  MessageSquare,
-  GitBranch,
-  Star,
-  Play,
-  CheckCircle2,
   Settings,
-  EyeOff,
   Plus,
 } from "lucide-react";
 
 function FlowCardNode({ data }) {
-  const Icon = data.icon;
-
   return (
     <div
       style={{
@@ -48,22 +39,6 @@ function FlowCardNode({ data }) {
       />
 
       <div className="flex items-start gap-2 px-3 pt-3 pb-2">
-        <div
-          style={{
-            width: 18,
-            height: 18,
-            borderRadius: 3,
-            background: data.iconBg || "#f3f4f6",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-            marginTop: 1,
-          }}
-        >
-          <Icon size={12} color={data.iconColor || "#111827"} strokeWidth={2.2} />
-        </div>
-
         <div className="min-w-0 leading-tight">
           <div
             style={{
@@ -167,9 +142,6 @@ function EtlFlowMockup() {
         selectable: false,
         data: {
           width: 110,
-          icon: EyeOff,
-          iconBg: "#f2efec",
-          iconColor: "#353535",
           title: "Starting",
           subtitle: "logic\nbased o...",
         },
@@ -182,9 +154,6 @@ function EtlFlowMockup() {
         selectable: false,
         data: {
           width: 104,
-          icon: MessageSquare,
-          iconBg: "#f3f3f3",
-          iconColor: "#444",
           title: "WS.",
           subtitle: "Welcome!",
         },
@@ -197,9 +166,6 @@ function EtlFlowMockup() {
         selectable: false,
         data: {
           width: 108,
-          icon: Database,
-          iconBg: "#f4b454",
-          iconColor: "#2f2f2f",
           title: "S1. Source",
           divider: "─────",
           subtitle: "pick to...",
@@ -213,9 +179,6 @@ function EtlFlowMockup() {
         selectable: false,
         data: {
           width: 108,
-          icon: GitBranch,
-          iconBg: "#68a7f0",
-          iconColor: "#173454",
           title: "1. Target",
           divider: "─────",
           subtitle: "wareh...",
@@ -229,9 +192,6 @@ function EtlFlowMockup() {
         selectable: false,
         data: {
           width: 108,
-          icon: Star,
-          iconBg: "#f4c83c",
-          iconColor: "#1f1f1f",
           title: "2. How",
           subtitle: "often should\nthis ru...",
         },
@@ -244,9 +204,6 @@ function EtlFlowMockup() {
         selectable: false,
         data: {
           width: 104,
-          icon: CheckCircle2,
-          iconBg: "#f3f3f3",
-          iconColor: "#444",
           title: "A. All",
           subtitle: "done!\nPipeline ...",
         },
