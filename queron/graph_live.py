@@ -478,6 +478,7 @@ def get_runs_panel(artifact_path: str | Path) -> dict[str, Any]:
                 "is_final": bool(item.get("is_final")),
                 "started_at": item.get("started_at"),
                 "finished_at": item.get("finished_at"),
+                "runtime_vars_json": dict(item.get("runtime_vars_json") or {}),
             }
         )
     return {

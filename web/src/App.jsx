@@ -1867,6 +1867,7 @@ function RuntimeVarsPanel({
   submitLabel = "",
   onSubmit,
   submitDisabled = false,
+  lockImmutableValues = false,
 }) {
   const items = Array.isArray(contract) ? contract : [];
   return (
@@ -1921,6 +1922,8 @@ function RuntimeVarsPanel({
                     item?.default !== undefined && item?.default !== null
                       ? (Array.isArray(item.default) ? item.default.join(", ") : String(item.default))
                       : "";
+                  const mutableAfterStart = Boolean(item?.mutable_after_start);
+                  const readOnly = lockImmutableValues && !mutableAfterStart;
                   return (
                     <div key={name} className="border-b border-slate-200 px-4 py-3 last:border-b-0">
                       <div className="flex items-start justify-between gap-3">
@@ -1930,11 +1933,15 @@ function RuntimeVarsPanel({
                             {kind === "list" ? "List" : "Scalar"}
                           </div>
                         </div>
-                        {item?.required ? (
-                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-slate-500">
-                            Required
-                          </span>
-                        ) : null}
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] ${
+                            mutableAfterStart
+                              ? "bg-emerald-50 text-emerald-700"
+                              : "bg-slate-100 text-slate-500"
+                          }`}
+                        >
+                          {mutableAfterStart ? "Mutable after start" : "Locked after start"}
+                        </span>
                       </div>
                       {defaultValue ? (
                         <div className="mt-1.5 text-[10px] text-slate-400">
@@ -1946,16 +1953,26 @@ function RuntimeVarsPanel({
                         <textarea
                           value={currentValue}
                           onChange={(event) => onChangeValue?.(name, event.target.value)}
+                          readOnly={readOnly}
                           spellCheck={false}
-                          className="min-h-[92px] w-full resize-y rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[11px] leading-5 text-slate-700 outline-none transition focus:border-slate-300 focus:bg-white"
+                          className={`min-h-[92px] w-full resize-y rounded-lg border border-slate-200 px-3 py-2.5 font-mono text-[11px] leading-5 outline-none transition ${
+                            readOnly
+                              ? "cursor-not-allowed bg-slate-100 text-slate-500"
+                              : "bg-slate-50 text-slate-700 focus:border-slate-300 focus:bg-white"
+                          }`}
                           placeholder={defaultValue || "TX, CA, WA"}
                         />
                       ) : (
                         <input
                           value={currentValue}
                           onChange={(event) => onChangeValue?.(name, event.target.value)}
+                          readOnly={readOnly}
                           spellCheck={false}
-                          className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 font-mono text-[11px] leading-5 text-slate-700 outline-none transition focus:border-slate-300 focus:bg-white"
+                          className={`w-full rounded-lg border border-slate-200 px-3 py-2.5 font-mono text-[11px] leading-5 outline-none transition ${
+                            readOnly
+                              ? "cursor-not-allowed bg-slate-100 text-slate-500"
+                              : "bg-slate-50 text-slate-700 focus:border-slate-300 focus:bg-white"
+                          }`}
                           placeholder={defaultValue || "value"}
                         />
                       )}
@@ -1987,6 +2004,19 @@ function buildRuntimeVarInputDefaults(contract) {
     defaults[name] = Array.isArray(item.default) ? item.default.join(", ") : String(item.default);
   }
   return defaults;
+}
+
+function buildRuntimeVarInputsFromValues(contract, sourceValues) {
+  const items = Array.isArray(contract) ? contract : [];
+  const values = sourceValues && typeof sourceValues === "object" && !Array.isArray(sourceValues) ? sourceValues : {};
+  const inputs = {};
+  for (const item of items) {
+    const name = String(item?.name || "").trim();
+    if (!name) continue;
+    if (values[name] === undefined || values[name] === null) continue;
+    inputs[name] = Array.isArray(values[name]) ? values[name].join(", ") : String(values[name]);
+  }
+  return inputs;
 }
 
 function GraphCanvas({
@@ -2403,7 +2433,6 @@ export default function App() {
     () => buildRuntimeVarInputDefaults(runtimeVarsContract),
     [runtimeVarsContract],
   );
-
   function buildRunScopedPath(path, params = {}) {
     const search = new URLSearchParams();
     Object.entries(params).forEach(([key, value]) => {
@@ -2884,9 +2913,20 @@ export default function App() {
     if (requiresRuntimeVars) {
       setRuntimeVarsSubmitEndpoint(endpoint);
       setRuntimeVarsError("");
+      if (endpoint === "/api/resume" && Object.keys(activeRunRuntimeVarInputs).length) {
+        setRuntimeVarInputs((current) => ({ ...(current || {}), ...activeRunRuntimeVarInputs }));
+      }
       setRuntimeVarsOpen(true);
       return;
     }
+    void runAction(endpoint);
+  }
+
+  function submitRuntimeVarsAction() {
+    if (!runtimeVarsSubmitEndpoint) return;
+    const endpoint = runtimeVarsSubmitEndpoint;
+    setRuntimeVarsOpen(false);
+    setRuntimeVarsSubmitEndpoint("");
     void runAction(endpoint);
   }
 
@@ -2949,6 +2989,7 @@ export default function App() {
       const message = error instanceof Error ? error.message : String(error);
       if (endpoint === "/api/run" || endpoint === "/api/resume") {
         setRuntimeVarsError(message);
+        await refreshGraphAndDrawer();
       }
       setActionError(message);
     } finally {
@@ -2972,6 +3013,17 @@ export default function App() {
   const selectedRunOption = useMemo(
     () => runOptions.find((item) => String(item?.run_id || "") === String(selectedRunId || "")) || null,
     [runOptions, selectedRunId],
+  );
+  const activeRunOption = useMemo(
+    () =>
+      selectedRunOption ||
+      runOptions.find((item) => String(item?.run_id || "") === String(graphData?.run_id || "")) ||
+      null,
+    [graphData?.run_id, runOptions, selectedRunOption],
+  );
+  const activeRunRuntimeVarInputs = useMemo(
+    () => buildRuntimeVarInputsFromValues(runtimeVarsContract, activeRunOption?.runtime_vars_json),
+    [activeRunOption?.runtime_vars_json, runtimeVarsContract],
   );
   const latestRunOptionLabel = useMemo(() => {
     const runId = String(graphData?.run_id || "").trim();
@@ -3362,10 +3414,10 @@ export default function App() {
                 : ""
           }
           onSubmit={() => {
-            if (!runtimeVarsSubmitEndpoint) return;
-            void runAction(runtimeVarsSubmitEndpoint);
+            submitRuntimeVarsAction();
           }}
           submitDisabled={Boolean(pendingAction) || !runtimeVarsSubmitEndpoint}
+          lockImmutableValues={runtimeVarsSubmitEndpoint === "/api/resume"}
         />
     </div>
   );
