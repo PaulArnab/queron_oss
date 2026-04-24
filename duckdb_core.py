@@ -996,6 +996,7 @@ def _pipeline_runs_create_sql(*, table_name: str) -> str:
             finished_at VARCHAR,
             status VARCHAR {_run_status_check_sql()},
             error_message VARCHAR,
+            runtime_vars_json VARCHAR,
             is_final BOOLEAN DEFAULT FALSE
         )
         """
@@ -1149,6 +1150,10 @@ def _ensure_queron_meta_tables(conn) -> None:
         pass
     try:
         conn.execute(f"ALTER TABLE {pipeline_runs_name} ADD COLUMN IF NOT EXISTS archived_artifact_path VARCHAR")
+    except Exception:
+        pass
+    try:
+        conn.execute(f"ALTER TABLE {pipeline_runs_name} ADD COLUMN IF NOT EXISTS runtime_vars_json VARCHAR")
     except Exception:
         pass
     try:
@@ -1345,6 +1350,21 @@ def _normalize_pipeline_run_record(record: PipelineRunRecord | dict[str, Any]) -
     return PipelineRunRecord.model_validate(record)
 
 
+def _deserialize_runtime_vars_json(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
 def _normalize_compiled_contract_record(
     record: CompiledContractRecord | dict[str, Any]
 ) -> CompiledContractRecord:
@@ -1393,6 +1413,7 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
         item.finished_at,
         item.status,
         item.error_message,
+        json.dumps(item.runtime_vars_json or {}, ensure_ascii=True, separators=(",", ":")),
         item.is_final,
     )
     try:
@@ -1411,8 +1432,9 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 finished_at,
                 status,
                 error_message,
+                runtime_vars_json,
                 is_final
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -1432,8 +1454,9 @@ def _persist_pipeline_run(conn, *, record: PipelineRunRecord | dict[str, Any]) -
                 finished_at,
                 status,
                 error_message,
+                runtime_vars_json,
                 is_final
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -2714,6 +2737,7 @@ def get_latest_pipeline_run(
                     finished_at,
                     status,
                     error_message,
+                    runtime_vars_json,
                     COALESCE(is_final, FALSE) AS is_final
                 FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
                 {where_sql}
@@ -2739,7 +2763,8 @@ def get_latest_pipeline_run(
             "finished_at": row[9],
             "status": row[10],
             "error_message": row[11],
-            "is_final": bool(row[12]) if row[12] is not None else False,
+            "runtime_vars_json": _deserialize_runtime_vars_json(row[12]),
+            "is_final": bool(row[13]) if row[13] is not None else False,
         }
     finally:
         conn.close()
@@ -2773,6 +2798,7 @@ def get_pipeline_run_by_label(
                 finished_at,
                 status,
                 error_message,
+                runtime_vars_json,
                 COALESCE(is_final, FALSE) AS is_final
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
             WHERE run_label = ?
@@ -2795,7 +2821,8 @@ def get_pipeline_run_by_label(
             "finished_at": row[9],
             "status": row[10],
             "error_message": row[11],
-            "is_final": bool(row[12]) if row[12] is not None else False,
+            "runtime_vars_json": _deserialize_runtime_vars_json(row[12]),
+            "is_final": bool(row[13]) if row[13] is not None else False,
         }
     finally:
         conn.close()
@@ -2829,6 +2856,7 @@ def get_pipeline_run_by_id(
                 finished_at,
                 status,
                 error_message,
+                runtime_vars_json,
                 COALESCE(is_final, FALSE) AS is_final
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
             WHERE run_id = ?
@@ -2851,7 +2879,8 @@ def get_pipeline_run_by_id(
             "finished_at": row[9],
             "status": row[10],
             "error_message": row[11],
-            "is_final": bool(row[12]) if row[12] is not None else False,
+            "runtime_vars_json": _deserialize_runtime_vars_json(row[12]),
+            "is_final": bool(row[13]) if row[13] is not None else False,
         }
     finally:
         conn.close()
@@ -2886,6 +2915,7 @@ def list_pipeline_runs(
                 finished_at,
                 status,
                 error_message,
+                runtime_vars_json,
                 COALESCE(is_final, FALSE) AS is_final
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
             ORDER BY COALESCE(finished_at, started_at) DESC
@@ -2910,7 +2940,8 @@ def list_pipeline_runs(
             "finished_at": row[9],
             "status": row[10],
             "error_message": row[11],
-            "is_final": bool(row[12]) if row[12] is not None else False,
+            "runtime_vars_json": _deserialize_runtime_vars_json(row[12]),
+            "is_final": bool(row[13]) if row[13] is not None else False,
         }
         for row in rows
     ]
@@ -2938,7 +2969,8 @@ def finalize_latest_failed_run(
                 started_at,
                 finished_at,
                 status,
-                error_message
+                error_message,
+                runtime_vars_json
             FROM {_quote_identifier('_queron_meta')}.{_quote_identifier('pipeline_runs')}
             WHERE status = 'failed' AND COALESCE(is_final, FALSE) = FALSE
             ORDER BY COALESCE(finished_at, started_at) DESC
@@ -2968,6 +3000,7 @@ def finalize_latest_failed_run(
             "finished_at": row[9],
             "status": row[10],
             "error_message": row[11],
+            "runtime_vars_json": _deserialize_runtime_vars_json(row[12]),
             "is_final": True,
         }
     finally:

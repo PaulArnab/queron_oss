@@ -319,6 +319,7 @@ class PipelineRunRecord(BaseModel):
     finished_at: str | None = None
     status: RunStatus
     error_message: str | None = None
+    runtime_vars_json: dict[str, Any] = Field(default_factory=dict)
     is_final: bool = False
 
     @property
@@ -364,6 +365,7 @@ class PipelineVarRecord(BaseModel):
     required: bool = True
     default: Any | None = None
     log_value: bool = False
+    mutable_after_start: bool = False
     used_in_nodes: list[str] = Field(default_factory=list)
 
 

@@ -17,6 +17,8 @@ import queron
 import queron.cli
 import duckdb_core
 from duckdb_driver import load_duckdb
+from queron.runtime_models import PipelineVarRecord
+from queron.runtime_vars import resolve_runtime_var_values_for_existing_run
 
 
 class VerifyQueronCliTests(unittest.TestCase):
@@ -261,6 +263,87 @@ def seed():
 
             with self.assertRaisesRegex(RuntimeError, "Missing required runtime var 'required_value'"):
                 queron.run_pipeline(pipeline_path, runtime_vars={})
+
+    def test_run_pipeline_uses_runtime_var_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=f\"\"\"
+SELECT 7 AS value
+WHERE 7 = {queron.var("default_value", default=7)}
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+            self.assertIsNotNone(compiled.contract)
+            records = {item.name: item for item in compiled.contract.vars_json}
+            self.assertFalse(records["default_value"].required)
+            self.assertEqual(records["default_value"].default, 7)
+
+            result = queron.run_pipeline(pipeline_path, runtime_vars={})
+            node = queron.inspect_node(result.artifact_path, "seed", run_id=result.run_id)
+            self.assertEqual(int(node.nodes[0].get("row_count_out") or 0), 1)
+
+    def test_compile_pipeline_collects_mutable_after_start_flag(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=f\"\"\"
+SELECT 1
+WHERE 1 = {queron.var("required_value", mutable_after_start=True)}
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+            self.assertIsNotNone(compiled.contract)
+            records = {item.name: item for item in compiled.contract.vars_json}
+            self.assertTrue(records["required_value"].mutable_after_start)
+
+    def test_existing_run_runtime_var_mutability_is_enforced(self):
+        contract_vars = [
+            PipelineVarRecord(name="immutable_value", mutable_after_start=False),
+            PipelineVarRecord(name="mutable_value", mutable_after_start=True),
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "Runtime var 'immutable_value' cannot be changed after run start."):
+            resolve_runtime_var_values_for_existing_run(
+                contract_vars,
+                stored_runtime_vars={"immutable_value": 1, "mutable_value": 1},
+                requested_runtime_vars={"immutable_value": 2, "mutable_value": 2},
+            )
+
+        resolved = resolve_runtime_var_values_for_existing_run(
+            contract_vars,
+            stored_runtime_vars={"immutable_value": 1, "mutable_value": 1},
+            requested_runtime_vars={"immutable_value": 1, "mutable_value": 2},
+        )
+        self.assertEqual(resolved["mutable_value"], 2)
 
     def test_cli_run_accepts_vars_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:

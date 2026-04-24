@@ -422,13 +422,29 @@ def source(name: str) -> str:
     return f'{{{{ queron.source("{name}") }}}}'
 
 
-def var(name: str, *, log_value: bool = False) -> str:
+_RUNTIME_VAR_DEFAULT_UNSET = object()
+
+
+def var(
+    name: str,
+    *,
+    log_value: bool = False,
+    mutable_after_start: bool = False,
+    default: Any = _RUNTIME_VAR_DEFAULT_UNSET,
+) -> str:
     text = str(name or "").strip()
     if not text:
         raise ValueError("queron.var(...) requires a non-empty variable name.")
     escaped = text.replace('"', '\\"')
+    options: list[str] = []
     if log_value:
-        return f'{{{{ queron.var("{escaped}", log_value=True) }}}}'
+        options.append("log_value=True")
+    if mutable_after_start:
+        options.append("mutable_after_start=True")
+    if default is not _RUNTIME_VAR_DEFAULT_UNSET:
+        options.append(f"default={repr(default)}")
+    if options:
+        return f'{{{{ queron.var("{escaped}", {", ".join(options)}) }}}}'
     return f'{{{{ queron.var("{escaped}") }}}}'
 
 

@@ -735,6 +735,7 @@ class PipelineRuntime:
                 started_at=self._pipeline_started_at,
                 finished_at=None,
                 status="running",
+                runtime_vars_json=self.runtime_vars,
                 is_final=False,
             )
         )
@@ -855,6 +856,27 @@ class PipelineRuntime:
         target_tables: list[str] = []
         for node in self._selected_nodes():
             target_table = str(node.target_table or "").strip()
+            if not target_table or target_table in seen:
+                continue
+            seen.add(target_table)
+            target_tables.append(target_table)
+        return target_tables
+
+    def _completed_local_artifact_tables_for_current_run(self) -> list[str]:
+        import duckdb_core
+
+        if not str(self.run_id or "").strip():
+            return []
+        seen: set[str] = set()
+        target_tables: list[str] = []
+        for item in duckdb_core.get_node_runs_for_run(
+            connection_id=self._ensure_duckdb_connection_id(),
+            run_id=self.run_id,
+        ):
+            status = str(item.get("status") or "").strip().lower()
+            if status not in {"complete", "complete_with_warnings", "success", "success_with_warnings"}:
+                continue
+            target_table = str(item.get("artifact_name") or "").strip()
             if not target_table or target_table in seen:
                 continue
             seen.add(target_table)
@@ -1031,7 +1053,7 @@ class PipelineRuntime:
             archived = duckdb_core.archive_pipeline_targets(
                 connection_id=self._ensure_duckdb_connection_id(),
                 run_id=self.run_id,
-                target_tables=self._selected_local_artifact_tables(),
+                target_tables=self._completed_local_artifact_tables_for_current_run(),
             )
             if archived:
                 archived_artifact_path = duckdb_core.archived_artifact_path_for_run(
@@ -1053,6 +1075,7 @@ class PipelineRuntime:
                     finished_at=utc_now_timestamp(),
                     status="failed",
                     error_message=f"Artifact archive failed: {exc}",
+                    runtime_vars_json=self.runtime_vars,
                     is_final=False,
                 )
             )
@@ -1070,6 +1093,7 @@ class PipelineRuntime:
                 started_at=self._pipeline_started_at,
                 finished_at=utc_now_timestamp(),
                 status=status,
+                runtime_vars_json=self.runtime_vars,
                 is_final=True,
             )
         )
@@ -1089,6 +1113,7 @@ class PipelineRuntime:
                 finished_at=utc_now_timestamp(),
                 status="failed",
                 error_message=str(exc),
+                runtime_vars_json=self.runtime_vars,
                 is_final=False,
             )
         )

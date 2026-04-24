@@ -898,22 +898,40 @@ function FlowCardNode({ data, selected }) {
           >
             {data.id}
           </div>
-          <span
-            style={{
-              borderRadius: 999,
-              background: stateStyles.bg,
-              color: stateStyles.text,
-              padding: "4px 8px",
-              fontSize: 9,
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              lineHeight: 1,
-              marginBottom: 8,
-            }}
-          >
-            {data.runtimeLabel}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+            <span
+              style={{
+                borderRadius: 999,
+                background: stateStyles.bg,
+                color: stateStyles.text,
+                padding: "4px 8px",
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                lineHeight: 1,
+              }}
+            >
+              {data.runtimeLabel}
+            </span>
+            {data.hasRuntimeVars ? (
+              <span
+                style={{
+                  borderRadius: 999,
+                  background: "#fdebc8",
+                  color: "#9a5b00",
+                  padding: "4px 8px",
+                  fontSize: 9,
+                  fontWeight: 700,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  lineHeight: 1,
+                }}
+              >
+                Vars
+              </span>
+            ) : null}
+          </div>
           <div
             style={{
               fontSize: 11,
@@ -1245,7 +1263,7 @@ function FlatNodeTable({ items, selectedId }) {
 function highlightSqlVars(sqlText) {
   const text = String(sqlText || "");
   if (!text) return null;
-  const pattern = /(\{\{\s*queron\.var\(\s*["'][^"']+["']\s*\)\s*\}\})/g;
+  const pattern = /(\{\{\s*queron\.var\(\s*["'][^"']+["'](?:\s*,\s*.*?)?\s*\)\s*\}\})/gis;
   const parts = text.split(pattern);
   return parts.map((part, index) => {
     if (!part) return null;
@@ -1299,17 +1317,17 @@ function QueryPanel({ rawSql, resolvedSql, hasRuntimeVars, kind, checkOperator, 
         >
           {copied ? "Copied" : "Copy"}
         </button>
-        <pre className="min-h-full whitespace-pre-wrap break-words px-4 py-4 font-mono text-[12px] leading-5 text-slate-700">
-          {hasRuntimeVars && rawSql ? highlightSqlVars(rawSql) : resolvedSql}
-        </pre>
         {showCountCondition ? (
-          <div className="border-t border-slate-200 px-4 py-3 text-[12px] text-slate-600">
+          <div className="border-b border-slate-200 px-4 py-3 text-[12px] text-slate-600">
             <span className="font-semibold text-slate-700">Threshold:</span>{" "}
             <span className="font-mono">
               count {String(checkOperator)} {String(checkValue)}
             </span>
           </div>
         ) : null}
+        <pre className="min-h-full whitespace-pre-wrap break-words px-4 py-4 font-mono text-[12px] leading-5 text-slate-700">
+          {hasRuntimeVars && rawSql ? highlightSqlVars(rawSql) : resolvedSql}
+        </pre>
       </div>
     </div>
   );
@@ -2027,7 +2045,7 @@ function GraphCanvas({
         proOptions={{ hideAttribution: true }}
       >
         <Background color="#dbe4ee" gap={18} />
-        <Controls showInteractive={false} fitViewOptions={FIT_OPTIONS} />
+        <Controls position="top-left" showInteractive={false} fitViewOptions={FIT_OPTIONS} />
       </ReactFlow>
 
       {(graphLoading || graphError) && !suppressLoadingOverlay && (
@@ -2373,8 +2391,13 @@ export default function App() {
     return pipelineId ? `queron.runtimeVars.${pipelineId}` : "";
   }, [graphData?.pipeline_id]);
   const runtimeVarsContract = useMemo(
-    () => (Array.isArray(graphData?.runtime_vars_contract) ? graphData.runtime_vars_contract : []),
-    [graphData?.runtime_vars_contract],
+    () =>
+      (Array.isArray(graphData?.active_runtime_vars_contract)
+        ? graphData.active_runtime_vars_contract
+        : Array.isArray(graphData?.runtime_vars_contract)
+          ? graphData.runtime_vars_contract
+          : []),
+    [graphData?.active_runtime_vars_contract, graphData?.runtime_vars_contract],
   );
   const runtimeVarInputDefaults = useMemo(
     () => buildRuntimeVarInputDefaults(runtimeVarsContract),
@@ -3018,12 +3041,6 @@ export default function App() {
   }, [artifactPageOpen, selectedArtifactName, artifactPreview?.artifactName]);
 
   const executeArtifactQuery = async () => {
-    if (!selectedNodeId) {
-      setArtifactResult(null);
-      setArtifactResultUpdatedAt(null);
-      setArtifactError("Select a node with a materialized artifact first.");
-      return;
-    }
     try {
       setArtifactQueryLoading(true);
       const sqlToExecute = lastArtifactQueryStatement(artifactQuery);
@@ -3031,10 +3048,14 @@ export default function App() {
         throw new Error("Write a query first.");
       }
       const runId = currentRunIdForNodePanel();
-      const response = await fetch("/api/node/artifact-query", {
+      const response = await fetch("/api/run/artifact-query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ node_name: selectedNodeId, sql: sqlToExecute, run_id: runId }),
+        body: JSON.stringify({
+          sql: sqlToExecute,
+          run_id: runId,
+          artifact_name: selectedArtifactName || artifactPreview?.artifactName || null,
+        }),
       });
       const payload = await response.json();
       if (!response.ok || payload.ok === false) throw new Error(payload.error || "Artifact query failed.");
@@ -3055,20 +3076,21 @@ export default function App() {
   };
 
   const downloadArtifactQuery = async (format = "csv") => {
-    if (!selectedNodeId) {
-      setArtifactError("Select a node with a materialized artifact first.");
-      return;
-    }
     try {
       const sqlToExecute = lastArtifactQueryStatement(artifactQuery);
       if (!sqlToExecute) {
         throw new Error("Write a query first.");
       }
       const runId = currentRunIdForNodePanel();
-      const response = await fetch("/api/node/artifact-download", {
+      const response = await fetch("/api/run/artifact-download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ node_name: selectedNodeId, sql: sqlToExecute, run_id: runId, format }),
+        body: JSON.stringify({
+          sql: sqlToExecute,
+          run_id: runId,
+          format,
+          artifact_name: selectedArtifactName || artifactPreview?.artifactName || null,
+        }),
       });
       if (!response.ok) {
         let message = "Artifact download failed.";

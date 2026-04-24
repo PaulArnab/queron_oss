@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from typing import Any, Callable
 
@@ -7,9 +8,54 @@ from .runtime_models import PipelineVarRecord
 
 
 _VAR_PATTERN = re.compile(
-    r"\{\{\s*queron\.var\(\s*(?P<quote>['\"])(?P<name>[^'\"]+)(?P=quote)(?:\s*,\s*log_value\s*=\s*(?P<log_value>true|false))?\s*\)\s*\}\}",
-    re.IGNORECASE,
+    r"\{\{\s*queron\.var\(\s*(?P<quote>['\"])(?P<name>[^'\"]+)(?P=quote)(?P<options>(?:\s*,\s*.*?)?)\s*\)\s*\}\}",
+    re.IGNORECASE | re.DOTALL,
 )
+
+
+def parse_runtime_var_options(
+    name: str,
+    options_text: str | None,
+) -> tuple[dict[str, Any], list[str], str | None]:
+    resolved = {
+        "log_value": False,
+        "mutable_after_start": False,
+        "default": None,
+        "has_default": False,
+    }
+    options_payload = str(options_text or "").strip()
+    if not options_payload:
+        return resolved, [], None
+    escaped_name = str(name or "").replace("\\", "\\\\").replace('"', '\\"')
+    expression = f'queron.var("{escaped_name}"{options_payload})'
+    try:
+        parsed = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return resolved, [], "Invalid queron.var(...) options."
+    call = parsed.body
+    if not isinstance(call, ast.Call):
+        return resolved, [], "Invalid queron.var(...) options."
+    unknown: list[str] = []
+    for keyword in call.keywords:
+        option_name = str(keyword.arg or "").strip()
+        if option_name == "default":
+            try:
+                resolved["default"] = ast.literal_eval(keyword.value)
+                resolved["has_default"] = True
+            except Exception:
+                return resolved, [], "queron.var(..., default=...) must use a Python literal value."
+            continue
+        if option_name in {"log_value", "mutable_after_start"}:
+            try:
+                value = ast.literal_eval(keyword.value)
+            except Exception:
+                return resolved, [], f"queron.var(..., {option_name}=...) must use True or False."
+            if not isinstance(value, bool):
+                return resolved, [], f"queron.var(..., {option_name}=...) must use True or False."
+            resolved[option_name] = value
+            continue
+        unknown.append(option_name)
+    return resolved, unknown, None
 
 
 def validate_runtime_var_values(
@@ -52,6 +98,41 @@ def validate_runtime_var_values(
                 raise RuntimeError(f"Runtime var '{name}' must be a scalar value.")
             resolved[name] = value
     return resolved
+
+
+def resolve_runtime_var_values_for_existing_run(
+    contract_vars: list[PipelineVarRecord] | None,
+    *,
+    stored_runtime_vars: dict[str, Any] | None,
+    requested_runtime_vars: dict[str, Any] | None,
+) -> dict[str, Any]:
+    stored_payload = {
+        str(key).strip(): value
+        for key, value in dict(stored_runtime_vars or {}).items()
+        if str(key).strip()
+    }
+    if requested_runtime_vars is None:
+        return validate_runtime_var_values(contract_vars, stored_payload)
+
+    requested_resolved = validate_runtime_var_values(contract_vars, requested_runtime_vars)
+    if not stored_payload:
+        return requested_resolved
+
+    stored_resolved = validate_runtime_var_values(contract_vars, stored_payload)
+    records_by_name = {
+        str(item.name).strip(): item
+        for item in list(contract_vars or [])
+        if str(item.name).strip()
+    }
+    for name, requested_value in requested_resolved.items():
+        if name not in stored_resolved:
+            continue
+        if stored_resolved[name] == requested_value:
+            continue
+        if bool(getattr(records_by_name.get(name), "mutable_after_start", False)):
+            continue
+        raise RuntimeError(f"Runtime var '{name}' cannot be changed after run start.")
+    return requested_resolved
 
 
 def render_runtime_sql(

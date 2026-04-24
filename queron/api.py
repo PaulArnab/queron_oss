@@ -21,7 +21,7 @@ from .runtime_models import (
     normalize_log_event,
     utc_now_timestamp,
 )
-from .runtime_vars import validate_runtime_var_values
+from .runtime_vars import resolve_runtime_var_values_for_existing_run, validate_runtime_var_values
 from .specs import PipelineSpec
 from .templates import build_init_config_text, build_init_gitignore_text, build_init_pipeline_text
 
@@ -74,6 +74,7 @@ class InspectDagResult:
     archived_artifact_path: str | None = None
     is_final: bool = False
     runtime_vars_contract: list[dict[str, Any]] = field(default_factory=list)
+    active_runtime_vars_contract: list[dict[str, Any]] = field(default_factory=list)
     nodes: list[dict[str, Any]] = field(default_factory=list)
     edges: list[list[str]] = field(default_factory=list)
 
@@ -93,7 +94,10 @@ class InspectNodeResult:
     nodes: list[dict[str, Any]] = field(default_factory=list)
 
 
-_RUNTIME_VAR_PATTERN = re.compile(r"\{\{\s*queron\.var\(\s*['\"]([^'\"]+)['\"]\s*\)\s*\}\}")
+_RUNTIME_VAR_PATTERN = re.compile(
+    r"\{\{\s*queron\.var\(\s*['\"]([^'\"]+)['\"](?:\s*,\s*.*?)?\s*\)\s*\}\}",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _extract_runtime_var_names(sql: Any) -> list[str]:
@@ -109,6 +113,18 @@ def _extract_runtime_var_names(sql: Any) -> list[str]:
         seen.add(name)
         names.append(name)
     return names
+
+
+def _extract_runtime_var_names_from_node_payload(node_payload: Any) -> list[str]:
+    if not isinstance(node_payload, dict):
+        return []
+    names = _extract_runtime_var_names(node_payload.get("sql"))
+    if names:
+        return names
+    names = _extract_runtime_var_names(node_payload.get("query"))
+    if names:
+        return names
+    return _extract_runtime_var_names(node_payload.get("resolved_sql"))
 
 
 def _split_relation_name(value: str) -> tuple[str, str]:
@@ -378,6 +394,7 @@ def _set_run_final_if_allowed(
             finished_at=str(run.get("finished_at") or "").strip() or None,
             status="failed",
             error_message=str(run.get("error_message") or "").strip() or None,
+            runtime_vars_json=dict(run.get("runtime_vars_json") or {}),
             is_final=True,
         ),
     )
@@ -542,6 +559,7 @@ def _reconcile_orphaned_running_runs(
                 finished_at=failed_at,
                 status="failed",
                 error_message=error_message,
+                runtime_vars_json=dict(run.get("runtime_vars_json") or {}),
                 is_final=False,
             ),
         )
@@ -581,6 +599,29 @@ def _emit_log_event(
     except Exception:
         pass
     return event
+
+
+def _persist_pre_runtime_log_events(runtime, events: list[PipelineLogEvent] | None) -> None:
+    if runtime is None or not events:
+        return
+    for event in events:
+        try:
+            persisted = build_log_event(
+                code=event.code,
+                message=event.message,
+                severity=event.severity,
+                source=event.source,
+                details=dict(event.details or {}),
+                timestamp=event.timestamp,
+                run_id=runtime.run_id,
+                node_id=event.node_id,
+                node_name=event.node_name,
+                node_kind=event.node_kind,
+                artifact_name=event.artifact_name,
+            )
+            runtime._write_log_event(persisted)
+        except Exception:
+            pass
 
 
 def _read_text_file(path: str | Path | None, *, label: str, required: bool = False) -> str | None:
@@ -1151,6 +1192,7 @@ def _build_runtime_for_pipeline(
     runtime_vars: dict[str, Any] | None,
     connections_path: str | Path | None,
     on_log: Callable[[PipelineLogEvent], None] | None,
+    validate_runtime_vars: bool = True,
 ) -> tuple[PipelineRuntime, Path]:
     if compiled.spec is None:
         raise RuntimeError("Compiled pipeline is missing a spec.")
@@ -1168,9 +1210,17 @@ def _build_runtime_for_pipeline(
         spec=compiled.spec,
         module_globals=compiled.module_globals,
         runtime_bindings=runtime_bindings,
-        runtime_vars=validate_runtime_var_values(
-            getattr(compiled.contract, "vars_json", None),
-            runtime_vars,
+        runtime_vars=(
+            validate_runtime_var_values(
+                getattr(compiled.contract, "vars_json", None),
+                runtime_vars,
+            )
+            if validate_runtime_vars
+            else {
+                str(key).strip(): value
+                for key, value in dict(runtime_vars or {}).items()
+                if str(key).strip()
+            }
         ),
         connections_path=_resolve_connections_path(pipeline_path, connections_path),
         on_log=on_log,
@@ -1199,6 +1249,26 @@ def _format_pipeline_runtime_vars_for_log(
         else:
             parts.append(name)
     return f" Runtime vars: {', '.join(parts)}." if parts else ""
+
+
+def _resolve_runtime_vars_for_existing_run(
+    *,
+    artifact_path: str | Path,
+    compiled: CompiledPipeline,
+    runtime_vars: dict[str, Any] | None,
+) -> dict[str, Any]:
+    import duckdb_core
+
+    latest_run = duckdb_core.list_pipeline_runs(
+        database_path=str(Path(artifact_path).expanduser().resolve()),
+        limit=1,
+    )
+    selected_run = latest_run[0] if latest_run else None
+    return resolve_runtime_var_values_for_existing_run(
+        getattr(compiled.contract, "vars_json", None),
+        stored_runtime_vars=dict(selected_run.get("runtime_vars_json") or {}) if isinstance(selected_run, dict) else {},
+        requested_runtime_vars=runtime_vars,
+    )
 
 
 def _ensure_run_label_available(
@@ -1882,7 +1952,7 @@ def inspect_node(
         name = str(raw_node.get("name") or "").strip()
         if not name or name not in selected_names:
             continue
-        runtime_var_names = _extract_runtime_var_names(raw_node.get("sql"))
+        runtime_var_names = _extract_runtime_var_names_from_node_payload(raw_node)
         node_run = node_runs_by_name.get(name, {})
         active_state = active_states_by_name.get(name, {})
         artifact_context = _resolve_node_artifact_context(
@@ -2295,6 +2365,11 @@ def inspect_dag(
         run_label=run_label,
         limit=None,
     )
+    import duckdb_core
+
+    active_contract = duckdb_core.load_active_compiled_contract(database_path=str(resolved_artifact_path))
+    if active_contract is None:
+        active_contract = contract
 
     node_runs_by_name = _load_node_runs_by_name_for_selected_run(
         resolved_artifact_path=resolved_artifact_path,
@@ -2321,7 +2396,7 @@ def inspect_dag(
         name = str(raw_node.get("name") or "").strip()
         if not name:
             continue
-        runtime_var_names = _extract_runtime_var_names(raw_node.get("sql"))
+        runtime_var_names = _extract_runtime_var_names_from_node_payload(raw_node)
         node_run = node_runs_by_name.get(name, {})
         active_state = active_states_by_name.get(name, {})
         artifact_context = _resolve_node_artifact_context(
@@ -2363,6 +2438,10 @@ def inspect_dag(
         runtime_vars_contract=[
             item.model_dump() if hasattr(item, "model_dump") else dict(item)
             for item in list(getattr(contract, "vars_json", []) or [])
+        ],
+        active_runtime_vars_contract=[
+            item.model_dump() if hasattr(item, "model_dump") else dict(item)
+            for item in list(getattr(active_contract, "vars_json", []) or [])
         ],
         nodes=nodes,
         edges=edges,
@@ -2530,17 +2609,18 @@ def _run_pipeline_impl(
     on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> RunPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
-    _emit_log_event(
+    pre_runtime_events: list[PipelineLogEvent] = []
+    pre_runtime_events.append(_emit_log_event(
         on_log,
         code=LogCode.PIPELINE_RUN_STARTED,
         message=f"Starting pipeline run for {resolved_pipeline_path.name}.",
         details={"pipeline_path": str(resolved_pipeline_path)},
-    )
-    _emit_log_event(
+    ))
+    pre_runtime_events.append(_emit_log_event(
         on_log,
         code=LogCode.PIPELINE_COMPILE_STARTED,
         message="Validating compiled pipeline contract...",
-    )
+    ))
     compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
         resolved_pipeline_path,
         config_path=config_path,
@@ -2548,13 +2628,13 @@ def _run_pipeline_impl(
         artifact_path=artifact_path,
     )
     if has_compile_errors(compiled) or compiled.spec is None:
-        _emit_log_event(
+        pre_runtime_events.append(_emit_log_event(
             on_log,
             code=LogCode.PIPELINE_COMPILE_FAILED,
             message="Pipeline compile contract validation failed.",
             severity="error",
             details={"diagnostic_count": len(compiled.diagnostics)},
-        )
+        ))
         return RunPipelineResult(
             compiled=compiled,
             executed_nodes=[],
@@ -2562,12 +2642,12 @@ def _run_pipeline_impl(
             run_id=None,
             log_path=None,
         )
-    _emit_log_event(
+    pre_runtime_events.append(_emit_log_event(
         on_log,
         code=LogCode.PIPELINE_COMPILE_SUCCEEDED,
         message=f"Compiled contract validated with {len(compiled.spec.nodes)} node(s).",
         details={"node_count": len(compiled.spec.nodes)},
-    )
+    ))
     import duckdb_core
 
     latest_runs = duckdb_core.list_pipeline_runs(database_path=str(resolved_artifact_path), limit=1)
@@ -2626,6 +2706,7 @@ def _run_pipeline_impl(
         connections_path=connections_path,
         on_log=on_log,
     )
+    _persist_pre_runtime_log_events(runtime, pre_runtime_events)
     if clean_existing:
         _preserve_latest_incomplete_run_outputs_before_purge(compiled, runtime=runtime)
         runtime.clear_pipeline_outputs()
@@ -2716,17 +2797,18 @@ def _resume_pipeline_impl(
     on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> RunPipelineResult:
     resolved_pipeline_path = Path(pipeline_path).expanduser().resolve()
-    _emit_log_event(
+    pre_runtime_events: list[PipelineLogEvent] = []
+    pre_runtime_events.append(_emit_log_event(
         on_log,
         code=LogCode.PIPELINE_RUN_STARTED,
         message=f"Resuming pipeline run for {resolved_pipeline_path.name}.",
         details={"pipeline_path": str(resolved_pipeline_path)},
-    )
-    _emit_log_event(
+    ))
+    pre_runtime_events.append(_emit_log_event(
         on_log,
         code=LogCode.PIPELINE_COMPILE_STARTED,
         message="Validating compiled pipeline contract...",
-    )
+    ))
     compiled, resolved_artifact_path = _validated_compiled_pipeline_for_file(
         resolved_pipeline_path,
         config_path=config_path,
@@ -2734,13 +2816,13 @@ def _resume_pipeline_impl(
         artifact_path=artifact_path,
     )
     if has_compile_errors(compiled) or compiled.spec is None:
-        _emit_log_event(
+        pre_runtime_events.append(_emit_log_event(
             on_log,
             code=LogCode.PIPELINE_COMPILE_FAILED,
             message="Pipeline compile contract validation failed.",
             severity="error",
             details={"diagnostic_count": len(compiled.diagnostics)},
-        )
+        ))
         return RunPipelineResult(
             compiled=compiled,
             executed_nodes=[],
@@ -2748,11 +2830,16 @@ def _resume_pipeline_impl(
             run_id=None,
             log_path=None,
         )
-    _emit_log_event(
+    pre_runtime_events.append(_emit_log_event(
         on_log,
         code=LogCode.PIPELINE_COMPILE_SUCCEEDED,
         message=f"Compiled contract validated with {len(compiled.spec.nodes)} node(s).",
         details={"node_count": len(compiled.spec.nodes)},
+    ))
+    effective_runtime_vars = _resolve_runtime_vars_for_existing_run(
+        artifact_path=resolved_artifact_path,
+        compiled=compiled,
+        runtime_vars=runtime_vars,
     )
 
     runtime, resolved_artifact_path = _build_runtime_for_pipeline(
@@ -2762,10 +2849,11 @@ def _resume_pipeline_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=runtime_bindings,
-        runtime_vars=runtime_vars,
+        runtime_vars=effective_runtime_vars,
         connections_path=connections_path,
         on_log=on_log,
     )
+    _persist_pre_runtime_log_events(runtime, pre_runtime_events)
     result = resume_compiled_pipeline(compiled, runtime=runtime, on_log=on_log)
     return RunPipelineResult(
         compiled=result.compiled,
@@ -2840,9 +2928,14 @@ def _reset_node_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
-        runtime_vars=None,
+        runtime_vars=_resolve_runtime_vars_for_existing_run(
+            artifact_path=resolved_artifact_path,
+            compiled=compiled,
+            runtime_vars=None,
+        ),
         connections_path=None,
         on_log=on_log,
+        validate_runtime_vars=False,
     )
     try:
         latest_run, node_runs, _active_states = _current_failed_run_context(
@@ -2926,9 +3019,14 @@ def _reset_downstream_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
-        runtime_vars=None,
+        runtime_vars=_resolve_runtime_vars_for_existing_run(
+            artifact_path=resolved_artifact_path,
+            compiled=compiled,
+            runtime_vars=None,
+        ),
         connections_path=None,
         on_log=on_log,
+        validate_runtime_vars=False,
     )
     try:
         latest_run, node_runs, _active_states = _current_failed_run_context(
@@ -3158,9 +3256,14 @@ def _reset_upstream_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
-        runtime_vars=None,
+        runtime_vars=_resolve_runtime_vars_for_existing_run(
+            artifact_path=resolved_artifact_path,
+            compiled=compiled,
+            runtime_vars=None,
+        ),
         connections_path=None,
         on_log=on_log,
+        validate_runtime_vars=False,
     )
     try:
         latest_run, node_runs, _active_states = _current_failed_run_context(
@@ -3259,9 +3362,14 @@ def _reset_all_impl(
         run_label=None,
         compile_id=compiled.contract.compile_id if compiled.contract is not None else None,
         runtime_bindings=None,
-        runtime_vars=None,
+        runtime_vars=_resolve_runtime_vars_for_existing_run(
+            artifact_path=resolved_artifact_path,
+            compiled=compiled,
+            runtime_vars=None,
+        ),
         connections_path=None,
         on_log=on_log,
+        validate_runtime_vars=False,
     )
     try:
         latest_run, node_runs, _active_states = _current_failed_run_context(

@@ -230,6 +230,58 @@ def _artifact_query_context(
     }
 
 
+def _selected_run_artifact_record(
+    artifact_path: str | Path,
+    *,
+    run_id: str | None = None,
+    run_label: str | None = None,
+) -> dict[str, Any]:
+    normalized_run_id, normalized_run_label = _normalized_selection(run_id, run_label)
+    graph = inspect_dag(
+        artifact_path,
+        run_id=normalized_run_id,
+        run_label=normalized_run_label,
+    )
+    effective_artifact_path = str(graph.archived_artifact_path or "").strip() or str(graph.artifact_path or "").strip()
+    if not effective_artifact_path:
+        effective_artifact_path = str(Path(artifact_path).resolve())
+    return {
+        "artifact_path": effective_artifact_path,
+        "run_id": graph.run_id,
+        "run_label": graph.run_label,
+        "run_status": graph.run_status,
+    }
+
+
+def _artifact_query_context_for_run(
+    artifact_path: str | Path,
+    *,
+    sql: str,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    artifact_name: str | None = None,
+) -> dict[str, Any]:
+    selected = _selected_run_artifact_record(
+        artifact_path,
+        run_id=run_id,
+        run_label=run_label,
+    )
+    validated_sql = _validate_read_only_sql(sql)
+    selected_artifact_name = str(artifact_name or "").strip() or None
+    if "{{artifact}}" in validated_sql:
+        if not selected_artifact_name:
+            raise RuntimeError("artifact_name is required when the query uses {{artifact}}.")
+        validated_sql = validated_sql.replace(
+            "{{artifact}}",
+            _qualified_artifact_name(selected_artifact_name),
+        )
+    return {
+        **selected,
+        "artifact_name": selected_artifact_name,
+        "sql": validated_sql,
+    }
+
+
 def _download_filename(*, node_name: str, run_id: str | None, export_format: str) -> str:
     extension = "json" if export_format == "json" else export_format
     suffix = f"_{str(run_id).strip()}" if str(run_id or "").strip() else ""
@@ -296,6 +348,98 @@ def export_node_artifact_query_panel(
             output_path.unlink(missing_ok=True)
 
 
+def query_run_artifact_panel(
+    artifact_path: str | Path,
+    *,
+    sql: str,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    artifact_name: str | None = None,
+) -> dict[str, Any]:
+    query_context = _artifact_query_context_for_run(
+        artifact_path,
+        sql=sql,
+        run_id=run_id,
+        run_label=run_label,
+        artifact_name=artifact_name,
+    )
+    query_result = _execute_artifact_query(query_context["artifact_path"], query_context["sql"])
+    return {
+        "ok": True,
+        "run_id": query_context["run_id"],
+        "run_label": query_context["run_label"],
+        "run_status": query_context["run_status"],
+        "artifact_path": query_context["artifact_path"],
+        "artifact_name": query_context["artifact_name"],
+        "sql": query_context["sql"],
+        **query_result,
+    }
+
+
+def export_run_artifact_query_panel(
+    artifact_path: str | Path,
+    *,
+    sql: str,
+    format: str,
+    run_id: str | None = None,
+    run_label: str | None = None,
+    artifact_name: str | None = None,
+) -> dict[str, Any]:
+    query_context = _artifact_query_context_for_run(
+        artifact_path,
+        sql=sql,
+        run_id=run_id,
+        run_label=run_label,
+        artifact_name=artifact_name,
+    )
+    export_format = str(format or "").strip().lower()
+    if export_format not in {"csv", "parquet", "json"}:
+        raise RuntimeError("format must be one of: csv, parquet, json.")
+
+    import duckdb_core
+
+    temp_dir = Path(tempfile.gettempdir()).resolve()
+    output_path = temp_dir / f"queron_graph_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.{ 'json' if export_format == 'json' else export_format }"
+    try:
+        if export_format == "csv":
+            export = duckdb_core.export_query_to_csv(
+                database=query_context["artifact_path"],
+                sql=query_context["sql"],
+                output_path=str(output_path),
+                overwrite=True,
+            )
+            content_type = "text/csv; charset=utf-8"
+        elif export_format == "parquet":
+            export = duckdb_core.export_query_to_parquet(
+                database=query_context["artifact_path"],
+                sql=query_context["sql"],
+                output_path=str(output_path),
+                overwrite=True,
+            )
+            content_type = "application/octet-stream"
+        else:
+            export = duckdb_core.export_query_to_json(
+                database=query_context["artifact_path"],
+                sql=query_context["sql"],
+                output_path=str(output_path),
+                overwrite=True,
+            )
+            content_type = "application/json; charset=utf-8"
+        file_bytes = Path(export.output_path).read_bytes()
+        return {
+            "filename": _download_filename(
+                node_name=str(query_context["artifact_name"] or "artifact_query"),
+                run_id=query_context["run_id"],
+                export_format=export_format,
+            ),
+            "content_type": content_type,
+            "body": file_bytes,
+        }
+    finally:
+        if output_path.exists():
+            output_path.unlink(missing_ok=True)
+
+
 def get_graph_panel(
     artifact_path: str | Path,
     *,
@@ -315,6 +459,7 @@ def get_graph_panel(
         "run_status": result.run_status,
         "is_final": result.is_final,
         "runtime_vars_contract": result.runtime_vars_contract,
+        "active_runtime_vars_contract": result.active_runtime_vars_contract,
         "node_count": len(result.nodes),
         "nodes": result.nodes,
         "edges": result.edges,
@@ -1144,6 +1289,41 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
                     sql=sql,
                     run_id=run_id,
                     run_label=run_label,
+                    format=export_format,
+                )
+                self._write_download(
+                    body=download["body"],
+                    content_type=str(download["content_type"]),
+                    filename=str(download["filename"]),
+                )
+                return
+            if parsed.path == "/api/run/artifact-query":
+                sql = str(payload.get("sql") or "").strip()
+                run_id = str(payload.get("run_id") or "").strip() or None
+                run_label = str(payload.get("run_label") or "").strip() or None
+                artifact_name = str(payload.get("artifact_name") or "").strip() or None
+                self._write_json(
+                    query_run_artifact_panel(
+                        context.artifact_path,
+                        sql=sql,
+                        run_id=run_id,
+                        run_label=run_label,
+                        artifact_name=artifact_name,
+                    )
+                )
+                return
+            if parsed.path == "/api/run/artifact-download":
+                sql = str(payload.get("sql") or "").strip()
+                run_id = str(payload.get("run_id") or "").strip() or None
+                run_label = str(payload.get("run_label") or "").strip() or None
+                artifact_name = str(payload.get("artifact_name") or "").strip() or None
+                export_format = str(payload.get("format") or "csv").strip() or "csv"
+                download = export_run_artifact_query_panel(
+                    context.artifact_path,
+                    sql=sql,
+                    run_id=run_id,
+                    run_label=run_label,
+                    artifact_name=artifact_name,
                     format=export_format,
                 )
                 self._write_download(

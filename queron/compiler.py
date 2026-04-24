@@ -14,6 +14,7 @@ from typing import Any
 
 from .config import load_config, resolve_source_relation, resolve_target, try_resolve_egress_relation
 from .runtime_models import CompiledContractRecord, PipelineVarRecord
+from .runtime_vars import _VAR_PATTERN, parse_runtime_var_options
 from .specs import NodeSpec, PipelineSpec
 from .templates import extract_refs, extract_sources, find_raw_compound_relations, has_raw_reference_to_name, render_sql
 
@@ -23,10 +24,6 @@ _FILE_INGRESS_KIND_TO_FORMAT = {
     "parquet.ingress": "parquet",
 }
 _ALL_FILE_INGRESS_KINDS = set(_FILE_INGRESS_KIND_TO_FORMAT) | {"file.ingress"}
-_VAR_PATTERN = re.compile(
-    r"\{\{\s*queron\.var\(\s*(?P<quote>['\"])(?P<name>[^'\"]+)(?P=quote)(?:\s*,\s*log_value\s*=\s*(?P<log_value>true|false))?\s*\)\s*\}\}",
-    re.IGNORECASE,
-)
 _SQL_VAR_VALUE_PRECEDERS = {"=", "<>", "!=", ">", ">=", "<", "<=", "(", ",", "between", "and", "like", "ilike"}
 _SQL_VAR_FORBIDDEN_PRECEDERS = {"from", "join", "update", "into", "table", "select", "order", "group", "by", "as"}
 _SQL_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
@@ -313,11 +310,15 @@ def _extract_node_var_references(node: NodeSpec) -> list[dict[str, Any]]:
         name = str(match.group("name") or "").strip()
         if not name:
             continue
+        options, _unknown_options, _option_error = parse_runtime_var_options(name, match.group("options"))
         refs.append(
             {
                 "name": name,
                 "kind": _infer_sql_var_kind(sql_text, match.start()),
-                "log_value": str(match.group("log_value") or "").strip().lower() == "true",
+                "log_value": bool(options.get("log_value")),
+                "mutable_after_start": bool(options.get("mutable_after_start")),
+                "default": options.get("default"),
+                "has_default": bool(options.get("has_default")),
             }
         )
     deduped: dict[tuple[str, str], dict[str, Any]] = {}
@@ -337,6 +338,30 @@ def _validate_node_var_references(node: NodeSpec) -> list[dict[str, Any]]:
     for match in _VAR_PATTERN.finditer(sql_text):
         name = str(match.group("name") or "").strip()
         if not name:
+            continue
+        options, unknown_options, option_error = parse_runtime_var_options(name, match.group("options"))
+        if option_error:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "code": "invalid_runtime_var_option",
+                    "message": f"Node '{node.name}' has invalid queron.var(...) options for '{name}': {option_error}",
+                    "node_name": node.name,
+                }
+            )
+            continue
+        if unknown_options:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "code": "unsupported_runtime_var_option",
+                    "message": (
+                        f"Node '{node.name}' uses unsupported queron.var(...) option(s): "
+                        f"{', '.join(sorted(set(unknown_options)))}."
+                    ),
+                    "node_name": node.name,
+                }
+            )
             continue
         previous_token, previous_non_group_token = _sql_var_previous_context(sql_text, match.start())
         if previous_token in _SQL_VAR_FORBIDDEN_PRECEDERS or previous_non_group_token in _SQL_VAR_FORBIDDEN_PRECEDERS:
@@ -369,7 +394,10 @@ def _validate_node_var_references(node: NodeSpec) -> list[dict[str, Any]]:
             {
                 "name": name,
                 "kind": "list" if previous_non_group_token == "in" else "scalar",
-                "log_value": str(match.group("log_value") or "").strip().lower() == "true",
+                "log_value": bool(options.get("log_value")),
+                "mutable_after_start": bool(options.get("mutable_after_start")),
+                "default": options.get("default"),
+                "has_default": bool(options.get("has_default")),
             }
         )
 
@@ -393,9 +421,10 @@ def _collect_pipeline_var_records(nodes: list[NodeSpec]) -> tuple[list[PipelineV
                 {
                     "name": name,
                     "kind": str(ref.get("kind") or "scalar"),
-                    "required": True,
-                    "default": None,
+                    "required": not bool(ref.get("has_default")),
+                    "default": ref.get("default"),
                     "log_value": bool(ref.get("log_value")),
+                    "mutable_after_start": bool(ref.get("mutable_after_start")),
                     "used_in_nodes": [],
                 },
             )
@@ -427,6 +456,44 @@ def _collect_pipeline_var_records(nodes: list[NodeSpec]) -> tuple[list[PipelineV
                         "node_name": node.name,
                     }
                 )
+            ref_mutable_after_start = bool(ref.get("mutable_after_start"))
+            if bool(record["mutable_after_start"]) != ref_mutable_after_start:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "conflicting_runtime_var_mutability",
+                        "message": (
+                            f"Runtime var '{name}' uses conflicting mutable_after_start settings in the pipeline. "
+                            "A runtime var must keep one mutable_after_start setting across the whole pipeline."
+                        ),
+                        "node_name": node.name,
+                    }
+                )
+            ref_has_default = bool(ref.get("has_default"))
+            if bool(ref_has_default) != (not bool(record["required"])):
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "conflicting_runtime_var_default",
+                        "message": (
+                            f"Runtime var '{name}' uses conflicting default settings in the pipeline. "
+                            "A runtime var must either always declare a default or never declare one."
+                        ),
+                        "node_name": node.name,
+                    }
+                )
+            if bool(ref_has_default) and record["default"] != ref.get("default"):
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "conflicting_runtime_var_default_value",
+                        "message": (
+                            f"Runtime var '{name}' uses conflicting default values in the pipeline. "
+                            "A runtime var must keep one default value across the whole pipeline."
+                        ),
+                        "node_name": node.name,
+                    }
+                )
             if node.name not in record["used_in_nodes"]:
                 record["used_in_nodes"].append(node.name)
     records = [
@@ -436,6 +503,7 @@ def _collect_pipeline_var_records(nodes: list[NodeSpec]) -> tuple[list[PipelineV
             required=bool(item["required"]),
             default=item["default"],
             log_value=bool(item["log_value"]),
+            mutable_after_start=bool(item["mutable_after_start"]),
             used_in_nodes=sorted(str(value) for value in item["used_in_nodes"] if str(value).strip()),
         )
         for item in sorted(by_name.values(), key=lambda entry: entry["name"])
