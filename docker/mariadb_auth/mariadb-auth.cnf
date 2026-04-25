@@ -1,0 +1,6 @@
+[mariadb]
+bind-address=0.0.0.0
+ssl-ca=/tls/ca.crt
+ssl-cert=/tls/server.crt
+ssl-key=/tls/server.key
+
