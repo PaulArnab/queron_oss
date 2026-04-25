@@ -1987,6 +1987,13 @@ def inspect_node(
                 "archived_artifact_name": artifact_context["archived_artifact_name"],
                 "row_count_in": node_run.get("row_count_in"),
                 "row_count_out": node_run.get("row_count_out"),
+                "details": dict(node_run.get("details_json") or {}) if isinstance(node_run.get("details_json"), dict) else {},
+                "lookup_table": (
+                    dict(node_run.get("details_json") or {}).get("lookup_table")
+                    if isinstance(node_run.get("details_json"), dict)
+                    else None
+                ),
+                "resolved_lookups": dict(raw_node.get("resolved_lookups") or {}) if isinstance(raw_node.get("resolved_lookups"), dict) else {},
                 "dependencies": [
                     str(item).strip()
                     for item in dependencies
@@ -2420,6 +2427,13 @@ def inspect_dag(
                 "finished_at": str(node_run.get("finished_at") or "").strip() or None,
                 "row_count_in": node_run.get("row_count_in"),
                 "row_count_out": node_run.get("row_count_out"),
+                "details": dict(node_run.get("details_json") or {}) if isinstance(node_run.get("details_json"), dict) else {},
+                "lookup_table": (
+                    dict(node_run.get("details_json") or {}).get("lookup_table")
+                    if isinstance(node_run.get("details_json"), dict)
+                    else None
+                ),
+                "resolved_lookups": dict(raw_node.get("resolved_lookups") or {}) if isinstance(raw_node.get("resolved_lookups"), dict) else {},
                 "has_runtime_vars": bool(runtime_var_names),
                 "runtime_var_names": runtime_var_names,
             }

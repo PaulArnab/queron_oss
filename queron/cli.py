@@ -1193,11 +1193,14 @@ def _handle_inspect_node(args: argparse.Namespace) -> int:
         node_run_status = str(item.get("node_run_status") or "").strip() or "-"
         started_at = str(item.get("started_at") or "").strip() or "-"
         finished_at = str(item.get("finished_at") or "").strip() or "-"
+        lookup_table = str(item.get("lookup_table") or "").strip()
         dependencies = [str(dep).strip() for dep in list(item.get("dependencies") or []) if str(dep).strip()]
         dependents = [str(dep).strip() for dep in list(item.get("dependents") or []) if str(dep).strip()]
         print(f"  Node run status: {node_run_status}")
         print(f"  Started: {started_at}")
         print(f"  Finished: {finished_at}")
+        if lookup_table:
+            print(f"  Lookup table: {lookup_table}")
         print(f"  Dependencies: {', '.join(dependencies) if dependencies else '-'}")
         print(f"  Dependents: {', '.join(dependents) if dependents else '-'}")
     return 0

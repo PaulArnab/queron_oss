@@ -36,7 +36,9 @@ class NodeSpec:
     dependencies: list[str] = field(default_factory=list)
     refs: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
+    lookups: list[str] = field(default_factory=list)
     resolved_sources: dict[str, str] = field(default_factory=dict)
+    resolved_lookups: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

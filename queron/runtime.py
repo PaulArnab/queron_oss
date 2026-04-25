@@ -196,7 +196,16 @@ class PipelineRuntime:
 
     def _active_node_force_interrupt_supported(self) -> bool:
         active_kind = str(self._active_node_kind or "").strip().lower()
-        return active_kind not in {"", "python.ingress", "db2.ingress", "db2.egress", "mssql.ingress", "mssql.egress"}
+        return active_kind not in {
+            "",
+            "python.ingress",
+            "db2.ingress",
+            "db2.egress",
+            "db2.lookup",
+            "mssql.ingress",
+            "mssql.egress",
+            "mssql.lookup",
+        }
 
     def _resolve_log_path(self) -> Path:
         return Path(self.duckdb_path).resolve().parent / "logs" / f"{self.run_id}.jsonl"
@@ -358,8 +367,8 @@ class PipelineRuntime:
         payload = self._consume_stop_request_payload() or {}
         reason = str(payload.get("reason") or "").strip() or "Force stopped by user."
         node_kind = str(node.kind or "").strip().lower() if node is not None else ""
-        db2_fallback = bool(python_fallback and node_kind in {"db2.ingress", "db2.egress"})
-        mssql_fallback = bool(python_fallback and node_kind in {"mssql.ingress", "mssql.egress"})
+        db2_fallback = bool(python_fallback and node_kind in {"db2.ingress", "db2.egress", "db2.lookup"})
+        mssql_fallback = bool(python_fallback and node_kind in {"mssql.ingress", "mssql.egress", "mssql.lookup"})
         if interrupted_current_node and node is not None:
             message = f"{reason} Node '{node.name}' was interrupted."
         elif python_fallback and node is not None:
@@ -429,7 +438,15 @@ class PipelineRuntime:
         stop_mode = str(payload.get("stop_mode") or "graceful").strip().lower()
         if stop_mode == "force":
             node_kind = str((node.kind if node is not None else None) or "").strip().lower()
-            fallback_node = node_kind in {"python.ingress", "db2.ingress", "db2.egress", "mssql.ingress", "mssql.egress"}
+            fallback_node = node_kind in {
+                "python.ingress",
+                "db2.ingress",
+                "db2.egress",
+                "db2.lookup",
+                "mssql.ingress",
+                "mssql.egress",
+                "mssql.lookup",
+            }
             with self._stop_request_lock:
                 target_node_name = self._active_force_target_node_name
                 interrupt_attempted = self._active_force_interrupt_attempted
@@ -1248,6 +1265,19 @@ class PipelineRuntime:
                     via_node=node.name,
                 )
             )
+        for lookup_name in node.lookups:
+            parent_database, parent_schema, parent_table = _parse_resolved_relation(node.resolved_lookups.get(lookup_name) or "")
+            lineage.append(
+                TableLineageRecord(
+                    parent_kind="lookup",
+                    parent_name=lookup_name,
+                    parent_database=parent_database,
+                    parent_schema=parent_schema,
+                    parent_table=parent_table,
+                    connector_type=connector_type,
+                    via_node=node.name,
+                )
+            )
         if not lineage:
             lineage.append(
                 TableLineageRecord(
@@ -1410,6 +1440,12 @@ class PipelineRuntime:
                 return self._execute_db2_egress(node)
             if node.kind == "mssql.egress":
                 return self._execute_mssql_egress(node)
+            if node.kind == "postgres.lookup":
+                return self._execute_postgres_lookup(node)
+            if node.kind == "db2.lookup":
+                return self._execute_db2_lookup(node)
+            if node.kind == "mssql.lookup":
+                return self._execute_mssql_lookup(node)
             if node.kind == "model.sql":
                 return self._execute_model(node)
             if node.kind == "parquet.egress":
@@ -1818,6 +1854,149 @@ class PipelineRuntime:
                 default_source="connector",
             ),
             details={"mode": str(node.mode or "replace").lower()},
+        )
+
+    def _execute_postgres_lookup(self, node: NodeSpec) -> NodeExecutionResult:
+        import postgres_core
+
+        binding = self._binding_for_node(node)
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        if not sql:
+            raise RuntimeError(f"Lookup node '{node.name}' is missing SQL.")
+        if node.refs:
+            self._log_event(
+                code=LogCode.NODE_REFS_RESOLVED,
+                message=f"Resolved {len(node.refs)} ref(s) for node '{node.name}'.",
+                node=node,
+                details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
+            )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        source_connection_id = self._resolve_postgres_source_connection_id(node, binding)
+        response = postgres_core.egress_query_from_duckdb(
+            target_connection_id=source_connection_id,
+            duckdb_database=self.duckdb_path,
+            sql=sql,
+            sql_params=sql_params,
+            target_table=str(node.target_relation or ""),
+            mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
+            on_interrupt_open=self.register_active_interruptor,
+            on_interrupt_close=self.unregister_active_interruptor,
+        )
+        self._log_event(
+            code=LogCode.NODE_EGRESS_WRITTEN,
+            message=f"Wrote {response.row_count} row(s) to PostgreSQL lookup table {response.target_name}.",
+            node=node,
+            artifact_name=local_artifact_name or response.target_name,
+            details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower(), "lookup_table": response.target_name},
+        )
+        return NodeExecutionResult(
+            node_name=node.name,
+            node_kind=node.kind,
+            artifact_name=local_artifact_name or response.target_name,
+            row_count_in=int(response.row_count),
+            row_count_out=int(response.row_count),
+            warnings=self._normalize_runtime_warnings(
+                list(response.warnings or []),
+                default_code=WarningCode.EGRESS_WARNING,
+                default_source="connector",
+            ),
+            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name},
+        )
+
+    def _execute_db2_lookup(self, node: NodeSpec) -> NodeExecutionResult:
+        import db2_core
+
+        binding = self._binding_for_node(node)
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        if not sql:
+            raise RuntimeError(f"Lookup node '{node.name}' is missing SQL.")
+        if node.refs:
+            self._log_event(
+                code=LogCode.NODE_REFS_RESOLVED,
+                message=f"Resolved {len(node.refs)} ref(s) for node '{node.name}'.",
+                node=node,
+                details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
+            )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        source_connection_id = self._resolve_db2_source_connection_id(node, binding)
+        response = db2_core.egress_query_from_duckdb(
+            target_connection_id=source_connection_id,
+            duckdb_database=self.duckdb_path,
+            sql=sql,
+            sql_params=sql_params,
+            target_table=str(node.target_relation or ""),
+            mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
+        )
+        self._log_event(
+            code=LogCode.NODE_EGRESS_WRITTEN,
+            message=f"Wrote {response.row_count} row(s) to DB2 lookup table {response.target_name}.",
+            node=node,
+            artifact_name=local_artifact_name or response.target_name,
+            details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower(), "lookup_table": response.target_name},
+        )
+        return NodeExecutionResult(
+            node_name=node.name,
+            node_kind=node.kind,
+            artifact_name=local_artifact_name or response.target_name,
+            row_count_in=int(response.row_count),
+            row_count_out=int(response.row_count),
+            warnings=self._normalize_runtime_warnings(
+                list(response.warnings or []),
+                default_code=WarningCode.EGRESS_WARNING,
+                default_source="connector",
+            ),
+            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name},
+        )
+
+    def _execute_mssql_lookup(self, node: NodeSpec) -> NodeExecutionResult:
+        import mssql_core
+
+        binding = self._binding_for_node(node)
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        if not sql:
+            raise RuntimeError(f"Lookup node '{node.name}' is missing SQL.")
+        if node.refs:
+            self._log_event(
+                code=LogCode.NODE_REFS_RESOLVED,
+                message=f"Resolved {len(node.refs)} ref(s) for node '{node.name}'.",
+                node=node,
+                details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
+            )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        target_payload = adapters.build_mssql_request_payload(binding, str(node.config or node.name))
+        target_payload["connection_id"] = self._resolve_mssql_source_connection_id(node, binding)
+        response = mssql_core.egress_query_from_duckdb(
+            target_request=mssql_core.MssqlConnectRequest(**target_payload),
+            duckdb_database=self.duckdb_path,
+            sql=sql,
+            sql_params=sql_params,
+            target_table=str(node.target_relation or ""),
+            mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
+            on_interrupt_open=self.register_active_interruptor,
+            on_interrupt_close=self.unregister_active_interruptor,
+        )
+        self._log_event(
+            code=LogCode.NODE_EGRESS_WRITTEN,
+            message=f"Wrote {response.row_count} row(s) to MSSQL lookup table {response.target_name}.",
+            node=node,
+            artifact_name=local_artifact_name or response.target_name,
+            details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower(), "lookup_table": response.target_name},
+        )
+        return NodeExecutionResult(
+            node_name=node.name,
+            node_kind=node.kind,
+            artifact_name=local_artifact_name or response.target_name,
+            row_count_in=int(response.row_count),
+            row_count_out=int(response.row_count),
+            warnings=self._normalize_runtime_warnings(
+                list(response.warnings or []),
+                default_code=WarningCode.EGRESS_WARNING,
+                default_source="connector",
+            ),
+            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name},
         )
 
     def _execute_parquet_egress(self, node: NodeSpec) -> NodeExecutionResult:

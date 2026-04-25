@@ -12,11 +12,11 @@ import sys
 import sysconfig
 from typing import Any
 
-from .config import load_config, resolve_source_relation, resolve_target, try_resolve_egress_relation
+from .config import load_config, resolve_lookup_relation, resolve_source_relation, resolve_target, try_resolve_egress_relation
 from .runtime_models import CompiledContractRecord, PipelineVarRecord
 from .runtime_vars import _VAR_PATTERN, parse_runtime_var_options
 from .specs import NodeSpec, PipelineSpec
-from .templates import extract_refs, extract_sources, find_raw_compound_relations, has_raw_reference_to_name, render_sql
+from .templates import extract_lookups, extract_refs, extract_sources, find_raw_compound_relations, has_raw_reference_to_name, render_sql
 
 _FILE_INGRESS_KIND_TO_FORMAT = {
     "csv.ingress": "csv",
@@ -541,7 +541,9 @@ def _normalized_node_payload(node: NodeSpec) -> dict[str, Any]:
         "dependencies": sorted(node.dependencies),
         "refs": sorted(node.refs),
         "sources": sorted(node.sources),
+        "lookups": sorted(node.lookups),
         "resolved_sources": dict(sorted((node.resolved_sources or {}).items())),
+        "resolved_lookups": dict(sorted((node.resolved_lookups or {}).items())),
         "vars": _extract_node_var_references(node),
     }
 
@@ -828,11 +830,18 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
         "postgres.egress",
         "db2.egress",
         "mssql.egress",
+        "postgres.lookup",
+        "db2.lookup",
+        "mssql.lookup",
         "parquet.egress",
         "csv.egress",
         "jsonl.egress",
     }
     query_node_kinds = {"model.sql", "check.count", "check.boolean", *list(artifact_node_kinds)}
+    database_egress_kinds = {"postgres.egress", "db2.egress", "mssql.egress"}
+    database_lookup_kinds = {"postgres.lookup", "db2.lookup", "mssql.lookup"}
+    remote_lookup_consumer_kinds = {"postgres.ingress", "db2.ingress", "mssql.ingress"}
+    database_config_kinds = {*remote_lookup_consumer_kinds, *database_egress_kinds, *database_lookup_kinds}
     supported_kinds = artifact_node_kinds | query_node_kinds
     valid_count_operators = {"=", "==", "!=", ">", ">=", "<", "<="}
     valid_egress_modes = {"replace", "append", "create", "create_append"}
@@ -904,17 +913,27 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
         else:
             node.target_table = None
 
+    lookup_producers: dict[str, NodeSpec] = {}
+    for node in spec.nodes:
+        if node.kind in database_lookup_kinds:
+            lookup_name = str(node.target_relation or "").strip()
+            if lookup_name and lookup_name not in lookup_producers:
+                lookup_producers[lookup_name] = node
+
     for node in spec.nodes:
         refs = extract_refs(node.sql)
         sources = extract_sources(node.sql)
+        lookups = extract_lookups(node.sql)
         node.dependencies = []
         node.refs = list(refs)
         node.sources = list(sources)
+        node.lookups = list(lookups)
         node.resolved_sources = {}
+        node.resolved_lookups = {}
 
         if node.kind in _ALL_FILE_INGRESS_KINDS:
             node.file_format = _file_format_for_kind(node.kind, value=node.file_format, path=node.input_path)
-        if node.kind in {"postgres.egress", "db2.egress", "mssql.egress"}:
+        if node.kind in database_egress_kinds:
             raw_target_relation = str(node.target_relation or "").strip()
             if raw_target_relation:
                 try:
@@ -931,6 +950,20 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                 else:
                     if resolved_target_relation:
                         node.target_relation = resolved_target_relation
+        if node.kind in database_lookup_kinds:
+            raw_target_relation = str(node.target_relation or "").strip()
+            if raw_target_relation:
+                try:
+                    node.target_relation = resolve_lookup_relation(raw_target_relation, config, spec.target)
+                except Exception as exc:
+                    diagnostics.append(
+                        {
+                            "level": "error",
+                            "code": "lookup_target_resolution_error",
+                            "message": f"Lookup node '{node.name}' could not resolve target '{raw_target_relation}': {exc}",
+                            "node_name": node.name,
+                        }
+                    )
 
         for ref_name in refs:
             producer = out_producers.get(ref_name)
@@ -945,6 +978,51 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                 )
                 continue
             node.dependencies.append(producer.name)
+
+        for lookup_name in lookups:
+            try:
+                node.resolved_lookups[lookup_name] = resolve_lookup_relation(lookup_name, config, spec.target)
+            except Exception as exc:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "lookup_resolution_error",
+                        "message": f"Node '{node.name}' could not resolve lookup '{lookup_name}': {exc}",
+                        "node_name": node.name,
+                    }
+                )
+                continue
+            producer = lookup_producers.get(lookup_name)
+            if producer is not None:
+                if producer.name not in node.dependencies:
+                    node.dependencies.append(producer.name)
+                producer_connector = str(producer.kind or "").split(".", 1)[0]
+                node_connector = str(node.kind or "").split(".", 1)[0]
+                if node_connector != producer_connector or str(node.config or "").strip() != str(producer.config or "").strip():
+                    diagnostics.append(
+                        {
+                            "level": "error",
+                            "code": "lookup_config_mismatch",
+                            "message": (
+                                f"Node '{node.name}' references lookup '{lookup_name}' produced by '{producer.name}', "
+                                "but lookup producer and consumer must use the same connector and config."
+                            ),
+                            "node_name": node.name,
+                        }
+                    )
+
+        if lookups and node.kind not in remote_lookup_consumer_kinds:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "code": "lookup_not_allowed_in_node_kind",
+                    "message": (
+                        f"Node '{node.name}' of kind '{node.kind}' uses queron.lookup(...), "
+                        "but lookup references are only allowed in database ingress SQL nodes."
+                    ),
+                    "node_name": node.name,
+                }
+            )
 
         if node.kind in query_node_kinds:
             diagnostics.extend(_validate_node_var_references(node))
@@ -987,10 +1065,16 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                     node.resolved_sources[source_name] = relation
                     return relation
 
+                def _resolve_lookup(lookup_name: str) -> str:
+                    relation = resolve_lookup_relation(lookup_name, config, spec.target)
+                    node.resolved_lookups[lookup_name] = relation
+                    return relation
+
                 node.resolved_sql = render_sql(
                     node.sql,
                     resolve_ref=lambda ref_name: _resolve_ref_relation(ref_name, out_producers),
                     resolve_source=_resolve_source,
+                    resolve_lookup=_resolve_lookup,
                 )
             except Exception as exc:
                 diagnostics.append(
@@ -1004,7 +1088,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
         else:
             node.resolved_sql = None
 
-        if node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress", "postgres.egress", "db2.egress", "mssql.egress"} and not node.config:
+        if node.kind in database_config_kinds and not node.config:
             diagnostics.append(
                 {
                     "level": "error",
@@ -1014,14 +1098,14 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                 }
             )
 
-        if node.kind in {"postgres.egress", "db2.egress", "mssql.egress"}:
+        if node.kind in database_egress_kinds | database_lookup_kinds:
             target_relation = str(node.target_relation or "").strip()
             if not target_relation:
                 diagnostics.append(
                     {
                         "level": "error",
                         "code": "missing_target_relation",
-                        "message": f"Egress node '{node.name}' is missing a target table relation.",
+                        "message": f"Database write node '{node.name}' is missing a target table relation.",
                         "node_name": node.name,
                     }
                 )
@@ -1032,7 +1116,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                         "level": "error",
                         "code": "invalid_egress_mode",
                         "message": (
-                            f"Egress node '{node.name}' uses unsupported mode '{node.mode}'. "
+                            f"Database write node '{node.name}' uses unsupported mode '{node.mode}'. "
                             f"Use one of {sorted(valid_egress_modes)}."
                         ),
                         "node_name": node.name,

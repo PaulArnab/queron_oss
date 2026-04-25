@@ -75,6 +75,26 @@ class _PostgresNamespace:
         }
         return _node_decorator("postgres.egress", payload)
 
+    def lookup(
+        self,
+        *,
+        config: str,
+        name: str,
+        table: str,
+        sql: str,
+        mode: str = "replace",
+        out: str,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        payload = {
+            "config": _require_non_empty_string("config", config),
+            "name": _require_non_empty_string("name", name),
+            "table": _require_non_empty_string("table", table),
+            "sql": _require_non_empty_string("sql", sql),
+            "mode": _require_non_empty_string("mode", mode),
+            "out": _require_non_empty_string("out", out),
+        }
+        return _node_decorator("postgres.lookup", payload)
+
 
 class _Db2Namespace:
     def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -108,6 +128,26 @@ class _Db2Namespace:
         }
         return _node_decorator("db2.egress", payload)
 
+    def lookup(
+        self,
+        *,
+        config: str,
+        name: str,
+        table: str,
+        sql: str,
+        mode: str = "replace",
+        out: str,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        payload = {
+            "config": _require_non_empty_string("config", config),
+            "name": _require_non_empty_string("name", name),
+            "table": _require_non_empty_string("table", table),
+            "sql": _require_non_empty_string("sql", sql),
+            "mode": _require_non_empty_string("mode", mode),
+            "out": _require_non_empty_string("out", out),
+        }
+        return _node_decorator("db2.lookup", payload)
+
 
 class _MssqlNamespace:
     def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -140,6 +180,26 @@ class _MssqlNamespace:
             "out": _require_non_empty_string("out", out),
         }
         return _node_decorator("mssql.egress", payload)
+
+    def lookup(
+        self,
+        *,
+        config: str,
+        name: str,
+        table: str,
+        sql: str,
+        mode: str = "replace",
+        out: str,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        payload = {
+            "config": _require_non_empty_string("config", config),
+            "name": _require_non_empty_string("name", name),
+            "table": _require_non_empty_string("table", table),
+            "sql": _require_non_empty_string("sql", sql),
+            "mode": _require_non_empty_string("mode", mode),
+            "out": _require_non_empty_string("out", out),
+        }
+        return _node_decorator("mssql.lookup", payload)
 
 
 class _ModelNamespace:
@@ -422,6 +482,10 @@ def source(name: str) -> str:
     return f'{{{{ queron.source("{name}") }}}}'
 
 
+def lookup(name: str) -> str:
+    return f'{{{{ queron.lookup("{name}") }}}}'
+
+
 _RUNTIME_VAR_DEFAULT_UNSET = object()
 
 
@@ -492,6 +556,7 @@ __all__ = [
     "inspect_dag",
     "init_pipeline_project",
     "jsonl",
+    "lookup",
     "model",
     "parquet",
     "postgres",

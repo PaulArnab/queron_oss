@@ -188,3 +188,8 @@ def try_resolve_egress_relation(egress_name: str, config: dict[str, Any], target
     if not relation_name or relation_name not in egress_entries:
         return None
     return _resolve_named_relation(egress_entries, relation_name, target=target, label="Egress target")
+
+
+def resolve_lookup_relation(lookup_name: str, config: dict[str, Any], target: str | None) -> str:
+    lookups = _relation_entries(config, "lookup", label="lookup")
+    return _resolve_named_relation(lookups, lookup_name, target=target, label="Lookup")

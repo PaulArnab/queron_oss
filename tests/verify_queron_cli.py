@@ -42,6 +42,7 @@ class VerifyQueronCliTests(unittest.TestCase):
             "file",
             "csv",
             "jsonl",
+            "lookup",
             "parquet",
             "python",
             "model",
@@ -705,6 +706,177 @@ def export_seed():
                 conn.close()
 
             self.assertEqual(node_artifact[0], f"{run_schema}.export_seed_snapshot")
+
+    def test_compile_pipeline_supports_postgres_lookup_nodes_and_lookup_refs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            (root / "configurations.yaml").write_text(
+                """
+target: dev
+sources:
+  pg_claim:
+    dev:
+      schema: public
+      table: claim
+lookup:
+  policy_lookup_keys:
+    dev:
+      schema: public
+      table: queron_lookup_policy_keys
+""",
+                encoding="utf-8",
+            )
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS policy_id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.postgres.lookup(
+    config='PostGres',
+    name='stage_policy_keys',
+    table='policy_lookup_keys',
+    out='policy_lookup_keys_snapshot',
+    sql=\"\"\"
+SELECT DISTINCT policy_id
+FROM {{ queron.ref("seed") }}
+\"\"\",
+    mode='replace',
+)
+def stage_policy_keys():
+    pass
+
+@queron.postgres.ingress(
+    config='PostGres',
+    name='pull_claims',
+    out='claims',
+    sql=\"\"\"
+SELECT c.*
+FROM {{ queron.source("pg_claim") }} c
+JOIN {{ queron.lookup("policy_lookup_keys") }} k
+  ON c.policy_id = k.policy_id
+\"\"\",
+)
+def pull_claims():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertFalse(any(str(item.get("level")) == "error" for item in compiled.diagnostics))
+            self.assertIsNotNone(compiled.contract)
+            lookup_node = compiled.spec.node_by_name()["stage_policy_keys"]
+            self.assertEqual(lookup_node.kind, "postgres.lookup")
+            self.assertEqual(lookup_node.target_table, "main.policy_lookup_keys_snapshot")
+            self.assertEqual(lookup_node.target_relation, '"public"."queron_lookup_policy_keys"')
+            ingress_node = compiled.spec.node_by_name()["pull_claims"]
+            self.assertIn("stage_policy_keys", ingress_node.dependencies)
+            self.assertIn('"public"."queron_lookup_policy_keys"', ingress_node.resolved_sql)
+
+            dag = queron.inspect_dag(compiled.contract.artifact_path)
+            self.assertIn(["stage_policy_keys", "pull_claims"], dag.edges)
+            self.assertIn(
+                {"name": "stage_policy_keys", "kind": "postgres.lookup"},
+                [{"name": item.get("name"), "kind": item.get("kind")} for item in dag.nodes],
+            )
+
+    def test_compile_pipeline_rejects_lookup_ref_in_model_sql(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            (root / "configurations.yaml").write_text(
+                """
+target: dev
+lookup:
+  policy_lookup_keys:
+    dev:
+      schema: public
+      table: queron_lookup_policy_keys
+""",
+                encoding="utf-8",
+            )
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(
+    name='bad_model',
+    out='bad_model',
+    query=\"\"\"
+SELECT *
+FROM {{ queron.lookup("policy_lookup_keys") }}
+\"\"\",
+)
+def bad_model():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertTrue(any(str(item.get("code")) == "lookup_not_allowed_in_node_kind" for item in compiled.diagnostics))
+            self.assertIsNone(compiled.contract)
+
+    def test_compile_pipeline_allows_external_lookup_config_without_producer_edge(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            (root / "configurations.yaml").write_text(
+                """
+target: dev
+sources:
+  pg_claim:
+    dev:
+      schema: public
+      table: claim
+lookup:
+  external_policy_keys:
+    dev:
+      schema: public
+      table: external_policy_keys
+""",
+                encoding="utf-8",
+            )
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.postgres.ingress(
+    config='PostGres',
+    name='pull_claims',
+    out='claims',
+    sql=\"\"\"
+SELECT c.*
+FROM {{ queron.source("pg_claim") }} c
+JOIN {{ queron.lookup("external_policy_keys") }} k
+  ON c.policy_id = k.policy_id
+\"\"\",
+)
+def pull_claims():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertFalse(any(str(item.get("level")) == "error" for item in compiled.diagnostics))
+            self.assertEqual(compiled.spec.node_by_name()["pull_claims"].dependencies, [])
 
     def test_compile_command_reports_artifact_path_from_pipeline_id(self):
         with tempfile.TemporaryDirectory() as tmpdir:
