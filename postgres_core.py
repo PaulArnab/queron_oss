@@ -1235,5 +1235,35 @@ def egress_query_from_duckdb(
     )
 
 
+def drop_table_if_exists(*, connection_id: str, target_table: str) -> None:
+    cfg = _config_from_connection_id(connection_id)
+    connect_kwargs = _pg_connect_kwargs(cfg)
+    conn = None
+    cur = None
+    try:
+        conn = _pg_connection(cfg["uri"], **connect_kwargs)
+        cur = conn.cursor()
+        current_database, current_schema = _current_postgres_database_and_schema(cur)
+        schema_name, table_name, _normalized_target_table, quoted_target_table = _normalize_postgres_target_relation(
+            target_table,
+            current_database=current_database,
+            current_schema=current_schema,
+        )
+        if _postgres_table_exists(cur, schema_name=schema_name, table_name=table_name):
+            cur.execute(f"DROP TABLE {quoted_target_table}")
+        conn.commit()
+    finally:
+        try:
+            if cur is not None:
+                cur.close()
+        except Exception:
+            pass
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
 def health():
     return {"status": "ok"}

@@ -193,6 +193,7 @@ class PipelineRuntime:
         self._recent_force_interrupt_attempted = False
         self._recent_force_interrupt_details: dict[str, Any] = {}
         self._node_progress_row_counts: dict[str, int] = {}
+        self._lookup_tables_to_drop: list[dict[str, str]] = []
 
     def _active_node_force_interrupt_supported(self) -> bool:
         active_kind = str(self._active_node_kind or "").strip().lower()
@@ -480,6 +481,70 @@ class PipelineRuntime:
                 return text
         return None
 
+    def _register_lookup_table_cleanup(self, node: NodeSpec, *, connector: str) -> None:
+        if bool(node.retain):
+            return
+        target_relation = str(node.target_relation or "").strip()
+        if not target_relation:
+            return
+        item = {
+            "connector": str(connector or "").strip().lower(),
+            "config": str(node.config or "").strip(),
+            "table": target_relation,
+            "node_name": str(node.name or "").strip(),
+        }
+        if item not in self._lookup_tables_to_drop:
+            self._lookup_tables_to_drop.append(item)
+
+    def _cleanup_lookup_tables(self) -> None:
+        pending = list(self._lookup_tables_to_drop)
+        self._lookup_tables_to_drop = []
+        for item in pending:
+            connector = str(item.get("connector") or "").strip().lower()
+            table = str(item.get("table") or "").strip()
+            config_name = str(item.get("config") or "").strip()
+            if not connector or not table or not config_name:
+                continue
+            try:
+                if connector == "postgres":
+                    import postgres_core
+
+                    binding = self._binding_for_config(config_name)
+                    connection_id = adapters.ensure_postgres_binding(binding, config_name)
+                    postgres_core.drop_table_if_exists(connection_id=connection_id, target_table=table)
+                elif connector == "db2":
+                    import db2_core
+
+                    binding = self._binding_for_config(config_name)
+                    connection_id = adapters.ensure_db2_binding(binding, config_name)
+                    db2_core.drop_table_if_exists(connection_id=connection_id, target_table=table)
+                elif connector == "mssql":
+                    import mssql_core
+
+                    binding = self._binding_for_config(config_name)
+                    payload = adapters.build_mssql_request_payload(binding, config_name)
+                    payload["connection_id"] = adapters.ensure_mssql_binding(binding, config_name)
+                    mssql_core.drop_table_if_exists(
+                        target_request=mssql_core.MssqlConnectRequest(**payload),
+                        target_table=table,
+                    )
+                self._log_event(
+                    code=LogCode.PIPELINE_CLEAN_FINISHED,
+                    message=f"Dropped lookup table {table}.",
+                    details={"lookup_table": table, "connector": connector},
+                )
+            except Exception as exc:
+                self._log_event(
+                    code=LogCode.NODE_WARNING,
+                    message=f"Could not drop lookup table {table}: {exc}",
+                    severity="warning",
+                    details={
+                        "lookup_table": table,
+                        "connector": connector,
+                        "exception_type": type(exc).__name__,
+                    },
+                )
+
     def _log_event(
         self,
         *,
@@ -599,15 +664,21 @@ class PipelineRuntime:
 
     def _binding_for_node(self, node: NodeSpec) -> dict[str, Any]:
         config_name = str(node.config or "").strip()
+        if not config_name:
+            raise RuntimeError(f"No runtime binding was found for config '{node.config}' on node '{node.name}'.")
+        return self._binding_for_config(config_name)
+
+    def _binding_for_config(self, config_name: str) -> dict[str, Any]:
+        config_name = str(config_name or "").strip()
         binding = self.runtime_bindings.get(config_name)
         if binding is not None:
             return resolve_runtime_binding_value(config_name, binding)
-        binding = self.config_bindings.get(str(node.config or "").strip())
+        binding = self.config_bindings.get(config_name)
         if isinstance(binding, dict):
             return binding
         if config_name:
             return resolve_connection_binding(config_name, self.connections_config)
-        raise RuntimeError(f"No runtime binding was found for config '{node.config}' on node '{node.name}'.")
+        raise RuntimeError("No runtime binding config was provided.")
 
     def _resolve_postgres_source_connection_id(self, node: NodeSpec, binding: dict[str, Any]) -> str:
         return adapters.ensure_postgres_binding(binding, str(node.config or node.name))
@@ -1097,6 +1168,7 @@ class PipelineRuntime:
                 )
             )
             raise
+        self._cleanup_lookup_tables()
         self._record_pipeline_run(
             PipelineRunRecord(
                 run_id=self.run_id,
@@ -1117,6 +1189,7 @@ class PipelineRuntime:
         self._shutdown_stop_watcher()
 
     def mark_run_failed(self, exc: Exception) -> None:
+        self._cleanup_lookup_tables()
         self._record_pipeline_run(
             PipelineRunRecord(
                 run_id=self.run_id,
@@ -1872,6 +1945,7 @@ class PipelineRuntime:
             )
         local_artifact_name = str(node.target_table or "").strip() or None
         source_connection_id = self._resolve_postgres_source_connection_id(node, binding)
+        self._register_lookup_table_cleanup(node, connector="postgres")
         response = postgres_core.egress_query_from_duckdb(
             target_connection_id=source_connection_id,
             duckdb_database=self.duckdb_path,
@@ -1888,7 +1962,12 @@ class PipelineRuntime:
             message=f"Wrote {response.row_count} row(s) to PostgreSQL lookup table {response.target_name}.",
             node=node,
             artifact_name=local_artifact_name or response.target_name,
-            details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower(), "lookup_table": response.target_name},
+            details={
+                "row_count": int(response.row_count),
+                "mode": str(node.mode or 'replace').lower(),
+                "lookup_table": response.target_name,
+                "retain": bool(node.retain),
+            },
         )
         return NodeExecutionResult(
             node_name=node.name,
@@ -1901,7 +1980,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EGRESS_WARNING,
                 default_source="connector",
             ),
-            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name},
+            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name, "retain": bool(node.retain)},
         )
 
     def _execute_db2_lookup(self, node: NodeSpec) -> NodeExecutionResult:
@@ -1920,6 +1999,7 @@ class PipelineRuntime:
             )
         local_artifact_name = str(node.target_table or "").strip() or None
         source_connection_id = self._resolve_db2_source_connection_id(node, binding)
+        self._register_lookup_table_cleanup(node, connector="db2")
         response = db2_core.egress_query_from_duckdb(
             target_connection_id=source_connection_id,
             duckdb_database=self.duckdb_path,
@@ -1934,7 +2014,12 @@ class PipelineRuntime:
             message=f"Wrote {response.row_count} row(s) to DB2 lookup table {response.target_name}.",
             node=node,
             artifact_name=local_artifact_name or response.target_name,
-            details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower(), "lookup_table": response.target_name},
+            details={
+                "row_count": int(response.row_count),
+                "mode": str(node.mode or 'replace').lower(),
+                "lookup_table": response.target_name,
+                "retain": bool(node.retain),
+            },
         )
         return NodeExecutionResult(
             node_name=node.name,
@@ -1947,7 +2032,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EGRESS_WARNING,
                 default_source="connector",
             ),
-            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name},
+            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name, "retain": bool(node.retain)},
         )
 
     def _execute_mssql_lookup(self, node: NodeSpec) -> NodeExecutionResult:
@@ -1967,6 +2052,7 @@ class PipelineRuntime:
         local_artifact_name = str(node.target_table or "").strip() or None
         target_payload = adapters.build_mssql_request_payload(binding, str(node.config or node.name))
         target_payload["connection_id"] = self._resolve_mssql_source_connection_id(node, binding)
+        self._register_lookup_table_cleanup(node, connector="mssql")
         response = mssql_core.egress_query_from_duckdb(
             target_request=mssql_core.MssqlConnectRequest(**target_payload),
             duckdb_database=self.duckdb_path,
@@ -1983,7 +2069,12 @@ class PipelineRuntime:
             message=f"Wrote {response.row_count} row(s) to MSSQL lookup table {response.target_name}.",
             node=node,
             artifact_name=local_artifact_name or response.target_name,
-            details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower(), "lookup_table": response.target_name},
+            details={
+                "row_count": int(response.row_count),
+                "mode": str(node.mode or 'replace').lower(),
+                "lookup_table": response.target_name,
+                "retain": bool(node.retain),
+            },
         )
         return NodeExecutionResult(
             node_name=node.name,
@@ -1996,7 +2087,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EGRESS_WARNING,
                 default_source="connector",
             ),
-            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name},
+            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name, "retain": bool(node.retain)},
         )
 
     def _execute_parquet_egress(self, node: NodeSpec) -> NodeExecutionResult:

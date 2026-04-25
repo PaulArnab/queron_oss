@@ -779,6 +779,7 @@ def pull_claims():
             self.assertIsNotNone(compiled.contract)
             lookup_node = compiled.spec.node_by_name()["stage_policy_keys"]
             self.assertEqual(lookup_node.kind, "postgres.lookup")
+            self.assertFalse(lookup_node.retain)
             self.assertEqual(lookup_node.target_table, "main.policy_lookup_keys_snapshot")
             self.assertEqual(lookup_node.target_relation, '"public"."queron_lookup_policy_keys"')
             ingress_node = compiled.spec.node_by_name()["pull_claims"]
@@ -877,6 +878,99 @@ def pull_claims():
 
             self.assertFalse(any(str(item.get("level")) == "error" for item in compiled.diagnostics))
             self.assertEqual(compiled.spec.node_by_name()["pull_claims"].dependencies, [])
+
+    def test_run_pipeline_drops_lookup_table_unless_retained(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            (root / "configurations.yaml").write_text(
+                """
+target: dev
+lookup:
+  policy_lookup_keys:
+    dev:
+      schema: public
+      table: queron_lookup_policy_keys
+""",
+                encoding="utf-8",
+            )
+            pipeline_path = root / "pipeline.py"
+
+            def write_pipeline(*, retain: bool) -> None:
+                pipeline_path.write_text(
+                    f'''import queron
+
+__queron_native__ = {{"pipeline_id": "policy123"}}
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query="SELECT 1 AS policy_id",
+)
+def seed():
+    pass
+
+@queron.postgres.lookup(
+    config='PostGres',
+    name='stage_policy_keys',
+    table='policy_lookup_keys',
+    out='policy_lookup_keys_snapshot',
+    sql="SELECT * FROM {{{{ queron.ref('seed') }}}}",
+    mode='replace',
+    retain={retain},
+)
+def stage_policy_keys():
+    pass
+''',
+                    encoding="utf-8",
+                )
+
+            class Response:
+                connection_id = "fake-pg"
+
+            class EgressResponse:
+                target_name = '"public"."queron_lookup_policy_keys"'
+                row_count = 1
+                warnings = []
+
+            dropped: list[str] = []
+
+            def fake_connect(req):
+                import postgres_core
+
+                postgres_core._connections[req.connection_id] = {"uri": "postgresql://fake", "name": req.name}
+                return Response()
+
+            def fake_egress_query_from_duckdb(**kwargs):
+                self.assertEqual(kwargs["target_table"], '"public"."queron_lookup_policy_keys"')
+                return EgressResponse()
+
+            def fake_drop_table_if_exists(*, connection_id, target_table):
+                dropped.append(target_table)
+
+            import postgres_core
+
+            with patch.object(postgres_core, "connect", fake_connect), patch.object(
+                postgres_core, "egress_query_from_duckdb", fake_egress_query_from_duckdb
+            ), patch.object(postgres_core, "drop_table_if_exists", fake_drop_table_if_exists):
+                write_pipeline(retain=False)
+                queron.compile_pipeline(pipeline_path)
+                result = queron.run_pipeline(
+                    pipeline_path,
+                    runtime_bindings={"PostGres": {"type": "postgres", "host": "fake"}},
+                )
+                self.assertEqual(result.executed_nodes, ["seed", "stage_policy_keys"])
+                self.assertEqual(dropped, ['"public"."queron_lookup_policy_keys"'])
+
+                dropped.clear()
+                write_pipeline(retain=True)
+                queron.compile_pipeline(pipeline_path)
+                result = queron.run_pipeline(
+                    pipeline_path,
+                    runtime_bindings={"PostGres": {"type": "postgres", "host": "fake"}},
+                    set_final=True,
+                )
+                self.assertEqual(result.executed_nodes, ["seed", "stage_policy_keys"])
+                self.assertEqual(dropped, [])
 
     def test_compile_command_reports_artifact_path_from_pipeline_id(self):
         with tempfile.TemporaryDirectory() as tmpdir:

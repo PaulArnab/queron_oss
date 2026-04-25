@@ -738,3 +738,31 @@ def egress_query_from_duckdb(
         created_at=time.time(),
         schema_changed=normalized_mode in {"replace", "create", "create_append"},
     )
+
+
+def drop_table_if_exists(*, target_request: MssqlConnectRequest, target_table: str) -> None:
+    _require_driver()
+    conn = None
+    cur = None
+    schema_name, table_name, normalized_target_table = _normalize_target_relation(target_table)
+    quoted_target_table = _quote_compound_identifier(normalized_target_table)
+    try:
+        conn = pyodbc.connect(_connection_string_from_request(target_request))
+        cur = conn.cursor()
+        if _mssql_table_exists(cur, schema_name=schema_name, table_name=table_name):
+            cur.execute(f"DROP TABLE {quoted_target_table}")
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    finally:
+        try:
+            if cur is not None:
+                cur.close()
+        except Exception:
+            pass
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass

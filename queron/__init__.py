@@ -63,6 +63,7 @@ class _PostgresNamespace:
         table: str,
         sql: str,
         mode: str = "replace",
+        retain: bool = False,
         out: str,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
@@ -71,6 +72,7 @@ class _PostgresNamespace:
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
             "mode": _require_non_empty_string("mode", mode),
+            "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
         }
         return _node_decorator("postgres.egress", payload)
@@ -83,6 +85,7 @@ class _PostgresNamespace:
         table: str,
         sql: str,
         mode: str = "replace",
+        retain: bool = False,
         out: str,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
@@ -91,6 +94,7 @@ class _PostgresNamespace:
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
             "mode": _require_non_empty_string("mode", mode),
+            "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
         }
         return _node_decorator("postgres.lookup", payload)
@@ -116,6 +120,7 @@ class _Db2Namespace:
         table: str,
         sql: str,
         mode: str = "replace",
+        retain: bool = False,
         out: str,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
@@ -124,6 +129,7 @@ class _Db2Namespace:
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
             "mode": _require_non_empty_string("mode", mode),
+            "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
         }
         return _node_decorator("db2.egress", payload)

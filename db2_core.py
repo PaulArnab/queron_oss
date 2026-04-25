@@ -1035,5 +1035,33 @@ def egress_query_from_duckdb(
     )
 
 
+def drop_table_if_exists(*, connection_id: str, target_table: str) -> None:
+    conn_str = _config_from_connection_id(connection_id)
+    conn = None
+    cur = None
+    schema_name, table_name, normalized_target_table = _normalize_db2_target_relation(target_table)
+    quoted_target_table = _quote_compound_identifier(normalized_target_table)
+    try:
+        conn = _dbapi_connect(conn_str)
+        cur = conn.cursor()
+        if _db2_table_exists(cur, schema_name=schema_name, table_name=table_name):
+            cur.execute(f"DROP TABLE {quoted_target_table}")
+        try:
+            conn.commit()
+        except Exception:
+            pass
+    finally:
+        try:
+            if cur is not None:
+                cur.close()
+        except Exception:
+            pass
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
 def health():
     return {"status": "ok"}

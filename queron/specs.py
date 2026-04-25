@@ -20,6 +20,7 @@ class NodeSpec:
     target_relation: str | None = None
     output_path: str | None = None
     mode: str | None = None
+    retain: bool | None = None
     overwrite: bool | None = None
     compression: str | None = None
     delimiter: str | None = None
