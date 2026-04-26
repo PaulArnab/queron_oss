@@ -73,6 +73,7 @@ def resolve_runtime_binding_payload(config_name: str, payload: Mapping[str, Any]
             "ssl_ca": payload.get("ssl_ca"),
             "ssl_cert": payload.get("ssl_cert"),
             "ssl_key": payload.get("ssl_key"),
+            "unix_socket": payload.get("unix_socket"),
             "sslpassword": payload.get("sslpassword"),
             "krbsrvname": payload.get("krbsrvname"),
             "gssencmode": payload.get("gssencmode"),
@@ -300,6 +301,7 @@ class MysqlBinding(RuntimeBinding):
         ssl_ca: str | None = None,
         ssl_cert: str | None = None,
         ssl_key: str | None = None,
+        unix_socket: str | None = None,
         connect_timeout_seconds: int | None = None,
         **extras: Any,
     ) -> None:
@@ -318,6 +320,7 @@ class MysqlBinding(RuntimeBinding):
                 "ssl_ca": ssl_ca,
                 "ssl_cert": ssl_cert,
                 "ssl_key": ssl_key,
+                "unix_socket": unix_socket,
                 "connect_timeout_seconds": connect_timeout_seconds,
                 **extras,
             },

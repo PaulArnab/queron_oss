@@ -206,6 +206,9 @@ class PipelineRuntime:
             "mssql.ingress",
             "mssql.egress",
             "mssql.lookup",
+            "mysql.ingress",
+            "mysql.egress",
+            "mysql.lookup",
         }
 
     def _resolve_log_path(self) -> Path:
@@ -370,6 +373,7 @@ class PipelineRuntime:
         node_kind = str(node.kind or "").strip().lower() if node is not None else ""
         db2_fallback = bool(python_fallback and node_kind in {"db2.ingress", "db2.egress", "db2.lookup"})
         mssql_fallback = bool(python_fallback and node_kind in {"mssql.ingress", "mssql.egress", "mssql.lookup"})
+        mysql_fallback = bool(python_fallback and node_kind in {"mysql.ingress", "mysql.egress", "mysql.lookup"})
         if interrupted_current_node and node is not None:
             message = f"{reason} Node '{node.name}' was interrupted."
         elif python_fallback and node is not None:
@@ -377,6 +381,8 @@ class PipelineRuntime:
                 message = f"{reason} DB2 node '{node.name}' completed before stop was applied."
             elif mssql_fallback:
                 message = f"{reason} MSSQL node '{node.name}' completed before stop was applied."
+            elif mysql_fallback:
+                message = f"{reason} MySQL node '{node.name}' completed before stop was applied."
             else:
                 message = f"{reason} Python node '{node.name}' completed before stop was applied."
         elif completed_before_cancellation and node is not None:
@@ -447,6 +453,9 @@ class PipelineRuntime:
                 "mssql.ingress",
                 "mssql.egress",
                 "mssql.lookup",
+                "mysql.ingress",
+                "mysql.egress",
+                "mysql.lookup",
             }
             with self._stop_request_lock:
                 target_node_name = self._active_force_target_node_name
@@ -526,6 +535,16 @@ class PipelineRuntime:
                     payload["connection_id"] = adapters.ensure_mssql_binding(binding, config_name)
                     mssql_core.drop_table_if_exists(
                         target_request=mssql_core.MssqlConnectRequest(**payload),
+                        target_table=table,
+                    )
+                elif connector == "mysql":
+                    import mysql_core
+
+                    binding = self._binding_for_config(config_name)
+                    payload = adapters.build_mysql_request_payload(binding, config_name)
+                    payload["connection_id"] = adapters.ensure_mysql_binding(binding, config_name)
+                    mysql_core.drop_table_if_exists(
+                        target_request=mysql_core.MysqlConnectRequest(**payload),
                         target_table=table,
                     )
                 self._log_event(
@@ -688,6 +707,9 @@ class PipelineRuntime:
 
     def _resolve_mssql_source_connection_id(self, node: NodeSpec, binding: dict[str, Any]) -> str:
         return adapters.ensure_mssql_binding(binding, str(node.config or node.name))
+
+    def _resolve_mysql_source_connection_id(self, node: NodeSpec, binding: dict[str, Any]) -> str:
+        return adapters.ensure_mysql_binding(binding, str(node.config or node.name))
 
     def _node_lookup(self) -> dict[str, NodeSpec]:
         return self.spec.node_by_name()
@@ -1501,7 +1523,7 @@ class PipelineRuntime:
         )
         self._begin_active_node(node)
         try:
-            if node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress"}:
+            if node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress", "mysql.ingress"}:
                 return self._execute_ingress(node)
             if node.kind == "python.ingress":
                 return self._execute_python_ingress(node)
@@ -1513,12 +1535,16 @@ class PipelineRuntime:
                 return self._execute_db2_egress(node)
             if node.kind == "mssql.egress":
                 return self._execute_mssql_egress(node)
+            if node.kind == "mysql.egress":
+                return self._execute_mysql_egress(node)
             if node.kind == "postgres.lookup":
                 return self._execute_postgres_lookup(node)
             if node.kind == "db2.lookup":
                 return self._execute_db2_lookup(node)
             if node.kind == "mssql.lookup":
                 return self._execute_mssql_lookup(node)
+            if node.kind == "mysql.lookup":
+                return self._execute_mysql_lookup(node)
             if node.kind == "model.sql":
                 return self._execute_model(node)
             if node.kind == "parquet.egress":
@@ -1540,7 +1566,7 @@ class PipelineRuntime:
         duckdb_connection_id = self._ensure_duckdb_connection_id()
         sql, sql_params = self._render_node_sql(
             node,
-            placeholder_style="format" if node.kind == "postgres.ingress" else "qmark",
+            placeholder_style="format" if node.kind in {"postgres.ingress", "mysql.ingress"} else "qmark",
         )
         if not sql:
             raise RuntimeError(f"Ingress node '{node.name}' is missing SQL.")
@@ -1618,7 +1644,7 @@ class PipelineRuntime:
                 target_table=str(node.target_table or ""),
                 lineage=self._build_ingress_lineage(node),
             )
-        else:
+        elif node.kind == "mssql.ingress":
             import duckdb_core
             import mssql_core
 
@@ -1626,6 +1652,40 @@ class PipelineRuntime:
             source_payload["connection_id"] = self._resolve_mssql_source_connection_id(node, binding)
             response = mssql_core.ingest_query_to_duckdb(
                 mssql_core.MssqlConnectRequest(**source_payload),
+                sql=sql,
+                sql_params=sql_params,
+                duckdb_path=self.duckdb_path,
+                target_table=str(node.target_table or ""),
+                replace=False,
+                chunk_size=200,
+                on_progress=lambda progress: self._update_node_extract_progress(
+                    node,
+                    row_count=int(progress.get("row_count") or 0),
+                    chunk_size=int(progress.get("chunk_size")) if progress.get("chunk_size") is not None else None,
+                ),
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
+            )
+            duckdb_core.record_ingest_column_mappings(
+                connection_id=duckdb_connection_id,
+                target_table=str(node.target_table or ""),
+                node_name=node.name,
+                node_kind=node.kind,
+                column_mappings=response.column_mappings,
+            )
+            duckdb_core.record_table_lineage(
+                connection_id=duckdb_connection_id,
+                target_table=str(node.target_table or ""),
+                lineage=self._build_ingress_lineage(node),
+            )
+        else:
+            import duckdb_core
+            import mysql_core
+
+            source_payload = adapters.build_mysql_request_payload(binding, str(node.config or node.name))
+            source_payload["connection_id"] = self._resolve_mysql_source_connection_id(node, binding)
+            response = mysql_core.ingest_query_to_duckdb(
+                mysql_core.MysqlConnectRequest(**source_payload),
                 sql=sql,
                 sql_params=sql_params,
                 duckdb_path=self.duckdb_path,
@@ -1929,6 +1989,55 @@ class PipelineRuntime:
             details={"mode": str(node.mode or "replace").lower()},
         )
 
+    def _execute_mysql_egress(self, node: NodeSpec) -> NodeExecutionResult:
+        import mysql_core
+
+        binding = self._binding_for_node(node)
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        if not sql:
+            raise RuntimeError(f"Egress node '{node.name}' is missing SQL.")
+        if node.refs:
+            self._log_event(
+                code=LogCode.NODE_REFS_RESOLVED,
+                message=f"Resolved {len(node.refs)} ref(s) for node '{node.name}'.",
+                node=node,
+                details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
+            )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        target_payload = adapters.build_mysql_request_payload(binding, str(node.config or node.name))
+        target_payload["connection_id"] = self._resolve_mysql_source_connection_id(node, binding)
+        response = mysql_core.egress_query_from_duckdb(
+            target_request=mysql_core.MysqlConnectRequest(**target_payload),
+            duckdb_database=self.duckdb_path,
+            sql=sql,
+            sql_params=sql_params,
+            target_table=str(node.target_relation or ""),
+            mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
+            on_interrupt_open=self.register_active_interruptor,
+            on_interrupt_close=self.unregister_active_interruptor,
+        )
+        self._log_event(
+            code=LogCode.NODE_EGRESS_WRITTEN,
+            message=f"Wrote {response.row_count} row(s) to MySQL target {response.target_name}.",
+            node=node,
+            artifact_name=local_artifact_name or response.target_name,
+            details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower()},
+        )
+        return NodeExecutionResult(
+            node_name=node.name,
+            node_kind=node.kind,
+            artifact_name=local_artifact_name or response.target_name,
+            row_count_in=int(response.row_count),
+            row_count_out=int(response.row_count),
+            warnings=self._normalize_runtime_warnings(
+                list(response.warnings or []),
+                default_code=WarningCode.EGRESS_WARNING,
+                default_source="connector",
+            ),
+            details={"mode": str(node.mode or "replace").lower()},
+        )
+
     def _execute_postgres_lookup(self, node: NodeSpec) -> NodeExecutionResult:
         import postgres_core
 
@@ -2067,6 +2176,61 @@ class PipelineRuntime:
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
             message=f"Wrote {response.row_count} row(s) to MSSQL lookup table {response.target_name}.",
+            node=node,
+            artifact_name=local_artifact_name or response.target_name,
+            details={
+                "row_count": int(response.row_count),
+                "mode": str(node.mode or 'replace').lower(),
+                "lookup_table": response.target_name,
+                "retain": bool(node.retain),
+            },
+        )
+        return NodeExecutionResult(
+            node_name=node.name,
+            node_kind=node.kind,
+            artifact_name=local_artifact_name or response.target_name,
+            row_count_in=int(response.row_count),
+            row_count_out=int(response.row_count),
+            warnings=self._normalize_runtime_warnings(
+                list(response.warnings or []),
+                default_code=WarningCode.EGRESS_WARNING,
+                default_source="connector",
+            ),
+            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name, "retain": bool(node.retain)},
+        )
+
+    def _execute_mysql_lookup(self, node: NodeSpec) -> NodeExecutionResult:
+        import mysql_core
+
+        binding = self._binding_for_node(node)
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        if not sql:
+            raise RuntimeError(f"Lookup node '{node.name}' is missing SQL.")
+        if node.refs:
+            self._log_event(
+                code=LogCode.NODE_REFS_RESOLVED,
+                message=f"Resolved {len(node.refs)} ref(s) for node '{node.name}'.",
+                node=node,
+                details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
+            )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        target_payload = adapters.build_mysql_request_payload(binding, str(node.config or node.name))
+        target_payload["connection_id"] = self._resolve_mysql_source_connection_id(node, binding)
+        self._register_lookup_table_cleanup(node, connector="mysql")
+        response = mysql_core.egress_query_from_duckdb(
+            target_request=mysql_core.MysqlConnectRequest(**target_payload),
+            duckdb_database=self.duckdb_path,
+            sql=sql,
+            sql_params=sql_params,
+            target_table=str(node.target_relation or ""),
+            mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
+            on_interrupt_open=self.register_active_interruptor,
+            on_interrupt_close=self.unregister_active_interruptor,
+        )
+        self._log_event(
+            code=LogCode.NODE_EGRESS_WRITTEN,
+            message=f"Wrote {response.row_count} row(s) to MySQL lookup table {response.target_name}.",
             node=node,
             artifact_name=local_artifact_name or response.target_name,
             details={
