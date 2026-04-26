@@ -201,3 +201,54 @@ def ensure_mariadb_binding(binding: dict[str, Any], config_name: str) -> str:
     }
     mariadb_core.connect(MariaDbConnectRequest(**payload))
     return connection_id
+
+
+def build_oracle_request_payload(binding: dict[str, Any], config_name: str) -> dict[str, Any]:
+    return {
+        "name": str(binding.get("name") or config_name or "oracle"),
+        "host": binding.get("host", "localhost"),
+        "port": binding.get("port", 1521),
+        "database": binding.get("database"),
+        "service_name": binding.get("service_name"),
+        "sid": binding.get("sid"),
+        "dsn": binding.get("dsn"),
+        "tns_alias": binding.get("tns_alias"),
+        "username": binding.get("username"),
+        "password": binding.get("password"),
+        "url": binding.get("url") or binding.get("uri"),
+        "auth_mode": binding.get("auth_mode"),
+        "config_dir": binding.get("config_dir"),
+        "wallet_location": binding.get("wallet_location"),
+        "wallet_password": binding.get("wallet_password"),
+        "thick_mode": binding.get("thick_mode"),
+        "instant_client_dir": binding.get("instant_client_dir"),
+        "connect_timeout_seconds": binding.get("connect_timeout_seconds"),
+        "save_password": False,
+    }
+
+
+def ensure_oracle_binding(binding: dict[str, Any], config_name: str) -> str:
+    try:
+        import oracle_core
+    except ImportError:
+        import importlib.util
+        from pathlib import Path
+
+        module_path = Path(__file__).resolve().parents[1] / "oracle_core.py"
+        spec = importlib.util.spec_from_file_location("oracle_core", module_path)
+        if spec is None or spec.loader is None:
+            raise
+        oracle_core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(oracle_core)
+    from base import OracleConnectRequest
+
+    connection_id = str(binding.get("connection_id") or "").strip() or runtime_connection_id("oracle", config_name, binding)
+    if connection_id in oracle_core._connections:
+        return connection_id
+
+    payload = {
+        "connection_id": connection_id,
+        **build_oracle_request_payload(binding, config_name),
+    }
+    oracle_core.connect(OracleConnectRequest(**payload))
+    return connection_id

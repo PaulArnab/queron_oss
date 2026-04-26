@@ -19,6 +19,8 @@ def normalize_binding_type(value: str | None) -> str:
         return "mysql"
     if raw == "mariadb":
         return "mariadb"
+    if raw == "oracle":
+        return "oracle"
     raise RuntimeError(f"Unsupported runtime binding type '{value}'.")
 
 
@@ -64,10 +66,19 @@ def resolve_runtime_binding_payload(config_name: str, payload: Mapping[str, Any]
             "host": payload.get("host"),
             "port": payload.get("port"),
             "database": payload.get("database"),
+            "service_name": payload.get("service_name"),
+            "sid": payload.get("sid"),
+            "dsn": payload.get("dsn"),
+            "tns_alias": payload.get("tns_alias"),
             "username": payload.get("username"),
             "password": payload.get("password"),
             "url": payload.get("url") or payload.get("uri"),
             "auth_mode": payload.get("auth_mode"),
+            "config_dir": payload.get("config_dir"),
+            "wallet_location": payload.get("wallet_location"),
+            "wallet_password": payload.get("wallet_password"),
+            "thick_mode": payload.get("thick_mode"),
+            "instant_client_dir": payload.get("instant_client_dir"),
             "sslmode": payload.get("sslmode"),
             "sslrootcert": payload.get("sslrootcert"),
             "sslcert": payload.get("sslcert"),
@@ -103,10 +114,19 @@ class RuntimeBinding:
     host: str | None = None
     port: int | None = None
     database: str | None = None
+    service_name: str | None = None
+    sid: str | None = None
+    dsn: str | None = None
+    tns_alias: str | None = None
     username: str | None = None
     password: str | None = None
     url: str | None = None
     auth_mode: str | None = None
+    config_dir: str | None = None
+    wallet_location: str | None = None
+    wallet_password: str | None = None
+    thick_mode: bool | None = None
+    instant_client_dir: str | None = None
     sslmode: str | None = None
     sslrootcert: str | None = None
     sslcert: str | None = None
@@ -133,10 +153,19 @@ class RuntimeBinding:
                 "host": self.host,
                 "port": self.port,
                 "database": self.database,
+                "service_name": self.service_name,
+                "sid": self.sid,
+                "dsn": self.dsn,
+                "tns_alias": self.tns_alias,
                 "username": self.username,
                 "password": self.password,
                 "url": self.url,
                 "auth_mode": self.auth_mode,
+                "config_dir": self.config_dir,
+                "wallet_location": self.wallet_location,
+                "wallet_password": self.wallet_password,
+                "thick_mode": self.thick_mode,
+                "instant_client_dir": self.instant_client_dir,
                 "sslmode": self.sslmode,
                 "sslrootcert": self.sslrootcert,
                 "sslcert": self.sslcert,
@@ -366,6 +395,59 @@ class MariaDbBinding(RuntimeBinding):
                 "ssl_cert": ssl_cert,
                 "ssl_key": ssl_key,
                 "unix_socket": unix_socket,
+                "connect_timeout_seconds": connect_timeout_seconds,
+                **extras,
+            },
+        )
+
+
+class OracleBinding(RuntimeBinding):
+    def __init__(
+        self,
+        *,
+        config_factory: ConfigFactory | None = None,
+        name: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+        database: str | None = None,
+        service_name: str | None = None,
+        sid: str | None = None,
+        dsn: str | None = None,
+        tns_alias: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        url: str | None = None,
+        uri: str | None = None,
+        auth_mode: str | None = None,
+        config_dir: str | None = None,
+        wallet_location: str | None = None,
+        wallet_password: str | None = None,
+        thick_mode: bool | None = None,
+        instant_client_dir: str | None = None,
+        connect_timeout_seconds: int | None = None,
+        **extras: Any,
+    ) -> None:
+        super().__init__(
+            binding_type="oracle",
+            config_factory=config_factory,
+            name=name,
+            host=host,
+            port=port,
+            database=database,
+            service_name=service_name,
+            sid=sid,
+            dsn=dsn,
+            tns_alias=tns_alias,
+            username=username,
+            password=password,
+            url=url or uri,
+            auth_mode=auth_mode,
+            config_dir=config_dir,
+            wallet_location=wallet_location,
+            wallet_password=wallet_password,
+            thick_mode=thick_mode,
+            instant_client_dir=instant_client_dir,
+            extras={
                 "connect_timeout_seconds": connect_timeout_seconds,
                 **extras,
             },

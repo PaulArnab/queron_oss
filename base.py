@@ -103,6 +103,29 @@ class MariaDbConnectRequest(BaseModel):
     save_password: bool = True
 
 
+class OracleConnectRequest(BaseModel):
+    connection_id: str | None = None
+    name: str | None = None
+    host: str = "localhost"
+    port: int = 1521
+    database: str | None = None
+    service_name: str | None = "FREEPDB1"
+    sid: str | None = None
+    dsn: str | None = None
+    tns_alias: str | None = None
+    username: str | None = None
+    password: str | None = None
+    url: str | None = None
+    auth_mode: str | None = None
+    config_dir: str | None = None
+    wallet_location: str | None = None
+    wallet_password: str | None = None
+    thick_mode: bool | None = None
+    instant_client_dir: str | None = None
+    connect_timeout_seconds: int | None = None
+    save_password: bool = True
+
+
 class DuckDbConnectRequest(BaseModel):
     name: str | None = None
     database: str = ":memory:"

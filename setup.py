@@ -15,6 +15,7 @@ setup(
         "mssql_core",
         "mariadb_core",
         "mysql_core",
+        "oracle_core",
         "postgres",
         "postgres_core",
         "type_mapper",

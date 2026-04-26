@@ -3,6 +3,7 @@ uvicorn[standard]
 psycopg[binary]
 pymysql
 mariadb
+oracledb
 pyarrow
 ibm-db
 duckdb

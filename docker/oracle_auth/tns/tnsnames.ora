@@ -1,0 +1,7 @@
+QUERON_ORACLE_LOCAL =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = localhost)(PORT = 51521))
+    (CONNECT_DATA =
+      (SERVICE_NAME = FREEPDB1)
+    )
+  )
