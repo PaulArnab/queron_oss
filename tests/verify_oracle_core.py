@@ -13,7 +13,11 @@ if str(BACKEND_DIR) not in sys.path:
 import duckdb
 
 import base
+import duckdb_core
 import oracle_core
+from queron.bindings import OracleBinding
+from queron.runtime import PipelineRuntime
+from queron.specs import NodeSpec, PipelineSpec
 
 
 def _oracle_available() -> bool:
@@ -140,6 +144,118 @@ class VerifyOracleCoreTests(unittest.TestCase):
             self.assertEqual({item.mapping_mode for item in egress.column_mappings}, {"egress_remote_schema"})
 
         oracle_core.drop_table_if_exists(target_request=req, target_table=target_table)
+
+    @unittest.skipUnless(_oracle_available(), "Oracle container is not available on localhost:51521")
+    def test_runtime_oracle_nodes_execute(self):
+        req = base.OracleConnectRequest(
+            host="localhost",
+            port=51521,
+            service_name="FREEPDB1",
+            username="loom_user",
+            password="LoomOraclePass123!",
+            connect_timeout_seconds=10,
+        )
+        egress_table = "loom_user.phase_runtime_oracle_egress"
+        lookup_table = "loom_user.phase_runtime_oracle_lookup"
+        oracle_core.drop_table_if_exists(target_request=req, target_table=egress_table)
+        oracle_core.drop_table_if_exists(target_request=req, target_table=lookup_table)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(pathlib.Path(tmp) / "oracle_runtime.duckdb")
+            runtime = PipelineRuntime(
+                pipeline_id="oracle_runtime_smoke",
+                duckdb_path=db,
+                spec=PipelineSpec(pipeline_id="oracle_runtime_smoke", target="dev", nodes=[]),
+                runtime_bindings={
+                    "ORACLE_LOCAL": OracleBinding(
+                        host="localhost",
+                        port=51521,
+                        service_name="FREEPDB1",
+                        username="loom_user",
+                        password="LoomOraclePass123!",
+                        connect_timeout_seconds=10,
+                    )
+                },
+                runtime_vars={"min_id": 1},
+            )
+            ingress = NodeSpec(
+                name="ingest_oracle_policy",
+                function_name="ingest_oracle_policy",
+                kind="oracle.ingress",
+                config="ORACLE_LOCAL",
+                out="oracle_policy",
+                sql='select policy_id, policy_number, premium_amount from loom_user.policy where policy_id >= {{ queron.var("min_id", default=1) }} order by policy_id',
+                resolved_sql='select policy_id, policy_number, premium_amount from loom_user.policy where policy_id >= {{ queron.var("min_id", default=1) }} order by policy_id',
+                target_table="main.oracle_policy",
+            )
+            egress = NodeSpec(
+                name="egress_oracle_policy",
+                function_name="egress_oracle_policy",
+                kind="oracle.egress",
+                config="ORACLE_LOCAL",
+                out="oracle_policy_egress",
+                sql="select * from main.oracle_policy",
+                resolved_sql="select * from main.oracle_policy",
+                target_table="main.oracle_policy_egress",
+                target_relation=egress_table,
+                mode="create",
+                refs=["oracle_policy"],
+            )
+            lookup = NodeSpec(
+                name="stage_oracle_lookup",
+                function_name="stage_oracle_lookup",
+                kind="oracle.lookup",
+                config="ORACLE_LOCAL",
+                out="oracle_lookup",
+                sql="select policy_id from main.oracle_policy",
+                resolved_sql="select policy_id from main.oracle_policy",
+                target_table="main.oracle_lookup",
+                target_relation=lookup_table,
+                mode="replace",
+                retain=False,
+                refs=["oracle_policy"],
+            )
+
+            self.assertEqual(runtime.execute_node(ingress).row_count_out, 3)
+            ingest_metadata = duckdb_core.get_column_mapping_metadata_by_database(
+                database_path=db,
+                schema="main",
+                name="oracle_policy",
+            )
+            self.assertEqual(ingest_metadata["POLICY_ID"]["connector_type"], "oracle")
+            self.assertEqual(ingest_metadata["POLICY_ID"]["mapping_mode"], "ingress")
+            self.assertEqual(ingest_metadata["POLICY_ID"]["source_column"], "POLICY_ID")
+            self.assertEqual(ingest_metadata["POLICY_ID"]["target_type"], "DECIMAL(10,0)")
+
+            egress_result = runtime.execute_node(egress)
+            self.assertEqual(egress_result.row_count_out, 3)
+            self.assertEqual(len(egress_result.details.get("column_mappings") or []), 3)
+            egress_metadata = duckdb_core.get_column_mapping_metadata_by_database(
+                database_path=db,
+                schema="main",
+                name="oracle_policy_egress",
+            )
+            self.assertEqual(egress_metadata["POLICY_ID"]["connector_type"], "oracle")
+            self.assertEqual(egress_metadata["POLICY_ID"]["mapping_mode"], "egress_remote_schema")
+            self.assertEqual(egress_metadata["POLICY_ID"]["source_column"], "POLICY_ID")
+            self.assertEqual(egress_metadata["POLICY_ID"]["target_type"], "NUMBER(10,0)")
+
+            lookup_result = runtime.execute_node(lookup)
+            self.assertEqual(lookup_result.row_count_out, 3)
+            runtime._cleanup_lookup_tables()
+
+        conn = oracle_core.connect(req)
+        try:
+            egress_count = oracle_core.run_query(conn.connection_id, f"select count(*) as egress_count from {egress_table}").rows[0]["EGRESS_COUNT"]
+            lookup_exists = oracle_core.run_query(
+                conn.connection_id,
+                "select count(*) as lookup_exists from user_tables where table_name = 'PHASE_RUNTIME_ORACLE_LOOKUP'",
+            ).rows[0]["LOOKUP_EXISTS"]
+        finally:
+            oracle_core.disconnect(conn.connection_id)
+            oracle_core.drop_table_if_exists(target_request=req, target_table=egress_table)
+
+        self.assertEqual(egress_count, 3)
+        self.assertEqual(lookup_exists, 0)
 
 
 if __name__ == "__main__":

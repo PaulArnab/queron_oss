@@ -58,6 +58,22 @@ def _import_mariadb_core():
         return module
 
 
+def _import_oracle_core():
+    try:
+        import oracle_core
+        return oracle_core
+    except ImportError:
+        import importlib.util
+
+        module_path = Path(__file__).resolve().parents[1] / "oracle_core.py"
+        spec = importlib.util.spec_from_file_location("oracle_core", module_path)
+        if spec is None or spec.loader is None:
+            raise
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
 def _quote_identifier(identifier: str) -> str:
     return '"' + str(identifier).replace('"', '""') + '"'
 
@@ -582,6 +598,16 @@ class PipelineRuntime:
                         target_request=mariadb_core.MariaDbConnectRequest(**payload),
                         target_table=table,
                     )
+                elif connector == "oracle":
+                    oracle_core = _import_oracle_core()
+
+                    binding = self._binding_for_config(config_name)
+                    payload = adapters.build_oracle_request_payload(binding, config_name)
+                    payload["connection_id"] = adapters.ensure_oracle_binding(binding, config_name)
+                    oracle_core.drop_table_if_exists(
+                        target_request=oracle_core.OracleConnectRequest(**payload),
+                        target_table=table,
+                    )
                 self._log_event(
                     code=LogCode.PIPELINE_CLEAN_FINISHED,
                     message=f"Dropped lookup table {table}.",
@@ -748,6 +774,9 @@ class PipelineRuntime:
 
     def _resolve_mariadb_source_connection_id(self, node: NodeSpec, binding: dict[str, Any]) -> str:
         return adapters.ensure_mariadb_binding(binding, str(node.config or node.name))
+
+    def _resolve_oracle_source_connection_id(self, node: NodeSpec, binding: dict[str, Any]) -> str:
+        return adapters.ensure_oracle_binding(binding, str(node.config or node.name))
 
     def _node_lookup(self) -> dict[str, NodeSpec]:
         return self.spec.node_by_name()
@@ -1575,7 +1604,7 @@ class PipelineRuntime:
         )
         self._begin_active_node(node)
         try:
-            if node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress", "mysql.ingress", "mariadb.ingress"}:
+            if node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress", "mysql.ingress", "mariadb.ingress", "oracle.ingress"}:
                 return self._execute_ingress(node)
             if node.kind == "python.ingress":
                 return self._execute_python_ingress(node)
@@ -1591,6 +1620,8 @@ class PipelineRuntime:
                 return self._execute_mysql_egress(node)
             if node.kind == "mariadb.egress":
                 return self._execute_mariadb_egress(node)
+            if node.kind == "oracle.egress":
+                return self._execute_oracle_egress(node)
             if node.kind == "postgres.lookup":
                 return self._execute_postgres_lookup(node)
             if node.kind == "db2.lookup":
@@ -1601,6 +1632,8 @@ class PipelineRuntime:
                 return self._execute_mysql_lookup(node)
             if node.kind == "mariadb.lookup":
                 return self._execute_mariadb_lookup(node)
+            if node.kind == "oracle.lookup":
+                return self._execute_oracle_lookup(node)
             if node.kind == "model.sql":
                 return self._execute_model(node)
             if node.kind == "parquet.egress":
@@ -1622,7 +1655,13 @@ class PipelineRuntime:
         duckdb_connection_id = self._ensure_duckdb_connection_id()
         sql, sql_params = self._render_node_sql(
             node,
-            placeholder_style="format" if node.kind in {"postgres.ingress", "mysql.ingress", "mariadb.ingress"} else "qmark",
+            placeholder_style=(
+                "format"
+                if node.kind in {"postgres.ingress", "mysql.ingress", "mariadb.ingress"}
+                else "oracle"
+                if node.kind == "oracle.ingress"
+                else "qmark"
+            ),
         )
         if not sql:
             raise RuntimeError(f"Ingress node '{node.name}' is missing SQL.")
@@ -1776,6 +1815,40 @@ class PipelineRuntime:
             source_payload["connection_id"] = self._resolve_mariadb_source_connection_id(node, binding)
             response = mariadb_core.ingest_query_to_duckdb(
                 mariadb_core.MariaDbConnectRequest(**source_payload),
+                sql=sql,
+                sql_params=sql_params,
+                duckdb_path=self.duckdb_path,
+                target_table=str(node.target_table or ""),
+                replace=False,
+                chunk_size=200,
+                on_progress=lambda progress: self._update_node_extract_progress(
+                    node,
+                    row_count=int(progress.get("row_count") or 0),
+                    chunk_size=int(progress.get("chunk_size")) if progress.get("chunk_size") is not None else None,
+                ),
+                on_interrupt_open=self.register_active_interruptor,
+                on_interrupt_close=self.unregister_active_interruptor,
+            )
+            duckdb_core.record_ingest_column_mappings(
+                connection_id=duckdb_connection_id,
+                target_table=str(node.target_table or ""),
+                node_name=node.name,
+                node_kind=node.kind,
+                column_mappings=response.column_mappings,
+            )
+            duckdb_core.record_table_lineage(
+                connection_id=duckdb_connection_id,
+                target_table=str(node.target_table or ""),
+                lineage=self._build_ingress_lineage(node),
+            )
+        elif node.kind == "oracle.ingress":
+            import duckdb_core
+            oracle_core = _import_oracle_core()
+
+            source_payload = adapters.build_oracle_request_payload(binding, str(node.config or node.name))
+            source_payload["connection_id"] = self._resolve_oracle_source_connection_id(node, binding)
+            response = oracle_core.ingest_query_to_duckdb(
+                oracle_core.OracleConnectRequest(**source_payload),
                 sql=sql,
                 sql_params=sql_params,
                 duckdb_path=self.duckdb_path,
@@ -2189,6 +2262,57 @@ class PipelineRuntime:
             details={"mode": str(node.mode or "replace").lower(), "column_mappings": column_mappings},
         )
 
+    def _execute_oracle_egress(self, node: NodeSpec) -> NodeExecutionResult:
+        oracle_core = _import_oracle_core()
+
+        binding = self._binding_for_node(node)
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        if not sql:
+            raise RuntimeError(f"Egress node '{node.name}' is missing SQL.")
+        if node.refs:
+            self._log_event(
+                code=LogCode.NODE_REFS_RESOLVED,
+                message=f"Resolved {len(node.refs)} ref(s) for node '{node.name}'.",
+                node=node,
+                details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
+            )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        target_payload = adapters.build_oracle_request_payload(binding, str(node.config or node.name))
+        target_payload["connection_id"] = self._resolve_oracle_source_connection_id(node, binding)
+        response = oracle_core.egress_query_from_duckdb(
+            target_request=oracle_core.OracleConnectRequest(**target_payload),
+            duckdb_database=self.duckdb_path,
+            sql=sql,
+            sql_params=sql_params,
+            target_table=str(node.target_relation or ""),
+            mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
+            on_interrupt_open=self.register_active_interruptor,
+            on_interrupt_close=self.unregister_active_interruptor,
+        )
+        self._persist_egress_column_mappings(node, local_artifact_name, response)
+        column_mappings = [mapping.model_dump() for mapping in list(getattr(response, "column_mappings", []) or [])]
+        self._log_event(
+            code=LogCode.NODE_EGRESS_WRITTEN,
+            message=f"Wrote {response.row_count} row(s) to Oracle target {response.target_name}.",
+            node=node,
+            artifact_name=local_artifact_name or response.target_name,
+            details={"row_count": int(response.row_count), "mode": str(node.mode or 'replace').lower()},
+        )
+        return NodeExecutionResult(
+            node_name=node.name,
+            node_kind=node.kind,
+            artifact_name=local_artifact_name or response.target_name,
+            row_count_in=int(response.row_count),
+            row_count_out=int(response.row_count),
+            warnings=self._normalize_runtime_warnings(
+                list(response.warnings or []),
+                default_code=WarningCode.EGRESS_WARNING,
+                default_source="connector",
+            ),
+            details={"mode": str(node.mode or "replace").lower(), "column_mappings": column_mappings},
+        )
+
     def _execute_postgres_lookup(self, node: NodeSpec) -> NodeExecutionResult:
         import postgres_core
 
@@ -2437,6 +2561,61 @@ class PipelineRuntime:
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
             message=f"Wrote {response.row_count} row(s) to MariaDB lookup table {response.target_name}.",
+            node=node,
+            artifact_name=local_artifact_name or response.target_name,
+            details={
+                "row_count": int(response.row_count),
+                "mode": str(node.mode or 'replace').lower(),
+                "lookup_table": response.target_name,
+                "retain": bool(node.retain),
+            },
+        )
+        return NodeExecutionResult(
+            node_name=node.name,
+            node_kind=node.kind,
+            artifact_name=local_artifact_name or response.target_name,
+            row_count_in=int(response.row_count),
+            row_count_out=int(response.row_count),
+            warnings=self._normalize_runtime_warnings(
+                list(response.warnings or []),
+                default_code=WarningCode.EGRESS_WARNING,
+                default_source="connector",
+            ),
+            details={"mode": str(node.mode or "replace").lower(), "lookup_table": response.target_name, "retain": bool(node.retain)},
+        )
+
+    def _execute_oracle_lookup(self, node: NodeSpec) -> NodeExecutionResult:
+        oracle_core = _import_oracle_core()
+
+        binding = self._binding_for_node(node)
+        sql, sql_params = self._render_node_sql(node, placeholder_style="qmark")
+        if not sql:
+            raise RuntimeError(f"Lookup node '{node.name}' is missing SQL.")
+        if node.refs:
+            self._log_event(
+                code=LogCode.NODE_REFS_RESOLVED,
+                message=f"Resolved {len(node.refs)} ref(s) for node '{node.name}'.",
+                node=node,
+                details={"refs": list(node.refs), "dependencies": list(node.dependencies)},
+            )
+        local_artifact_name = str(node.target_table or "").strip() or None
+        target_payload = adapters.build_oracle_request_payload(binding, str(node.config or node.name))
+        target_payload["connection_id"] = self._resolve_oracle_source_connection_id(node, binding)
+        self._register_lookup_table_cleanup(node, connector="oracle")
+        response = oracle_core.egress_query_from_duckdb(
+            target_request=oracle_core.OracleConnectRequest(**target_payload),
+            duckdb_database=self.duckdb_path,
+            sql=sql,
+            sql_params=sql_params,
+            target_table=str(node.target_relation or ""),
+            mode=str(node.mode or "replace"),
+            artifact_table=local_artifact_name,
+            on_interrupt_open=self.register_active_interruptor,
+            on_interrupt_close=self.unregister_active_interruptor,
+        )
+        self._log_event(
+            code=LogCode.NODE_EGRESS_WRITTEN,
+            message=f"Wrote {response.row_count} row(s) to Oracle lookup table {response.target_name}.",
             node=node,
             artifact_name=local_artifact_name or response.target_name,
             details={
@@ -2752,6 +2931,12 @@ class PipelineRuntime:
                 sql_text,
                 runtime_vars=self.runtime_vars,
                 placeholder_factory=lambda _index: "%s",
+            )
+        if placeholder_style == "oracle":
+            return render_runtime_sql(
+                sql_text,
+                runtime_vars=self.runtime_vars,
+                placeholder_factory=lambda index: f":{index}",
             )
         return render_runtime_sql(
             sql_text,
