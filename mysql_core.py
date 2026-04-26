@@ -213,10 +213,18 @@ def _field_type_name(type_code: Any) -> str:
     return str(type_code or "UNKNOWN")
 
 
-def _normalize_mysql_source_type(type_code: Any) -> tuple[str, list[str], bool]:
+def _normalize_mysql_source_type(
+    type_code: Any,
+    *,
+    internal_size: int | None = None,
+    precision: int | None = None,
+    scale: int | None = None,
+) -> tuple[str, list[str], bool]:
     raw = _field_type_name(type_code)
     normalized = raw.upper()
     warnings: list[str] = []
+    if normalized == "TINY" and int(internal_size or 0) == 1:
+        return "BOOLEAN", warnings, False
     if normalized in {"TINY", "SHORT"}:
         return "SMALLINT", warnings, False
     if normalized in {"LONG", "INT24"}:
@@ -228,7 +236,12 @@ def _normalize_mysql_source_type(type_code: Any) -> tuple[str, list[str], bool]:
     if normalized == "DOUBLE":
         return "DOUBLE", warnings, False
     if normalized in {"DECIMAL", "NEWDECIMAL"}:
-        return "DECIMAL(38,10)", warnings, False
+        resolved_precision = int(precision or 38)
+        resolved_scale = int(scale or 0)
+        if resolved_precision > 38:
+            warnings.append(f"MySQL DECIMAL({resolved_precision},{resolved_scale}) exceeds DuckDB max precision 38 and was widened to DOUBLE.")
+            return "DOUBLE", warnings, True
+        return f"DECIMAL({resolved_precision},{resolved_scale})", warnings, False
     if normalized in {"DATE", "NEWDATE"}:
         return "DATE", warnings, False
     if normalized == "TIME":
@@ -253,7 +266,15 @@ def _map_description_to_columns(description: Any) -> list[_MappedMysqlColumn]:
     for item in list(description or []):
         name = str(item[0] or "").strip() or "column"
         type_code = item[1] if len(item) > 1 else None
-        target_type, warnings, lossy = _normalize_mysql_source_type(type_code)
+        internal_size = item[3] if len(item) > 3 and isinstance(item[3], int) else None
+        precision = item[4] if len(item) > 4 and isinstance(item[4], int) else None
+        scale = item[5] if len(item) > 5 and isinstance(item[5], int) else None
+        target_type, warnings, lossy = _normalize_mysql_source_type(
+            type_code,
+            internal_size=internal_size,
+            precision=precision,
+            scale=scale,
+        )
         mapped.append(_MappedMysqlColumn(name=name, source_type=_field_type_name(type_code), target_type=target_type, warnings=warnings, lossy=lossy))
     return mapped
 

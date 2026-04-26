@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+from decimal import Decimal
 import pathlib
 import sys
 import tempfile
@@ -66,6 +68,36 @@ class _FakeMysqlConnection:
         self.closed = True
 
 
+class _FakeMysqlIngressCursor:
+    def __init__(self, *, rows, description) -> None:
+        self.description = description
+        self._batches = [list(rows), []]
+        self.executed: list[tuple[str, object | None]] = []
+        self.closed = False
+
+    def execute(self, sql, params=None):
+        self.executed.append((str(sql), params))
+
+    def fetchmany(self, size):
+        _ = size
+        return self._batches.pop(0)
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeMysqlIngressConnection:
+    def __init__(self, *, rows, description) -> None:
+        self.cursor_obj = _FakeMysqlIngressCursor(rows=rows, description=description)
+        self.closed = False
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def close(self):
+        self.closed = True
+
+
 def _write_duckdb_source(db_path: pathlib.Path) -> None:
     conn = connect_duckdb(str(db_path))
     try:
@@ -79,6 +111,125 @@ def _write_duckdb_source(db_path: pathlib.Path) -> None:
         )
     finally:
         conn.close()
+
+
+class VerifyMysqlIngressTests(unittest.TestCase):
+    def test_ingress_maps_mysql_types_to_duckdb_types(self):
+        source = _FakeMysqlIngressConnection(
+            rows=[
+                (
+                    1,
+                    Decimal("1200.50"),
+                    1,
+                    datetime.date(2026, 1, 1),
+                    datetime.datetime(2026, 4, 1, 10, 15),
+                    "POL-MYSQL-001",
+                )
+            ],
+            description=[
+                ("policy_id", mysql_core.FIELD_TYPE.LONG, None, 11, 11, 0, False),
+                ("premium_amount", mysql_core.FIELD_TYPE.NEWDECIMAL, None, 14, 14, 2, False),
+                ("active_flag", mysql_core.FIELD_TYPE.TINY, None, 1, 1, 0, False),
+                ("effective_date", mysql_core.FIELD_TYPE.DATE, None, 10, 10, 0, False),
+                ("updated_at", mysql_core.FIELD_TYPE.DATETIME, None, 19, 19, 0, False),
+                ("policy_number", mysql_core.FIELD_TYPE.VAR_STRING, None, 128, 128, 0, False),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "runtime.duckdb"
+            with patch.object(mysql_core, "_connect_from_request", return_value=source):
+                response = mysql_core.ingest_query_to_duckdb(
+                    base.MysqlConnectRequest(database="LOOMDB"),
+                    sql="SELECT * FROM policy",
+                    duckdb_path=str(db_path),
+                    target_table="main.mysql_policy",
+                    replace=True,
+                )
+            conn = connect_duckdb(str(db_path))
+            try:
+                types = conn.execute(
+                    """
+                    SELECT column_name, data_type
+                    FROM information_schema.columns
+                    WHERE table_schema = 'main' AND table_name = 'mysql_policy'
+                    ORDER BY ordinal_position
+                    """
+                ).fetchall()
+                rows = conn.execute("SELECT policy_id, premium_amount, active_flag, effective_date, updated_at, policy_number FROM main.mysql_policy").fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(response.row_count, 1)
+        self.assertEqual(
+            types,
+            [
+                ("policy_id", "INTEGER"),
+                ("premium_amount", "DECIMAL(14,2)"),
+                ("active_flag", "BOOLEAN"),
+                ("effective_date", "DATE"),
+                ("updated_at", "TIMESTAMP"),
+                ("policy_number", "VARCHAR"),
+            ],
+        )
+        self.assertEqual(rows, [(1, Decimal("1200.50"), True, datetime.date(2026, 1, 1), datetime.datetime(2026, 4, 1, 10, 15), "POL-MYSQL-001")])
+        self.assertEqual(response.column_mappings[1].target_type, "DECIMAL(14,2)")
+        self.assertEqual(response.column_mappings[2].target_type, "BOOLEAN")
+        self.assertTrue(source.closed)
+
+    def test_ingress_materializes_empty_result_set_schema(self):
+        source = _FakeMysqlIngressConnection(
+            rows=[],
+            description=[
+                ("policy_id", mysql_core.FIELD_TYPE.LONG, None, 11, 11, 0, False),
+                ("policy_number", mysql_core.FIELD_TYPE.VAR_STRING, None, 128, 128, 0, False),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "runtime.duckdb"
+            with patch.object(mysql_core, "_connect_from_request", return_value=source):
+                response = mysql_core.ingest_query_to_duckdb(
+                    base.MysqlConnectRequest(database="LOOMDB"),
+                    sql="SELECT policy_id, policy_number FROM policy WHERE 1 = 0",
+                    duckdb_path=str(db_path),
+                    target_table="main.empty_policy",
+                    replace=True,
+                )
+            conn = connect_duckdb(str(db_path))
+            try:
+                row_count = conn.execute("SELECT COUNT(*) FROM main.empty_policy").fetchone()[0]
+                columns = conn.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'main' AND table_name = 'empty_policy'
+                    ORDER BY ordinal_position
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+
+        self.assertEqual(response.row_count, 0)
+        self.assertEqual(row_count, 0)
+        self.assertEqual(columns, [("policy_id",), ("policy_number",)])
+
+    def test_ingress_passes_sql_and_params_to_mysql(self):
+        source = _FakeMysqlIngressConnection(
+            rows=[(1,)],
+            description=[("policy_id", mysql_core.FIELD_TYPE.LONG, None, 11, 11, 0, False)],
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "runtime.duckdb"
+            with patch.object(mysql_core, "_connect_from_request", return_value=source):
+                mysql_core.ingest_query_to_duckdb(
+                    base.MysqlConnectRequest(database="LOOMDB"),
+                    sql="SELECT policy_id FROM policy WHERE policy_number = %s;",
+                    sql_params=["POL-MYSQL-001"],
+                    duckdb_path=str(db_path),
+                    target_table="main.filtered_policy",
+                    replace=True,
+                )
+
+        self.assertEqual(source.cursor_obj.executed, [("SELECT policy_id FROM policy WHERE policy_number = %s", ("POL-MYSQL-001",))])
 
 
 class VerifyMysqlEgressTests(unittest.TestCase):
