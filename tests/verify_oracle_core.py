@@ -68,6 +68,39 @@ class VerifyOracleCoreTests(unittest.TestCase):
         self.assertIn('"PREMIUM_AMOUNT" NUMBER(18,2)', create_sql)
         self.assertEqual(warnings, [])
 
+    def test_oracle_number_and_timestamp_tz_mapping(self):
+        number_type, number_warnings, number_lossy = oracle_core._normalize_oracle_source_type(
+            "DB_TYPE_NUMBER",
+            precision=10,
+            scale=None,
+        )
+        timestamp_type, timestamp_warnings, timestamp_lossy = oracle_core._normalize_oracle_source_type("DB_TYPE_TIMESTAMP_TZ")
+
+        self.assertEqual(number_type, "DECIMAL(10,0)")
+        self.assertEqual(number_warnings, [])
+        self.assertFalse(number_lossy)
+        self.assertEqual(timestamp_type, "TIMESTAMP")
+        self.assertTrue(timestamp_warnings)
+        self.assertTrue(timestamp_lossy)
+
+    def test_duckdb_varchar_length_and_decimal_overflow_mapping(self):
+        bounded_type, bounded_warnings = oracle_core._map_duckdb_column_to_oracle(
+            base.ColumnMeta(name="policy_number", data_type="VARCHAR", max_length=32)
+        )
+        wide_type, wide_warnings = oracle_core._map_duckdb_column_to_oracle(
+            base.ColumnMeta(name="note", data_type="VARCHAR(5000)")
+        )
+        overflow_type, overflow_warnings = oracle_core._map_duckdb_column_to_oracle(
+            base.ColumnMeta(name="amount", data_type="DECIMAL(39,2)")
+        )
+
+        self.assertEqual(bounded_type, "VARCHAR2(32)")
+        self.assertEqual(bounded_warnings, [])
+        self.assertEqual(wide_type, "CLOB")
+        self.assertTrue(wide_warnings)
+        self.assertEqual(overflow_type, "BINARY_DOUBLE")
+        self.assertTrue(overflow_warnings)
+
     @unittest.skipUnless(_oracle_available(), "Oracle container is not available on localhost:51521")
     def test_container_ingress_egress_roundtrip(self):
         req = base.OracleConnectRequest(

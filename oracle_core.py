@@ -7,6 +7,7 @@ Oracle-specific connection, ingress, egress, and lookup-table cleanup helpers.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from decimal import Decimal
@@ -38,6 +39,8 @@ TestConnectionResponse = _base_models.TestConnectionResponse
 _connections: dict[str, dict[str, Any]] = {}
 _DEFAULT_QUERY_CHUNK_SIZE = int(getattr(_base_models, "DEFAULT_QUERY_CHUNK_SIZE", 200) or 200)
 _VALID_ORACLE_AUTH_MODES = {"basic", "dsn", "tns", "wallet_mtls"}
+_DECIMAL_RE = re.compile(r"^DECIMAL\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)$")
+_VARCHAR_RE = re.compile(r"^VARCHAR\s*\(\s*(\d+)\s*\)$")
 
 
 class _MappedOracleColumn:
@@ -224,11 +227,13 @@ def _normalize_oracle_source_type(
     normalized = raw.upper().replace("DB_TYPE_", "")
     warnings: list[str] = []
     if normalized == "NUMBER":
-        if precision is not None and scale is not None:
-            if int(precision) > 38:
-                warnings.append(f"Oracle NUMBER({precision},{scale}) exceeds DuckDB max precision 38 and was widened to DOUBLE.")
+        if precision is not None:
+            resolved_precision = int(precision)
+            resolved_scale = int(scale or 0)
+            if resolved_precision > 38:
+                warnings.append(f"Oracle NUMBER({resolved_precision},{resolved_scale}) exceeds DuckDB max precision 38 and was widened to DOUBLE.")
                 return "DOUBLE", warnings, True
-            return f"DECIMAL({int(precision)},{int(scale)})", warnings, False
+            return f"DECIMAL({resolved_precision},{resolved_scale})", warnings, False
         warnings.append("Oracle unconstrained NUMBER was widened to DuckDB DOUBLE.")
         return "DOUBLE", warnings, True
     if normalized in {"BINARY_FLOAT", "BINARY_DOUBLE", "FLOAT"}:
@@ -237,6 +242,9 @@ def _normalize_oracle_source_type(
         return "VARCHAR", warnings, False
     if normalized == "DATE":
         return "TIMESTAMP", warnings, False
+    if normalized in {"TIMESTAMP_TZ", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP_LTZ", "TIMESTAMP WITH LOCAL TIME ZONE"}:
+        warnings.append(f"Oracle {raw} was normalized to DuckDB TIMESTAMP without timezone.")
+        return "TIMESTAMP", warnings, True
     if normalized.startswith("TIMESTAMP"):
         return "TIMESTAMP", warnings, False
     if normalized in {"BLOB", "RAW", "LONG_RAW"}:
@@ -294,13 +302,37 @@ def _map_duckdb_column_to_oracle(column: ColumnMeta) -> tuple[str, list[str]]:
         if normalized == "TIMESTAMPTZ":
             warnings.append("DuckDB TIMESTAMPTZ was normalized to Oracle TIMESTAMP.")
         return "TIMESTAMP", warnings
-    if normalized.startswith("DECIMAL("):
-        return normalized.replace("DECIMAL", "NUMBER", 1), warnings
+    decimal_match = _DECIMAL_RE.match(normalized)
+    if decimal_match:
+        precision = int(decimal_match.group(1))
+        scale = int(decimal_match.group(2))
+        if precision > 38:
+            warnings.append(f"DuckDB DECIMAL({precision},{scale}) exceeds Oracle NUMBER max precision 38 and was widened to BINARY_DOUBLE.")
+            return "BINARY_DOUBLE", warnings
+        return f"NUMBER({precision},{scale})", warnings
     if normalized == "DECIMAL":
-        return f"NUMBER({int(column.precision or 38)},{int(column.scale or 10)})", warnings
+        precision = int(column.precision or 38)
+        scale = int(column.scale or 10)
+        if precision > 38:
+            warnings.append(f"DuckDB DECIMAL({precision},{scale}) exceeds Oracle NUMBER max precision 38 and was widened to BINARY_DOUBLE.")
+            return "BINARY_DOUBLE", warnings
+        return f"NUMBER({precision},{scale})", warnings
     if normalized in {"BLOB", "BYTEA"}:
         return "BLOB", warnings
-    if normalized in {"VARCHAR", "JSON", "UUID"} or normalized.startswith("VARCHAR"):
+    varchar_match = _VARCHAR_RE.match(normalized)
+    if varchar_match:
+        length = int(varchar_match.group(1))
+        if length <= 4000:
+            return f"VARCHAR2({max(length, 1)})", warnings
+        warnings.append(f"DuckDB VARCHAR({length}) exceeds Oracle VARCHAR2 max length 4000 and was widened to CLOB.")
+        return "CLOB", warnings
+    if normalized == "VARCHAR" and column.max_length is not None:
+        length = int(column.max_length)
+        if length <= 4000:
+            return f"VARCHAR2({max(length, 1)})", warnings
+        warnings.append(f"DuckDB VARCHAR({length}) exceeds Oracle VARCHAR2 max length 4000 and was widened to CLOB.")
+        return "CLOB", warnings
+    if normalized in {"VARCHAR", "JSON", "UUID"}:
         return "CLOB", warnings
     warnings.append(f"DuckDB type '{normalized}' was widened to Oracle CLOB.")
     return "CLOB", warnings
@@ -354,8 +386,11 @@ def _inspect_oracle_table_columns(cur: Any, *, schema_name: str | None, table_na
         data_type = str(row[1] or "UNKNOWN").strip()
         precision = row[3]
         scale = row[4]
-        if data_type.upper() == "NUMBER" and precision is not None and scale is not None:
-            data_type = f"NUMBER({int(precision)},{int(scale)})"
+        if data_type.upper() == "NUMBER" and precision is not None:
+            if scale is None:
+                data_type = f"NUMBER({int(precision)})"
+            else:
+                data_type = f"NUMBER({int(precision)},{int(scale)})"
         elif data_type.upper() in {"VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR"} and row[2] is not None:
             data_type = f"{data_type}({int(row[2])})"
         columns.append(
@@ -425,6 +460,8 @@ def _build_egress_remote_schema_column_mappings(
 
 
 def _coerce_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return int(value)
     if isinstance(value, memoryview):
         return bytes(value)
     if isinstance(value, (dict, list, tuple, set)):
