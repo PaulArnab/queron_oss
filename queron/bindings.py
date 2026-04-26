@@ -15,6 +15,8 @@ def normalize_binding_type(value: str | None) -> str:
         return "db2"
     if raw in {"mssql", "sqlserver", "sql_server"}:
         return "mssql"
+    if raw in {"mysql", "mariadb"}:
+        return "mysql"
     raise RuntimeError(f"Unsupported runtime binding type '{value}'.")
 
 
@@ -62,12 +64,15 @@ def resolve_runtime_binding_payload(config_name: str, payload: Mapping[str, Any]
             "database": payload.get("database"),
             "username": payload.get("username"),
             "password": payload.get("password"),
-            "url": payload.get("url"),
+            "url": payload.get("url") or payload.get("uri"),
             "auth_mode": payload.get("auth_mode"),
             "sslmode": payload.get("sslmode"),
             "sslrootcert": payload.get("sslrootcert"),
             "sslcert": payload.get("sslcert"),
             "sslkey": payload.get("sslkey"),
+            "ssl_ca": payload.get("ssl_ca"),
+            "ssl_cert": payload.get("ssl_cert"),
+            "ssl_key": payload.get("ssl_key"),
             "sslpassword": payload.get("sslpassword"),
             "krbsrvname": payload.get("krbsrvname"),
             "gssencmode": payload.get("gssencmode"),
@@ -275,6 +280,47 @@ class MssqlBinding(RuntimeBinding):
             trust_server_certificate=trust_server_certificate,
             timeout_seconds=timeout_seconds,
             extras=extras,
+        )
+
+
+class MysqlBinding(RuntimeBinding):
+    def __init__(
+        self,
+        *,
+        config_factory: ConfigFactory | None = None,
+        name: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+        database: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        url: str | None = None,
+        uri: str | None = None,
+        auth_mode: str | None = None,
+        ssl_ca: str | None = None,
+        ssl_cert: str | None = None,
+        ssl_key: str | None = None,
+        connect_timeout_seconds: int | None = None,
+        **extras: Any,
+    ) -> None:
+        super().__init__(
+            binding_type="mysql",
+            config_factory=config_factory,
+            name=name,
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            url=url or uri,
+            auth_mode=auth_mode,
+            extras={
+                "ssl_ca": ssl_ca,
+                "ssl_cert": ssl_cert,
+                "ssl_key": ssl_key,
+                "connect_timeout_seconds": connect_timeout_seconds,
+                **extras,
+            },
         )
 
 

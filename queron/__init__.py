@@ -208,6 +208,63 @@ class _MssqlNamespace:
         return _node_decorator("mssql.lookup", payload)
 
 
+class _MysqlNamespace:
+    def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        return _node_decorator(
+            "mysql.ingress",
+            {
+                "config": _require_non_empty_string("config", config),
+                "name": _require_non_empty_string("name", name),
+                "out": _require_non_empty_string("out", out),
+                "sql": _require_non_empty_string("sql", sql),
+            },
+        )
+
+    def egress(
+        self,
+        *,
+        config: str,
+        name: str,
+        table: str,
+        sql: str,
+        mode: str = "replace",
+        retain: bool = False,
+        out: str,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        payload = {
+            "config": _require_non_empty_string("config", config),
+            "name": _require_non_empty_string("name", name),
+            "table": _require_non_empty_string("table", table),
+            "sql": _require_non_empty_string("sql", sql),
+            "mode": _require_non_empty_string("mode", mode),
+            "retain": bool(retain),
+            "out": _require_non_empty_string("out", out),
+        }
+        return _node_decorator("mysql.egress", payload)
+
+    def lookup(
+        self,
+        *,
+        config: str,
+        name: str,
+        table: str,
+        sql: str,
+        mode: str = "replace",
+        retain: bool = False,
+        out: str,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        payload = {
+            "config": _require_non_empty_string("config", config),
+            "name": _require_non_empty_string("name", name),
+            "table": _require_non_empty_string("table", table),
+            "sql": _require_non_empty_string("sql", sql),
+            "mode": _require_non_empty_string("mode", mode),
+            "retain": bool(retain),
+            "out": _require_non_empty_string("out", out),
+        }
+        return _node_decorator("mysql.lookup", payload)
+
+
 class _ModelNamespace:
     def sql(
         self,
@@ -521,6 +578,7 @@ def var(
 postgres = _PostgresNamespace()
 db2 = _Db2Namespace()
 mssql = _MssqlNamespace()
+mysql = _MysqlNamespace()
 csv = _CsvNamespace()
 jsonl = _JsonlNamespace()
 parquet = _ParquetNamespace()
@@ -547,8 +605,13 @@ from .api import (  # noqa: E402
     stop_pipeline,
     force_stop_pipeline,
 )
+from .bindings import Db2Binding, MssqlBinding, MysqlBinding, PostgresBinding  # noqa: E402
 
 __all__ = [
+    "Db2Binding",
+    "MssqlBinding",
+    "MysqlBinding",
+    "PostgresBinding",
     "check",
     "csv",
     "compile_pipeline",
@@ -564,6 +627,7 @@ __all__ = [
     "jsonl",
     "lookup",
     "model",
+    "mysql",
     "parquet",
     "postgres",
     "python",

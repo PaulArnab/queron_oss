@@ -90,9 +90,11 @@ def resolve_connection_binding(binding_name: str, config: dict[str, Any]) -> dic
         resolved["type"] = "postgresql"
     elif raw_type == "db2":
         resolved["type"] = "db2"
+    elif raw_type in {"mysql", "mariadb"}:
+        resolved["type"] = "mysql"
     else:
         raise RuntimeError(
-            f"Connection '{binding_name}' must declare a supported type ('postgres' or 'db2')."
+            f"Connection '{binding_name}' must declare a supported type ('postgres', 'db2', or 'mysql')."
         )
 
     resolved.setdefault("name", binding_name)

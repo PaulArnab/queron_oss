@@ -561,16 +561,17 @@ function buildFlowNodeDataFromApi(node) {
   const status = String(node?.node_run_status || node?.current_state || "ready");
   const artifactName = node?.artifact_name || null;
   const lookupTable = node?.lookup_table || null;
+  const tableName = String(node?.out || "").trim() || lastRelationSegment(node?.logical_artifact) || lastRelationSegment(artifactName);
   const rows = node?.row_count_out ?? null;
   const runtimeVarNames = Array.isArray(node?.runtime_var_names) ? node.runtime_var_names : [];
   return {
-    label: titleForNode(id, { artifact: lookupTable || artifactName, kind }),
-    title: titleForNode(id, { artifact: lookupTable || artifactName, kind }),
+    label: id,
+    title: id,
     nodeName: id,
     id,
     kind,
     tone: normalizeTone(kind, id),
-    relationText: lookupTable || artifactName,
+    relationText: tableName || lookupTable || artifactName,
     configText: configTextForKind(kind),
     runtimeTone: runtimeTone(status, 0),
     runtimeLabel: runtimeLabel(status, 0),
@@ -664,15 +665,23 @@ function buildInspectEntryFromApi(node, query = null) {
   const id = String(node.name || "");
   const kind = String(node.kind || "");
   const status = String(node.node_run_status || node.current_state || "ready");
-  const titleArtifact = node.logical_artifact || node.artifact_name || null;
   const artifactName = node.artifact_name || null;
   const runtimeVarNames = Array.isArray(node.runtime_var_names) ? node.runtime_var_names : [];
   return {
     static: {
       id,
-      title: titleForNode(id, { artifact: titleArtifact, kind }),
+      title: id,
       kind,
       tone: normalizeTone(kind, id),
+      configName: node.config || null,
+      outName: node.out || null,
+      targetRelation: node.target_relation || null,
+      inputPath: node.input_path || null,
+      outputPath: node.output_path || null,
+      mode: node.mode || null,
+      retain: node.retain,
+      overwrite: node.overwrite,
+      lookupTable: node.lookup_table || null,
       logicalArtifact: node.logical_artifact || null,
       dependencies: Array.isArray(node.dependencies) ? node.dependencies : [],
       dependents: Array.isArray(node.dependents) ? node.dependents : [],
@@ -1314,6 +1323,78 @@ function kindDotStyle(tone) {
   }[tone] || { bg: "#94a3b8" };
 }
 
+function lastRelationSegment(value) {
+  const cleaned = String(value || "").trim().replace(/^"+|"+$/g, "");
+  if (!cleaned) return "";
+  return cleaned.split(".").slice(-1)[0].replace(/^"+|"+$/g, "").trim();
+}
+
+function displayRelation(value) {
+  return String(value || "").trim().replace(/"/g, "");
+}
+
+function tableNameForSelected(selected) {
+  return String(selected?.outName || "").trim() || lastRelationSegment(selected?.logicalArtifact) || lastRelationSegment(selected?.artifactName);
+}
+
+function checkTypeLabel(kind) {
+  const lowered = String(kind || "").trim().toLowerCase();
+  if (lowered === "check.count") return "fail_if_count";
+  if (lowered === "check.boolean") return "fail_if_true";
+  return lowered.replace(/^check\./, "check_") || "check";
+}
+
+function inspectHeaderRows(selected) {
+  const kind = String(selected?.kind || "").trim().toLowerCase();
+  const rows = [];
+  const add = (label, value) => {
+    const text = value === true ? "Yes" : value === false ? "No" : String(value ?? "").trim();
+    if (text) rows.push({ label, value: text });
+  };
+
+  if (kind.includes(".lookup")) {
+    add("Config", selected.configName);
+    add("Table Name", tableNameForSelected(selected));
+    add("Target", displayRelation(selected.lookupTable || selected.targetRelation));
+    add("Mode", selected.mode);
+    add("Retained", Boolean(selected.retain));
+    return rows;
+  }
+  if (kind.includes(".egress")) {
+    add("Config", selected.configName);
+    add("Table Name", tableNameForSelected(selected));
+    if (kind.startsWith("csv.") || kind.startsWith("jsonl.") || kind.startsWith("parquet.")) {
+      add("Path", selected.outputPath || selected.artifactName);
+    } else {
+      add("Target", displayRelation(selected.targetRelation));
+      add("Mode", selected.mode);
+    }
+    return rows;
+  }
+  if (kind.includes(".ingress")) {
+    add("Config", selected.configName);
+    add("Table Name", tableNameForSelected(selected));
+    if (kind.startsWith("csv.") || kind.startsWith("jsonl.") || kind.startsWith("parquet.")) {
+      add("Path", selected.inputPath);
+    }
+    return rows;
+  }
+  if (kind === "model.sql") {
+    add("Table Name", tableNameForSelected(selected));
+    return rows;
+  }
+  if (kind.startsWith("check.")) {
+    add("Check Type", checkTypeLabel(kind));
+    if (kind === "check.count") {
+      add("Operator", selected.checkOperator);
+      add("Value", selected.checkValue);
+    }
+    return rows;
+  }
+  add("Table Name", tableNameForSelected(selected));
+  return rows;
+}
+
 function HistoryTable({ items }) {
   return (
     <div className="h-full min-h-0 overflow-y-scroll pr-2" style={{ scrollbarGutter: "stable" }}>
@@ -1621,6 +1702,7 @@ function InspectBottomSheet({
   const selectedBadge = statusBadgeStyle(selected.currentState);
   const nodeRunStatus = String(selected.nodeRunStatus || selected.currentState || "").trim().toLowerCase();
   const dataTabBlocked = !["complete", "complete_with_warnings"].includes(nodeRunStatus);
+  const selectedDetails = inspectHeaderRows(selected);
 
   return (
     <div
@@ -1651,23 +1733,10 @@ function InspectBottomSheet({
             />
             <div className="flex items-start justify-between px-4 py-3">
               <div className="min-w-0">
-                <div className="truncate text-[14px] font-bold tracking-[-0.01em] text-slate-950">{selected.title}</div>
+                <div className="truncate text-[13px] font-bold tracking-[-0.01em] text-slate-950">{selected.title}</div>
                 <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-slate-500">
-                  <span className="shrink-0">{selected.id}</span>
-                  {(selected.artifactName || selected.logicalArtifact) ? (
-                    <>
-                      <span className="text-slate-300">•</span>
-                      <span className="truncate">
-                        {String(selected.artifactName || selected.logicalArtifact || "")
-                          .replace(/^"+|"+$/g, "")
-                          .split(".")
-                          .slice(-1)[0]}
-                      </span>
-                    </>
-                  ) : null}
                   {selected.hasRuntimeVars ? (
                     <>
-                      <span className="text-slate-300">•</span>
                       <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-amber-700">
                         Vars
                       </span>
@@ -1696,6 +1765,18 @@ function InspectBottomSheet({
 
             <div className="min-h-0 overflow-y-auto px-4 pb-3">
               <div className="overflow-hidden border-t border-slate-200">
+                {selectedDetails.length ? (
+                  <div className="border-b border-slate-200 px-3 py-2">
+                    <div className="space-y-1.5">
+                      {selectedDetails.map((item) => (
+                        <div key={`${item.label}:${item.value}`} className="grid grid-cols-[82px_minmax(0,1fr)] gap-2 text-[10px] leading-snug">
+                          <div className="font-bold uppercase tracking-[0.08em] text-slate-400">{item.label}</div>
+                          <div className="min-w-0 break-words font-semibold text-slate-950">{item.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="border-b border-slate-200 px-3 py-2">
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-slate-400">Run time</div>

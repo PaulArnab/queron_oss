@@ -826,23 +826,26 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
         "postgres.ingress",
         "db2.ingress",
         "mssql.ingress",
+        "mysql.ingress",
         "python.ingress",
         *list(_ALL_FILE_INGRESS_KINDS),
         "model.sql",
         "postgres.egress",
         "db2.egress",
         "mssql.egress",
+        "mysql.egress",
         "postgres.lookup",
         "db2.lookup",
         "mssql.lookup",
+        "mysql.lookup",
         "parquet.egress",
         "csv.egress",
         "jsonl.egress",
     }
     query_node_kinds = {"model.sql", "check.count", "check.boolean", *list(artifact_node_kinds)}
-    database_egress_kinds = {"postgres.egress", "db2.egress", "mssql.egress"}
-    database_lookup_kinds = {"postgres.lookup", "db2.lookup", "mssql.lookup"}
-    remote_lookup_consumer_kinds = {"postgres.ingress", "db2.ingress", "mssql.ingress"}
+    database_egress_kinds = {"postgres.egress", "db2.egress", "mssql.egress", "mysql.egress"}
+    database_lookup_kinds = {"postgres.lookup", "db2.lookup", "mssql.lookup", "mysql.lookup"}
+    remote_lookup_consumer_kinds = {"postgres.ingress", "db2.ingress", "mssql.ingress", "mysql.ingress"}
     database_config_kinds = {*remote_lookup_consumer_kinds, *database_egress_kinds, *database_lookup_kinds}
     supported_kinds = artifact_node_kinds | query_node_kinds
     valid_count_operators = {"=", "==", "!=", ">", ">=", "<", "<="}
@@ -1060,7 +1063,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                 }
             )
 
-        if node.kind in query_node_kinds or node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress", "model.sql"}:
+        if node.kind in query_node_kinds or node.kind in {"postgres.ingress", "db2.ingress", "mssql.ingress", "mysql.ingress", "model.sql"}:
             try:
                 def _resolve_source(source_name: str) -> str:
                     relation = resolve_source_relation(source_name, config, spec.target)
