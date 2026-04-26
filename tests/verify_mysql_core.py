@@ -15,6 +15,10 @@ if str(BACKEND_DIR) not in sys.path:
 import base
 from duckdb_driver import connect_duckdb
 import mysql_core
+import queron
+from queron.bindings import MysqlBinding, resolve_runtime_binding_payload
+from queron.compiler import compile_pipeline_code
+from queron.config import resolve_connection_binding
 
 
 class _FakeMysqlCursor:
@@ -98,6 +102,30 @@ class _FakeMysqlIngressConnection:
         self.closed = True
 
 
+class _FakeMysqlConnectCursor:
+    def __init__(self) -> None:
+        self.executed: list[tuple[str, object | None]] = []
+        self.closed = False
+
+    def execute(self, sql, params=None):
+        self.executed.append((str(sql), params))
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeMysqlConnectConnection:
+    def __init__(self) -> None:
+        self.cursor_obj = _FakeMysqlConnectCursor()
+        self.closed = False
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def close(self):
+        self.closed = True
+
+
 def _write_duckdb_source(db_path: pathlib.Path) -> None:
     conn = connect_duckdb(str(db_path))
     try:
@@ -111,6 +139,111 @@ def _write_duckdb_source(db_path: pathlib.Path) -> None:
         )
     finally:
         conn.close()
+
+
+class VerifyMysqlAuthConfigTests(unittest.TestCase):
+    def test_runtime_binding_accepts_uri_alias_and_mysql_tls_fields(self):
+        payload = resolve_runtime_binding_payload(
+            "MYSQL_LOCAL",
+            {
+                "type": "mariadb",
+                "uri": "mysql://user:pass@localhost:53307/LOOMDB",
+                "ssl_ca": "ca.crt",
+                "ssl_cert": "client.crt",
+                "ssl_key": "client.key",
+                "unix_socket": "/tmp/mysql.sock",
+            },
+        )
+
+        self.assertEqual(payload["type"], "mysql")
+        self.assertEqual(payload["url"], "mysql://user:pass@localhost:53307/LOOMDB")
+        self.assertEqual(payload["ssl_ca"], "ca.crt")
+        self.assertEqual(payload["ssl_cert"], "client.crt")
+        self.assertEqual(payload["ssl_key"], "client.key")
+        self.assertEqual(payload["unix_socket"], "/tmp/mysql.sock")
+
+    def test_mysql_binding_resolves_tls_mtls_and_socket_fields(self):
+        binding = MysqlBinding(
+            host="localhost",
+            port=53307,
+            database="LOOMDB",
+            username="loom_user",
+            password="secret",
+            ssl_ca="ca.crt",
+            ssl_cert="client.crt",
+            ssl_key="client.key",
+            unix_socket="/tmp/mysql.sock",
+            connect_timeout_seconds=3,
+        )
+
+        payload = binding.resolve_config("MYSQL_LOCAL")
+
+        self.assertEqual(payload["type"], "mysql")
+        self.assertEqual(payload["ssl_ca"], "ca.crt")
+        self.assertEqual(payload["ssl_cert"], "client.crt")
+        self.assertEqual(payload["ssl_key"], "client.key")
+        self.assertEqual(payload["unix_socket"], "/tmp/mysql.sock")
+        self.assertEqual(payload["connect_timeout_seconds"], 3)
+
+    def test_connections_yaml_mysql_password_env(self):
+        with patch.dict("os.environ", {"QUERON_MYSQL_PASSWORD": "EnvMysqlPass123!"}):
+            payload = resolve_connection_binding(
+                "MYSQL_ENV",
+                {
+                    "connections": {
+                        "MYSQL_ENV": {
+                            "type": "mysql",
+                            "host": "localhost",
+                            "port": 53307,
+                            "database": "LOOMDB",
+                            "username": "env_user",
+                            "password_env": "QUERON_MYSQL_PASSWORD",
+                        }
+                    }
+                },
+            )
+
+        self.assertEqual(payload["type"], "mysql")
+        self.assertEqual(payload["password"], "EnvMysqlPass123!")
+
+    def test_mysql_url_and_mtls_config_resolution(self):
+        cfg = mysql_core._resolved_mysql_connect_config(
+            base.MysqlConnectRequest(
+                url="mysql://uri_user:UriMysqlPass123!@localhost:53307/LOOMDB",
+                ssl_ca="ca.crt",
+                ssl_cert="client.crt",
+                ssl_key="client.key",
+            )
+        )
+
+        self.assertEqual(cfg["host"], "localhost")
+        self.assertEqual(cfg["port"], 53307)
+        self.assertEqual(cfg["database"], "LOOMDB")
+        self.assertEqual(cfg["username"], "uri_user")
+        self.assertEqual(cfg["password"], "UriMysqlPass123!")
+        self.assertEqual(cfg["auth_mode"], "mtls")
+        self.assertEqual(cfg["ssl"], {"ca": "ca.crt", "cert": "client.crt", "key": "client.key"})
+
+    def test_mysql_connection_sets_ansi_quotes_session_mode(self):
+        fake_conn = _FakeMysqlConnectConnection()
+
+        with patch.object(mysql_core.pymysql, "connect", return_value=fake_conn) as connect_mock:
+            conn = mysql_core._connect_from_request(
+                base.MysqlConnectRequest(
+                    host="localhost",
+                    port=53307,
+                    database="LOOMDB",
+                    username="loom_user",
+                    password="LoomMysqlPass123!",
+                )
+            )
+
+        self.assertIs(conn, fake_conn)
+        self.assertEqual(fake_conn.cursor_obj.executed, [("SET SESSION sql_mode = CONCAT(@@sql_mode, ',ANSI_QUOTES')", None)])
+        self.assertTrue(fake_conn.cursor_obj.closed)
+        connect_mock.assert_called_once()
+        self.assertEqual(connect_mock.call_args.kwargs["host"], "localhost")
+        self.assertEqual(connect_mock.call_args.kwargs["port"], 53307)
 
 
 class VerifyMysqlIngressTests(unittest.TestCase):
@@ -331,6 +464,193 @@ class VerifyMysqlEgressTests(unittest.TestCase):
             "`raw_blob` LONGBLOB, `updated_at` DATETIME)",
         )
         self.assertEqual(warnings, ["DuckDB TIMESTAMPTZ was normalized to MySQL DATETIME."])
+
+
+class VerifyMysqlLookupRuntimeTests(unittest.TestCase):
+    def test_lookup_cleanup_drops_non_retained_table(self):
+        drops: list[str] = []
+        pipeline = self._write_lookup_pipeline(retain=False)
+        config = self._lookup_config()
+        connections = self._connections_config()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            config_path = root / "configurations.yaml"
+            connections_path = root / "connections.yaml"
+            pipeline_path.write_text(pipeline, encoding="utf-8")
+            config_path.write_text(config, encoding="utf-8")
+            connections_path.write_text(connections, encoding="utf-8")
+
+            with patch.object(mysql_core, "drop_table_if_exists", side_effect=lambda *, target_request, target_table: drops.append(target_table)):
+                queron.compile_pipeline(pipeline_path, config_path=config_path)
+                result = queron.run_pipeline(pipeline_path, config_path=config_path, connections_path=connections_path, clean_existing=True)
+
+        self.assertEqual(result.executed_nodes, ["ingest_mysql_policy", "stage_mysql_lookup"])
+        self.assertEqual(drops, ['"phase_lookup_keys"'])
+
+    def test_lookup_cleanup_skips_retained_table(self):
+        pipeline = self._write_lookup_pipeline(retain=True)
+        config = self._lookup_config()
+        connections = self._connections_config()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            config_path = root / "configurations.yaml"
+            connections_path = root / "connections.yaml"
+            pipeline_path.write_text(pipeline, encoding="utf-8")
+            config_path.write_text(config, encoding="utf-8")
+            connections_path.write_text(connections, encoding="utf-8")
+
+            with patch.object(mysql_core, "drop_table_if_exists") as drop_mock:
+                queron.compile_pipeline(pipeline_path, config_path=config_path)
+                queron.run_pipeline(pipeline_path, config_path=config_path, connections_path=connections_path, clean_existing=True)
+
+        drop_mock.assert_not_called()
+
+    def test_lookup_details_are_visible_in_inspect_node_and_dag(self):
+        pipeline = self._write_lookup_pipeline(retain=True)
+        config = self._lookup_config()
+        connections = self._connections_config()
+        req = base.MysqlConnectRequest(host="localhost", port=53307, database="LOOMDB", username="loom_user", password="LoomMysqlPass123!")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = pathlib.Path(tmpdir)
+                pipeline_path = root / "pipeline.py"
+                config_path = root / "configurations.yaml"
+                connections_path = root / "connections.yaml"
+                pipeline_path.write_text(pipeline, encoding="utf-8")
+                config_path.write_text(config, encoding="utf-8")
+                connections_path.write_text(connections, encoding="utf-8")
+
+                queron.compile_pipeline(pipeline_path, config_path=config_path)
+                result = queron.run_pipeline(pipeline_path, config_path=config_path, connections_path=connections_path, clean_existing=True)
+                node = queron.inspect_node(result.artifact_path, "stage_mysql_lookup")
+                dag = queron.inspect_dag(result.artifact_path)
+        finally:
+            mysql_core.drop_table_if_exists(target_request=req, target_table="phase_lookup_keys")
+
+        inspect_lookup = next(item for item in node.nodes if item["name"] == "stage_mysql_lookup")
+        dag_lookup = next(item for item in dag.nodes if item["name"] == "stage_mysql_lookup")
+        self.assertEqual(inspect_lookup["target_relation"], '"phase_lookup_keys"')
+        self.assertEqual(inspect_lookup["mode"], "replace")
+        self.assertTrue(inspect_lookup["retain"])
+        self.assertEqual(inspect_lookup["lookup_table"], '`phase_lookup_keys`')
+        self.assertEqual(inspect_lookup["details"]["lookup_table"], "`phase_lookup_keys`")
+        self.assertEqual(dag_lookup["lookup_table"], "`phase_lookup_keys`")
+        self.assertTrue(dag_lookup["retain"])
+
+    def test_compile_allows_mysql_lookup_consumer_with_same_config(self):
+        compiled = compile_pipeline_code(self._lookup_consumer_pipeline(consumer_config="MYSQL_LOCAL"), yaml_text=self._lookup_config())
+        errors = [item for item in compiled.diagnostics if item.get("level") == "error"]
+
+        self.assertEqual(errors, [])
+
+    def test_compile_rejects_lookup_consumer_with_different_config(self):
+        compiled = compile_pipeline_code(self._lookup_consumer_pipeline(consumer_config="MYSQL_OTHER"), yaml_text=self._lookup_config())
+
+        self.assertTrue(any(item.get("code") == "lookup_config_mismatch" for item in compiled.diagnostics))
+
+    def test_full_lookup_pipeline_ingress_lookup_ingress_egress(self):
+        pipeline = r'''
+import queron
+__queron_native__ = {"pipeline_id": "mysql_lookup_full_smoke"}
+@queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_policy", out="mysql_policy", sql='SELECT policy_id, policy_number, active_flag FROM {{ queron.source("policy") }} ORDER BY policy_id')
+def ingest_mysql_policy(): pass
+@queron.mysql.lookup(config="MYSQL_LOCAL", name="stage_mysql_lookup", table="phase_lookup_keys", out="phase_lookup_keys", sql='SELECT policy_id FROM {{ queron.ref("mysql_policy") }} WHERE active_flag = true', mode="replace")
+def stage_mysql_lookup(): pass
+@queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_filtered", out="mysql_filtered", sql='SELECT p.policy_id, p.policy_number FROM {{ queron.source("policy") }} p JOIN {{ queron.lookup("phase_lookup_keys") }} k ON p.policy_id = k.policy_id ORDER BY p.policy_id')
+def ingest_mysql_filtered(): pass
+@queron.mysql.egress(config="MYSQL_LOCAL", name="egress_mysql_filtered", table="phase_lookup_egress", out="phase_lookup_egress_artifact", sql='SELECT * FROM {{ queron.ref("mysql_filtered") }}', mode="replace")
+def egress_mysql_filtered(): pass
+'''
+        req = base.MysqlConnectRequest(host="localhost", port=53307, database="LOOMDB", username="loom_user", password="LoomMysqlPass123!")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = pathlib.Path(tmpdir)
+                pipeline_path = root / "pipeline.py"
+                config_path = root / "configurations.yaml"
+                connections_path = root / "connections.yaml"
+                pipeline_path.write_text(pipeline, encoding="utf-8")
+                config_path.write_text(self._lookup_config(egress=True), encoding="utf-8")
+                connections_path.write_text(self._connections_config(), encoding="utf-8")
+
+                queron.compile_pipeline(pipeline_path, config_path=config_path)
+                result = queron.run_pipeline(pipeline_path, config_path=config_path, connections_path=connections_path, clean_existing=True)
+                conn = mysql_core._connect_from_request(req)
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM phase_lookup_egress")
+                row_count = int(cur.fetchone()[0])
+                cur.close()
+                conn.close()
+        finally:
+            mysql_core.drop_table_if_exists(target_request=req, target_table="phase_lookup_egress")
+            mysql_core.drop_table_if_exists(target_request=req, target_table="phase_lookup_keys")
+
+        self.assertEqual(result.executed_nodes, ["ingest_mysql_policy", "stage_mysql_lookup", "ingest_mysql_filtered", "egress_mysql_filtered"])
+        self.assertEqual(row_count, 2)
+
+    def _write_lookup_pipeline(self, *, retain: bool) -> str:
+        retain_text = "True" if retain else "False"
+        return f'''
+import queron
+__queron_native__ = {{"pipeline_id": "mysql_lookup_runtime"}}
+@queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_policy", out="mysql_policy", sql='SELECT policy_id, active_flag FROM {{{{ queron.source("policy") }}}} ORDER BY policy_id')
+def ingest_mysql_policy(): pass
+@queron.mysql.lookup(config="MYSQL_LOCAL", name="stage_mysql_lookup", table="phase_lookup_keys", out="phase_lookup_keys", sql='SELECT policy_id FROM {{{{ queron.ref("mysql_policy") }}}} WHERE active_flag = true', mode="replace", retain={retain_text})
+def stage_mysql_lookup(): pass
+'''
+
+    def _lookup_consumer_pipeline(self, *, consumer_config: str) -> str:
+        return f'''
+import queron
+__queron_native__ = {{"pipeline_id": "mysql_lookup_compile"}}
+@queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_policy", out="mysql_policy", sql='SELECT policy_id, active_flag FROM {{{{ queron.source("policy") }}}}')
+def ingest_mysql_policy(): pass
+@queron.mysql.lookup(config="MYSQL_LOCAL", name="stage_mysql_lookup", table="phase_lookup_keys", out="phase_lookup_keys", sql='SELECT policy_id FROM {{{{ queron.ref("mysql_policy") }}}}', mode="replace")
+def stage_mysql_lookup(): pass
+@queron.mysql.ingress(config="{consumer_config}", name="ingest_mysql_filtered", out="mysql_filtered", sql='SELECT p.policy_id FROM {{{{ queron.source("policy") }}}} p JOIN {{{{ queron.lookup("phase_lookup_keys") }}}} k ON p.policy_id = k.policy_id')
+def ingest_mysql_filtered(): pass
+'''
+
+    def _lookup_config(self, *, egress: bool = False) -> str:
+        suffix = ""
+        if egress:
+            suffix = """
+egress:
+  phase_lookup_egress:
+    table: phase_lookup_egress
+"""
+        return f"""
+sources:
+  policy:
+    table: policy
+lookup:
+  phase_lookup_keys:
+    table: phase_lookup_keys
+{suffix}"""
+
+    def _connections_config(self) -> str:
+        return """
+connections:
+  MYSQL_LOCAL:
+    type: mysql
+    host: localhost
+    port: 53307
+    database: LOOMDB
+    username: loom_user
+    password: LoomMysqlPass123!
+    connect_timeout_seconds: 3
+  MYSQL_OTHER:
+    type: mysql
+    host: localhost
+    port: 53307
+    database: LOOMDB
+    username: loom_user
+    password: LoomMysqlPass123!
+    connect_timeout_seconds: 3
+"""
 
 
 if __name__ == "__main__":
