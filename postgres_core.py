@@ -60,6 +60,7 @@ class _FallbackConnectorEgressResponse(BaseModel):
     target_name: str
     row_count: int
     warnings: list[str] = Field(default_factory=list)
+    column_mappings: list[ColumnMappingRecord] = Field(default_factory=list)
     created_at: float
     schema_changed: bool = False
 
@@ -642,6 +643,119 @@ def _build_postgres_create_table_sql(target_table: str, columns: list[ColumnMeta
     return f"CREATE TABLE {_quote_compound_identifier(target_table)} ({', '.join(column_defs)})", warnings
 
 
+def _format_postgres_remote_type(
+    data_type: Any,
+    *,
+    character_maximum_length: Any = None,
+    numeric_precision: Any = None,
+    numeric_scale: Any = None,
+) -> str:
+    text = str(data_type or "UNKNOWN").strip() or "UNKNOWN"
+    lowered = text.lower()
+    if lowered in {"character varying", "varchar", "character", "char"} and character_maximum_length:
+        return f"{text}({character_maximum_length})"
+    if lowered in {"numeric", "decimal"} and numeric_precision:
+        if numeric_scale is not None:
+            return f"{text}({numeric_precision},{numeric_scale})"
+        return f"{text}({numeric_precision})"
+    return text
+
+
+def _inspect_postgres_table_columns(cur, *, schema_name: str | None, table_name: str) -> list[ColumnMeta]:
+    schema = str(schema_name or "").strip()
+    if schema:
+        cur.execute(
+            """
+            SELECT column_name, data_type, character_maximum_length, numeric_precision, numeric_scale, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (schema, table_name),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT column_name, data_type, character_maximum_length, numeric_precision, numeric_scale, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (table_name,),
+        )
+    return [
+        ColumnMeta(
+            name=str(row[0] or ""),
+            data_type=_format_postgres_remote_type(
+                row[1],
+                character_maximum_length=row[2],
+                numeric_precision=row[3],
+                numeric_scale=row[4],
+            ),
+            nullable=str(row[5] or "").upper() != "NO",
+        )
+        for row in list(cur.fetchall() or [])
+        if str(row[0] or "").strip()
+    ]
+
+
+def _build_egress_inferred_column_mappings(column_meta: list[ColumnMeta]) -> list[ColumnMappingRecord]:
+    mappings: list[ColumnMappingRecord] = []
+    for index, column in enumerate(column_meta, start=1):
+        target_type, column_warnings = _map_duckdb_column_to_postgres(column)
+        mappings.append(
+            ColumnMappingRecord(
+                ordinal_position=index,
+                source_column=str(column.name),
+                source_type=str(column.data_type or "UNKNOWN"),
+                target_column=str(column.name),
+                target_type=str(target_type or "UNKNOWN"),
+                connector_type="postgres",
+                mapping_mode="egress_inferred",
+                warnings=list(column_warnings or []),
+                lossy=None,
+            )
+        )
+    return mappings
+
+
+def _build_egress_remote_schema_column_mappings(
+    source_columns: list[ColumnMeta],
+    remote_columns: list[ColumnMeta],
+    *,
+    fallback_mappings: list[ColumnMappingRecord],
+) -> list[ColumnMappingRecord]:
+    remote_by_name = {str(column.name).lower(): column for column in remote_columns}
+    fallback_by_name = {str(mapping.source_column).lower(): mapping for mapping in fallback_mappings}
+    mappings: list[ColumnMappingRecord] = []
+    for index, source_column in enumerate(source_columns, start=1):
+        remote_column = remote_by_name.get(str(source_column.name).lower())
+        fallback = fallback_by_name.get(str(source_column.name).lower())
+        remote_target_type = str(remote_column.data_type if remote_column is not None else (fallback.target_type if fallback is not None else "UNKNOWN"))
+        fallback_target_type = str(fallback.target_type if fallback is not None else "")
+        warnings = (
+            list(fallback.warnings or [])
+            if remote_column is None or remote_target_type.upper() == fallback_target_type.upper()
+            else []
+        )
+        if remote_column is None:
+            warnings.append("Remote target column was not found during PostgreSQL schema inspection.")
+        mappings.append(
+            ColumnMappingRecord(
+                ordinal_position=index,
+                source_column=str(source_column.name),
+                source_type=str(source_column.data_type or "UNKNOWN"),
+                target_column=str(remote_column.name if remote_column is not None else source_column.name),
+                target_type=remote_target_type,
+                connector_type="postgres",
+                mapping_mode="egress_remote_schema",
+                warnings=warnings,
+                lossy=fallback.lossy if fallback is not None else None,
+            )
+        )
+    return mappings
+
+
 def _collect_mapping_warnings(mapped_columns: list[_MappedPostgresColumn], shared_warnings: list[str] | None = None) -> list[str]:
     warnings: list[str] = []
     seen: set[str] = set()
@@ -1126,6 +1240,7 @@ def egress_query_from_duckdb(
     duck_interrupt_token: int | None = None
     target_interrupt_token: int | None = None
     warnings: list[str] = []
+    column_mappings: list[ColumnMappingRecord] = []
     row_count = 0
     try:
         if artifact_table:
@@ -1153,6 +1268,7 @@ def egress_query_from_duckdb(
         column_meta = _duckdb_column_meta_from_cursor(duck_cur)
         if not column_meta:
             raise RuntimeError("DuckDB egress query did not return any columns.")
+        column_mappings = _build_egress_inferred_column_mappings(column_meta)
 
         target_conn = _pg_connection(cfg["uri"], **connect_kwargs)
         if on_interrupt_open is not None:
@@ -1200,6 +1316,17 @@ def egress_query_from_duckdb(
                 target_cur.executemany(insert_sql, payload)
                 row_count += len(payload)
         target_conn.commit()
+        try:
+            remote_columns = _inspect_postgres_table_columns(target_cur, schema_name=schema_name, table_name=table_name)
+            if not remote_columns:
+                raise RuntimeError("No columns returned for remote target table.")
+            column_mappings = _build_egress_remote_schema_column_mappings(
+                column_meta,
+                remote_columns,
+                fallback_mappings=column_mappings,
+            )
+        except Exception as exc:
+            warnings.append(f"PostgreSQL remote schema inspection failed; using inferred egress column mappings. {exc}")
     finally:
         try:
             if duck_cur is not None:
@@ -1230,6 +1357,7 @@ def egress_query_from_duckdb(
         target_name=quoted_target_table,
         row_count=row_count,
         warnings=warnings,
+        column_mappings=column_mappings,
         created_at=time.time(),
         schema_changed=normalized_mode in {"replace", "create", "create_append"},
     )

@@ -4010,6 +4010,7 @@ def _get_columns(cur, schema: str, name: str):
                 "is_auto": False,
                 "source_column": metadata.get("source_column"),
                 "source_type": metadata.get("source_type"),
+                "target_type": metadata.get("target_type"),
                 "connector_type": metadata.get("connector_type"),
                 "mapping_mode": metadata.get("mapping_mode"),
                 "mapping_warnings": metadata.get("warnings", []),

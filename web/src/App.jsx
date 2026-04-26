@@ -1930,7 +1930,7 @@ function InspectBottomSheet({
                   blockedMessage="Data preview is available only for completed nodes."
                 />
               ) : activeTab === "columns" ? (
-                <ColumnMappingsPanel items={selected.columnMappings} />
+                <ColumnMappingsPanel items={selected.columnMappings} kind={selected.kind} />
               ) : activeTab === "logs" ? (
                 logs.length ? (
                   <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto px-2 py-1 text-[12px] text-slate-600">
@@ -1995,8 +1995,12 @@ function InspectBottomSheet({
   );
 }
 
-function ColumnMappingsPanel({ items }) {
+function ColumnMappingsPanel({ items, kind = "" }) {
   const rows = Array.isArray(items) ? items : [];
+  const isEgress = String(kind || "").toLowerCase().includes(".egress");
+  const labels = isEgress
+    ? ["Local Column", "Local Type", "Loaded Column", "Loaded Type", "Connector"]
+    : ["Source", "Source Type", "Target", "Target Type", "Connector"];
   if (!rows.length) {
     return (
       <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-slate-400">
@@ -2010,11 +2014,9 @@ function ColumnMappingsPanel({ items }) {
         <table className="min-w-full border-collapse text-[12px]">
           <thead className="bg-slate-50 text-slate-500">
             <tr>
-              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Source</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Source Type</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Target</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Target Type</th>
-              <th className="border-b border-slate-200 px-3 py-2 text-left font-semibold">Connector</th>
+              {labels.map((label) => (
+                <th key={label} className="border-b border-slate-200 px-3 py-2 text-left font-semibold">{label}</th>
+              ))}
             </tr>
           </thead>
           <tbody>

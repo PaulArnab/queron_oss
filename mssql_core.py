@@ -54,6 +54,7 @@ if ConnectorEgressResponse is None:
         target_name: str
         row_count: int
         warnings: list[str] = Field(default_factory=list)
+        column_mappings: list[ColumnMappingRecord] = Field(default_factory=list)
         created_at: float
         schema_changed: bool = False
     ConnectorEgressResponse = _FallbackConnectorEgressResponse
@@ -428,6 +429,95 @@ def _mssql_table_exists(cur: Any, *, schema_name: str, table_name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _format_mssql_remote_type(data_type: Any, *, max_length: Any = None, precision: Any = None, scale: Any = None) -> str:
+    text = str(data_type or "UNKNOWN").strip() or "UNKNOWN"
+    upper = text.upper()
+    if upper in {"DECIMAL", "NUMERIC"} and precision:
+        return f"{upper}({precision},{int(scale or 0)})"
+    if upper in {"CHAR", "VARCHAR", "NCHAR", "NVARCHAR", "BINARY", "VARBINARY"} and max_length:
+        length = int(max_length)
+        return f"{upper}({'MAX' if length < 0 else length})"
+    return upper
+
+
+def _inspect_mssql_table_columns(cur: Any, *, schema_name: str, table_name: str) -> list[ColumnMeta]:
+    cur.execute(
+        """
+        SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION
+        """,
+        (schema_name, table_name),
+    )
+    return [
+        ColumnMeta(
+            name=str(row[0] or "").strip(),
+            data_type=_format_mssql_remote_type(row[1], max_length=row[2], precision=row[3], scale=row[4]),
+            nullable=str(row[5] or "").upper() != "NO",
+        )
+        for row in list(cur.fetchall() or [])
+        if str(row[0] or "").strip()
+    ]
+
+
+def _build_egress_inferred_column_mappings(column_meta: list[ColumnMeta]) -> list[ColumnMappingRecord]:
+    mappings: list[ColumnMappingRecord] = []
+    for index, column in enumerate(column_meta, start=1):
+        target_type, column_warnings = _map_duckdb_column_to_mssql(column)
+        mappings.append(
+            ColumnMappingRecord(
+                ordinal_position=index,
+                source_column=str(column.name),
+                source_type=str(column.data_type or "UNKNOWN"),
+                target_column=str(column.name),
+                target_type=str(target_type or "UNKNOWN"),
+                connector_type="mssql",
+                mapping_mode="egress_inferred",
+                warnings=list(column_warnings or []),
+                lossy=None,
+            )
+        )
+    return mappings
+
+
+def _build_egress_remote_schema_column_mappings(
+    source_columns: list[ColumnMeta],
+    remote_columns: list[ColumnMeta],
+    *,
+    fallback_mappings: list[ColumnMappingRecord],
+) -> list[ColumnMappingRecord]:
+    remote_by_name = {str(column.name).lower(): column for column in remote_columns}
+    fallback_by_name = {str(mapping.source_column).lower(): mapping for mapping in fallback_mappings}
+    mappings: list[ColumnMappingRecord] = []
+    for index, source_column in enumerate(source_columns, start=1):
+        remote_column = remote_by_name.get(str(source_column.name).lower())
+        fallback = fallback_by_name.get(str(source_column.name).lower())
+        remote_target_type = str(remote_column.data_type if remote_column is not None else (fallback.target_type if fallback is not None else "UNKNOWN"))
+        fallback_target_type = str(fallback.target_type if fallback is not None else "")
+        warnings = (
+            list(fallback.warnings or [])
+            if remote_column is None or remote_target_type.upper() == fallback_target_type.upper()
+            else []
+        )
+        if remote_column is None:
+            warnings.append("Remote target column was not found during MSSQL schema inspection.")
+        mappings.append(
+            ColumnMappingRecord(
+                ordinal_position=index,
+                source_column=str(source_column.name),
+                source_type=str(source_column.data_type or "UNKNOWN"),
+                target_column=str(remote_column.name if remote_column is not None else source_column.name),
+                target_type=remote_target_type,
+                connector_type="mssql",
+                mapping_mode="egress_remote_schema",
+                warnings=warnings,
+                lossy=fallback.lossy if fallback is not None else None,
+            )
+        )
+    return mappings
+
+
 def _ensure_mssql_schema(cur: Any, schema_name: str) -> None:
     schema = str(schema_name or "").strip()
     if not schema or schema.lower() == "dbo":
@@ -634,6 +724,7 @@ def egress_query_from_duckdb(
     duck_interrupt_token = None
     target_interrupt_token = None
     warnings: list[str] = []
+    column_mappings: list[ColumnMappingRecord] = []
     row_count = 0
     schema_name, table_name, normalized_target_table = _normalize_target_relation(target_table)
     quoted_target_table = _quote_compound_identifier(normalized_target_table)
@@ -663,6 +754,7 @@ def egress_query_from_duckdb(
         column_meta = _duckdb_column_meta_from_cursor(duck_cur)
         if not column_meta:
             raise RuntimeError("DuckDB egress query did not return any columns.")
+        column_mappings = _build_egress_inferred_column_mappings(column_meta)
 
         target_conn = pyodbc.connect(_connection_string_from_request(target_request))
         if callable(on_interrupt_open):
@@ -705,6 +797,17 @@ def egress_query_from_duckdb(
             target_conn.commit()
         except Exception:
             pass
+        try:
+            remote_columns = _inspect_mssql_table_columns(target_cur, schema_name=schema_name, table_name=table_name)
+            if not remote_columns:
+                raise RuntimeError("No columns returned for remote target table.")
+            column_mappings = _build_egress_remote_schema_column_mappings(
+                column_meta,
+                remote_columns,
+                fallback_mappings=column_mappings,
+            )
+        except Exception as exc:
+            warnings.append(f"MSSQL remote schema inspection failed; using inferred egress column mappings. {exc}")
     finally:
         try:
             if duck_cur is not None:
@@ -735,6 +838,7 @@ def egress_query_from_duckdb(
         target_name=quoted_target_table,
         row_count=row_count,
         warnings=warnings,
+        column_mappings=column_mappings,
         created_at=time.time(),
         schema_changed=normalized_mode in {"replace", "create", "create_append"},
     )

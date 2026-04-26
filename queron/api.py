@@ -145,6 +145,7 @@ def _load_node_column_mappings(
     metadata_artifact_path: str | None = None,
     artifact_name: str | None,
     node_name: str | None,
+    node_kind: str | None = None,
 ) -> list[dict[str, Any]]:
     relation = str(artifact_name or "").strip()
     database_path = str(artifact_path or "").strip()
@@ -192,22 +193,24 @@ def _load_node_column_mappings(
             pass
 
     items: list[dict[str, Any]] = []
+    is_egress = str(node_kind or "").strip().endswith(".egress")
     for column in columns if isinstance(columns, list) else []:
         if not isinstance(column, dict):
             continue
         column_node_name = str(column.get("node_name") or "").strip()
         if node_name and column_node_name and column_node_name != str(node_name).strip():
             continue
+        target_type = column.get("target_type") if is_egress else column.get("type") or column.get("target_type")
         items.append(
             {
                 "target_column": str(column.get("name") or "").strip() or None,
-                "target_type": str(column.get("type") or column.get("target_type") or "").strip() or None,
+                "target_type": str(target_type or "").strip() or None,
                 "source_column": str(column.get("source_column") or "").strip() or None,
                 "source_type": str(column.get("source_type") or "").strip() or None,
                 "connector_type": str(column.get("connector_type") or "").strip() or None,
                 "mapping_mode": str(column.get("mapping_mode") or "").strip() or None,
                 "lossy": column.get("lossy"),
-                "warnings": list(column.get("mapping_warnings") or []),
+                "warnings": list(column.get("warnings") or column.get("mapping_warnings") or []),
             }
         )
     return items
@@ -1970,6 +1973,7 @@ def inspect_node(
                 metadata_artifact_path=str(resolved_artifact_path),
                 artifact_name=artifact_context["artifact_name"],
                 node_name=name,
+                node_kind=str(raw_node.get("kind") or "").strip(),
             )
             if selection == "node" and name == str(node_name).strip()
             else []

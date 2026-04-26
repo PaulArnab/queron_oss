@@ -1513,6 +1513,20 @@ class PipelineRuntime:
             default_source="connector",
         )
 
+    def _persist_egress_column_mappings(self, node: NodeSpec, local_artifact_name: str | None, response: Any) -> None:
+        column_mappings = list(getattr(response, "column_mappings", []) or [])
+        if not local_artifact_name or not column_mappings:
+            return
+        import duckdb_core
+
+        duckdb_core.record_ingest_column_mappings(
+            connection_id=self._ensure_duckdb_connection_id(),
+            target_table=str(local_artifact_name),
+            node_name=node.name,
+            node_kind=node.kind,
+            column_mappings=column_mappings,
+        )
+
     def execute_node(self, node: NodeSpec) -> NodeExecutionResult:
         target_label = str(node.target_table or "").strip() or "(check)"
         target_label = self._node_artifact_name(node) or target_label
@@ -1873,6 +1887,8 @@ class PipelineRuntime:
             on_interrupt_open=self.register_active_interruptor,
             on_interrupt_close=self.unregister_active_interruptor,
         )
+        self._persist_egress_column_mappings(node, local_artifact_name, response)
+        column_mappings = [mapping.model_dump() for mapping in list(getattr(response, "column_mappings", []) or [])]
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
             message=f"Wrote {response.row_count} row(s) to PostgreSQL target {response.target_name}.",
@@ -1891,7 +1907,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EGRESS_WARNING,
                 default_source="connector",
             ),
-            details={"mode": str(node.mode or "replace").lower()},
+            details={"mode": str(node.mode or "replace").lower(), "column_mappings": column_mappings},
         )
 
     def _execute_db2_egress(self, node: NodeSpec) -> NodeExecutionResult:
@@ -1919,6 +1935,8 @@ class PipelineRuntime:
             mode=str(node.mode or "replace"),
             artifact_table=local_artifact_name,
         )
+        self._persist_egress_column_mappings(node, local_artifact_name, response)
+        column_mappings = [mapping.model_dump() for mapping in list(getattr(response, "column_mappings", []) or [])]
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
             message=f"Wrote {response.row_count} row(s) to DB2 target {response.target_name}.",
@@ -1937,7 +1955,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EGRESS_WARNING,
                 default_source="connector",
             ),
-            details={"mode": str(node.mode or "replace").lower()},
+            details={"mode": str(node.mode or "replace").lower(), "column_mappings": column_mappings},
         )
 
     def _execute_mssql_egress(self, node: NodeSpec) -> NodeExecutionResult:
@@ -1968,6 +1986,8 @@ class PipelineRuntime:
             on_interrupt_open=self.register_active_interruptor,
             on_interrupt_close=self.unregister_active_interruptor,
         )
+        self._persist_egress_column_mappings(node, local_artifact_name, response)
+        column_mappings = [mapping.model_dump() for mapping in list(getattr(response, "column_mappings", []) or [])]
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
             message=f"Wrote {response.row_count} row(s) to MSSQL target {response.target_name}.",
@@ -1986,7 +2006,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EGRESS_WARNING,
                 default_source="connector",
             ),
-            details={"mode": str(node.mode or "replace").lower()},
+            details={"mode": str(node.mode or "replace").lower(), "column_mappings": column_mappings},
         )
 
     def _execute_mysql_egress(self, node: NodeSpec) -> NodeExecutionResult:
@@ -2017,6 +2037,8 @@ class PipelineRuntime:
             on_interrupt_open=self.register_active_interruptor,
             on_interrupt_close=self.unregister_active_interruptor,
         )
+        self._persist_egress_column_mappings(node, local_artifact_name, response)
+        column_mappings = [mapping.model_dump() for mapping in list(getattr(response, "column_mappings", []) or [])]
         self._log_event(
             code=LogCode.NODE_EGRESS_WRITTEN,
             message=f"Wrote {response.row_count} row(s) to MySQL target {response.target_name}.",
@@ -2035,7 +2057,7 @@ class PipelineRuntime:
                 default_code=WarningCode.EGRESS_WARNING,
                 default_source="connector",
             ),
-            details={"mode": str(node.mode or "replace").lower()},
+            details={"mode": str(node.mode or "replace").lower(), "column_mappings": column_mappings},
         )
 
     def _execute_postgres_lookup(self, node: NodeSpec) -> NodeExecutionResult:

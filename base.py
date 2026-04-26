@@ -119,6 +119,7 @@ class ConnectorEgressResponse(BaseModel):
     target_name: str
     row_count: int
     warnings: list[str] = Field(default_factory=list)
+    column_mappings: list[ColumnMappingRecord] = Field(default_factory=list)
     created_at: float
     schema_changed: bool = False
 

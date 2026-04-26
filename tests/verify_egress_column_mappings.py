@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+from base import ColumnMeta, ConnectorEgressResponse
+import db2_core
+import mssql_core
+import mysql_core
+import postgres_core
+
+
+def _assert_mapping_shape(mapping, *, connector: str, mode: str, target_type: str) -> None:
+    assert mapping.source_column == "amount"
+    assert mapping.source_type == "DECIMAL(38,10)"
+    assert mapping.target_column == "amount"
+    assert mapping.target_type == target_type
+    assert mapping.connector_type == connector
+    assert mapping.mapping_mode == mode
+
+
+def test_connector_response_accepts_column_mappings() -> None:
+    response = ConnectorEgressResponse(
+        target_name="target",
+        row_count=1,
+        column_mappings=[
+            postgres_core._build_egress_inferred_column_mappings(
+                [ColumnMeta(name="amount", data_type="DECIMAL(38,10)")]
+            )[0]
+        ],
+        created_at=1.0,
+    )
+    assert len(response.column_mappings) == 1
+
+
+def test_postgres_egress_mapping_modes() -> None:
+    source = [ColumnMeta(name="amount", data_type="DECIMAL(38,10)")]
+    inferred = postgres_core._build_egress_inferred_column_mappings(source)
+    remote = postgres_core._build_egress_remote_schema_column_mappings(
+        source,
+        [ColumnMeta(name="amount", data_type="numeric(12,2)")],
+        fallback_mappings=inferred,
+    )
+    _assert_mapping_shape(inferred[0], connector="postgres", mode="egress_inferred", target_type="NUMERIC(38,10)")
+    _assert_mapping_shape(remote[0], connector="postgres", mode="egress_remote_schema", target_type="numeric(12,2)")
+
+
+def test_db2_egress_mapping_modes() -> None:
+    source = [ColumnMeta(name="amount", data_type="DECIMAL(31,2)")]
+    inferred = db2_core._build_egress_inferred_column_mappings(source)
+    remote = db2_core._build_egress_remote_schema_column_mappings(
+        source,
+        [ColumnMeta(name="amount", data_type="DECIMAL(10,2)")],
+        fallback_mappings=inferred,
+    )
+    assert inferred[0].mapping_mode == "egress_inferred"
+    assert remote[0].mapping_mode == "egress_remote_schema"
+    assert remote[0].target_type == "DECIMAL(10,2)"
+
+
+def test_db2_remote_schema_clears_stale_fallback_warning() -> None:
+    source = [ColumnMeta(name="amount", data_type="DECIMAL(38,10)")]
+    fallback = db2_core._build_egress_inferred_column_mappings(source)
+    assert fallback[0].target_type == "DOUBLE"
+    assert fallback[0].warnings
+
+    remote = db2_core._build_egress_remote_schema_column_mappings(
+        source,
+        [ColumnMeta(name="amount", data_type="DECIMAL(18,2)")],
+        fallback_mappings=fallback,
+    )
+    assert remote[0].target_type == "DECIMAL(18,2)"
+    assert remote[0].warnings == []
+
+
+def test_mssql_egress_mapping_modes() -> None:
+    source = [ColumnMeta(name="amount", data_type="DECIMAL(38,10)")]
+    inferred = mssql_core._build_egress_inferred_column_mappings(source)
+    remote = mssql_core._build_egress_remote_schema_column_mappings(
+        source,
+        [ColumnMeta(name="amount", data_type="DECIMAL(12,2)")],
+        fallback_mappings=inferred,
+    )
+    _assert_mapping_shape(inferred[0], connector="mssql", mode="egress_inferred", target_type="DECIMAL(38,10)")
+    _assert_mapping_shape(remote[0], connector="mssql", mode="egress_remote_schema", target_type="DECIMAL(12,2)")
+
+
+def test_mysql_egress_mapping_modes() -> None:
+    source = [ColumnMeta(name="amount", data_type="DECIMAL(38,10)")]
+    inferred = mysql_core._build_egress_inferred_column_mappings(source)
+    remote = mysql_core._build_egress_remote_schema_column_mappings(
+        source,
+        [ColumnMeta(name="amount", data_type="decimal(12,2)")],
+        fallback_mappings=inferred,
+    )
+    _assert_mapping_shape(inferred[0], connector="mysql", mode="egress_inferred", target_type="DECIMAL(38,10)")
+    _assert_mapping_shape(remote[0], connector="mysql", mode="egress_remote_schema", target_type="decimal(12,2)")
+
+
+if __name__ == "__main__":
+    test_connector_response_accepts_column_mappings()
+    test_postgres_egress_mapping_modes()
+    test_db2_egress_mapping_modes()
+    test_db2_remote_schema_clears_stale_fallback_warning()
+    test_mssql_egress_mapping_modes()
+    test_mysql_egress_mapping_modes()
