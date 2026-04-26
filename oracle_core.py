@@ -332,7 +332,11 @@ def _map_duckdb_column_to_oracle(column: ColumnMeta) -> tuple[str, list[str]]:
             return f"VARCHAR2({max(length, 1)})", warnings
         warnings.append(f"DuckDB VARCHAR({length}) exceeds Oracle VARCHAR2 max length 4000 and was widened to CLOB.")
         return "CLOB", warnings
-    if normalized in {"VARCHAR", "JSON", "UUID"}:
+    if normalized == "VARCHAR":
+        return "VARCHAR2(4000)", warnings
+    if normalized == "UUID":
+        return "VARCHAR2(36)", warnings
+    if normalized == "JSON":
         return "CLOB", warnings
     warnings.append(f"DuckDB type '{normalized}' was widened to Oracle CLOB.")
     return "CLOB", warnings

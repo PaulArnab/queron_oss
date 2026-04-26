@@ -1847,6 +1847,87 @@ def final():
             self.assertEqual(success_tables, [("ext",), ("final",), ("seed",)])
             self.assertEqual(main_tables, [])
 
+    def test_failed_run_archive_includes_failed_node_artifacts(self):
+        import duckdb_core
+        from queron import api as queron_api
+        from queron.runtime_models import NodeRunRecord, PipelineRunRecord
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_path = pathlib.Path(tmpdir) / "artifacts.duckdb"
+            connection_id = duckdb_core.connect(duckdb_core.DuckDbConnectRequest(database=str(artifact_path))).connection_id
+            run_id = "failedrun123"
+            duckdb_core.record_pipeline_run(
+                connection_id=connection_id,
+                record=PipelineRunRecord(
+                    run_id=run_id,
+                    pipeline_id="archive_failed_artifacts",
+                    artifact_path=str(artifact_path),
+                    status="failed",
+                    is_final=False,
+                ),
+            )
+            duckdb_core.record_node_runs(
+                connection_id=connection_id,
+                records=[
+                    NodeRunRecord(
+                        node_run_id="node-seed",
+                        run_id=run_id,
+                        node_name="seed",
+                        node_kind="model.sql",
+                        artifact_name="main.seed",
+                        status="complete",
+                    ),
+                    NodeRunRecord(
+                        node_run_id="node-partial",
+                        run_id=run_id,
+                        node_name="partial",
+                        node_kind="model.sql",
+                        artifact_name="main.partial",
+                        status="failed",
+                        error_message="failed after local artifact creation",
+                    ),
+                ],
+            )
+            conn = load_duckdb().connect(str(artifact_path))
+            try:
+                conn.execute('CREATE TABLE "main"."seed" AS SELECT 1 AS id')
+                conn.execute('CREATE TABLE "main"."partial" AS SELECT 11 AS id')
+            finally:
+                conn.close()
+
+            targets = queron_api._local_artifact_tables_for_run(artifact_path=artifact_path, run_id=run_id)
+            self.assertEqual(set(targets), {"main.seed", "main.partial"})
+            archived = queron_api._archive_run_outputs(
+                artifact_path=artifact_path,
+                run_id=run_id,
+                target_tables=targets,
+            )
+
+            archived_db = pathlib.Path(duckdb_core.archived_artifact_path_for_run(database_path=artifact_path, run_id=run_id))
+            self.assertTrue(archived_db.exists())
+            self.assertEqual(archived, {"main.seed": "run_failedrun123.seed", "main.partial": "run_failedrun123.partial"})
+
+            active_conn = load_duckdb().connect(str(artifact_path))
+            archive_conn = load_duckdb().connect(str(archived_db))
+            try:
+                active_tables = active_conn.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'main'
+                    ORDER BY table_name
+                    """
+                ).fetchall()
+                archived_rows = archive_conn.execute(
+                    'SELECT id FROM "run_failedrun123"."partial"'
+                ).fetchall()
+            finally:
+                active_conn.close()
+                archive_conn.close()
+
+            self.assertEqual(active_tables, [])
+            self.assertEqual(archived_rows, [(11,)])
+
     def test_failed_run_persists_skipped_node_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)

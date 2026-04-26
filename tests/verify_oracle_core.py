@@ -5,6 +5,7 @@ import socket
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -15,7 +16,9 @@ import duckdb
 import base
 import duckdb_core
 import oracle_core
-from queron.bindings import OracleBinding
+from queron.adapters import build_oracle_request_payload
+from queron.bindings import OracleBinding, resolve_runtime_binding_payload
+from queron.config import resolve_connection_binding
 from queron.runtime import PipelineRuntime
 from queron.specs import NodeSpec, PipelineSpec
 
@@ -29,6 +32,93 @@ def _oracle_available() -> bool:
 
 
 class VerifyOracleCoreTests(unittest.TestCase):
+    def test_runtime_binding_keeps_oracle_type(self):
+        payload = resolve_runtime_binding_payload(
+            "ORACLE_LOCAL",
+            {
+                "type": "oracle",
+                "dsn": "localhost:51521/FREEPDB1",
+                "username": "loom_user",
+            },
+        )
+
+        self.assertEqual(payload["type"], "oracle")
+        self.assertEqual(payload["dsn"], "localhost:51521/FREEPDB1")
+
+    def test_oracle_binding_resolves_native_fields(self):
+        payload = OracleBinding(
+            host="localhost",
+            port=51521,
+            service_name="FREEPDB1",
+            sid="FREE",
+            dsn="localhost:51521/FREEPDB1",
+            tns_alias="QUERON_ORACLE_LOCAL",
+            username="loom_user",
+            password="secret",
+            config_dir="docker/oracle_auth/tns",
+            wallet_location="wallet",
+            wallet_password="wallet-secret",
+            thick_mode=True,
+            instant_client_dir="instant-client",
+            connect_timeout_seconds=3,
+        ).resolve_config("ORACLE_LOCAL")
+
+        self.assertEqual(payload["type"], "oracle")
+        self.assertEqual(payload["service_name"], "FREEPDB1")
+        self.assertEqual(payload["tns_alias"], "QUERON_ORACLE_LOCAL")
+        self.assertEqual(payload["wallet_location"], "wallet")
+        self.assertEqual(payload["thick_mode"], True)
+        self.assertEqual(payload["instant_client_dir"], "instant-client")
+        self.assertEqual(payload["connect_timeout_seconds"], 3)
+
+    def test_connections_yaml_oracle_password_env(self):
+        with patch.dict("os.environ", {"QUERON_ORACLE_PASSWORD": "EnvOraclePass123!"}):
+            payload = resolve_connection_binding(
+                "ORACLE_ENV",
+                {
+                    "connections": {
+                        "ORACLE_ENV": {
+                            "type": "oracle",
+                            "host": "localhost",
+                            "port": 51521,
+                            "service_name": "FREEPDB1",
+                            "username": "env_user",
+                            "password_env": "QUERON_ORACLE_PASSWORD",
+                        }
+                    }
+                },
+            )
+
+        self.assertEqual(payload["type"], "oracle")
+        self.assertEqual(payload["password"], "EnvOraclePass123!")
+
+    def test_oracle_adapter_payload_preserves_auth_shapes(self):
+        payload = build_oracle_request_payload(
+            {
+                "type": "oracle",
+                "name": "Oracle Local",
+                "host": "localhost",
+                "port": 51521,
+                "service_name": "FREEPDB1",
+                "dsn": "localhost:51521/FREEPDB1",
+                "tns_alias": "QUERON_ORACLE_LOCAL",
+                "config_dir": "docker/oracle_auth/tns",
+                "wallet_location": "wallet",
+                "wallet_password": "wallet-secret",
+                "thick_mode": True,
+                "instant_client_dir": "instant-client",
+                "connect_timeout_seconds": 3,
+            },
+            "ORACLE_LOCAL",
+        )
+
+        self.assertEqual(payload["name"], "Oracle Local")
+        self.assertEqual(payload["service_name"], "FREEPDB1")
+        self.assertEqual(payload["dsn"], "localhost:51521/FREEPDB1")
+        self.assertEqual(payload["tns_alias"], "QUERON_ORACLE_LOCAL")
+        self.assertEqual(payload["wallet_location"], "wallet")
+        self.assertEqual(payload["save_password"], False)
+
     def test_basic_config_resolution_uses_service_name_dsn(self):
         cfg = oracle_core._resolved_oracle_connect_config(
             base.OracleConnectRequest(
@@ -42,6 +132,18 @@ class VerifyOracleCoreTests(unittest.TestCase):
 
         self.assertEqual(cfg["auth_mode"], "basic")
         self.assertIn("SERVICE_NAME=FREEPDB1", cfg["dsn"])
+
+    def test_url_config_resolution(self):
+        cfg = oracle_core._resolved_oracle_connect_config(
+            base.OracleConnectRequest(url="oracle://uri_user:UriOraclePass123!@localhost:51521/FREEPDB1")
+        )
+
+        self.assertEqual(cfg["auth_mode"], "dsn")
+        self.assertEqual(cfg["host"], "localhost")
+        self.assertEqual(cfg["port"], 51521)
+        self.assertEqual(cfg["service_name"], "FREEPDB1")
+        self.assertEqual(cfg["username"], "uri_user")
+        self.assertEqual(cfg["password"], "UriOraclePass123!")
 
     def test_tns_config_resolution_uses_alias_and_config_dir(self):
         cfg = oracle_core._resolved_oracle_connect_config(
@@ -68,7 +170,7 @@ class VerifyOracleCoreTests(unittest.TestCase):
         )
 
         self.assertIn('"POLICY_ID" NUMBER(10)', create_sql)
-        self.assertIn('"POLICY_NUMBER" CLOB', create_sql)
+        self.assertIn('"POLICY_NUMBER" VARCHAR2(4000)', create_sql)
         self.assertIn('"PREMIUM_AMOUNT" NUMBER(18,2)', create_sql)
         self.assertEqual(warnings, [])
 

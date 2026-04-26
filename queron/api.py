@@ -432,7 +432,7 @@ def _archive_run_outputs(
     )
 
 
-def _completed_artifact_tables_for_run(
+def _local_artifact_tables_for_run(
     *,
     artifact_path: str | Path,
     run_id: str,
@@ -449,15 +449,20 @@ def _completed_artifact_tables_for_run(
     seen: set[str] = set()
     target_tables: list[str] = []
     for item in node_runs:
-        status = str(item.get("status") or "").strip().lower()
-        if status not in {"complete", "complete_with_warnings"}:
-            continue
         artifact_name = str(item.get("artifact_name") or "").strip()
         if not artifact_name or artifact_name in seen:
             continue
         seen.add(artifact_name)
         target_tables.append(artifact_name)
     return target_tables
+
+
+def _completed_artifact_tables_for_run(
+    *,
+    artifact_path: str | Path,
+    run_id: str,
+) -> list[str]:
+    return _local_artifact_tables_for_run(artifact_path=artifact_path, run_id=run_id)
 
 
 def _reconcile_orphaned_running_runs(
@@ -786,7 +791,7 @@ def _compile_pipeline_impl(
             _archive_run_outputs(
                 artifact_path=resolved_artifact_path,
                 run_id=latest_run_id,
-                target_tables=_completed_artifact_tables_for_run(
+                target_tables=_local_artifact_tables_for_run(
                     artifact_path=resolved_artifact_path,
                     run_id=latest_run_id,
                 ),
@@ -806,7 +811,7 @@ def _compile_pipeline_impl(
             _archive_run_outputs(
                 artifact_path=resolved_artifact_path,
                 run_id=latest_run_id,
-                target_tables=_completed_artifact_tables_for_run(
+                target_tables=_local_artifact_tables_for_run(
                     artifact_path=resolved_artifact_path,
                     run_id=latest_run_id,
                 ),
@@ -2697,7 +2702,7 @@ def _run_pipeline_impl(
             _archive_run_outputs(
                 artifact_path=resolved_artifact_path,
                 run_id=latest_run_id,
-                target_tables=_completed_artifact_tables_for_run(
+                target_tables=_local_artifact_tables_for_run(
                     artifact_path=resolved_artifact_path,
                     run_id=latest_run_id,
                 ),
@@ -2715,7 +2720,7 @@ def _run_pipeline_impl(
             _archive_run_outputs(
                 artifact_path=resolved_artifact_path,
                 run_id=latest_run_id,
-                target_tables=_completed_artifact_tables_for_run(
+                target_tables=_local_artifact_tables_for_run(
                     artifact_path=resolved_artifact_path,
                     run_id=latest_run_id,
                 ),
