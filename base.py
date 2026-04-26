@@ -85,6 +85,24 @@ class MysqlConnectRequest(BaseModel):
     save_password: bool = True
 
 
+class MariaDbConnectRequest(BaseModel):
+    connection_id: str | None = None
+    name: str | None = None
+    host: str = "localhost"
+    port: int = 3306
+    database: str = "mariadb"
+    username: str | None = None
+    password: str | None = None
+    url: str | None = None
+    auth_mode: str | None = None
+    ssl_ca: str | None = None
+    ssl_cert: str | None = None
+    ssl_key: str | None = None
+    unix_socket: str | None = None
+    connect_timeout_seconds: int | None = None
+    save_password: bool = True
+
+
 class DuckDbConnectRequest(BaseModel):
     name: str | None = None
     database: str = ":memory:"

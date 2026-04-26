@@ -13,6 +13,7 @@ setup(
         "duckdb_core",
         "duckdb_driver",
         "mssql_core",
+        "mariadb_core",
         "mysql_core",
         "postgres",
         "postgres_core",

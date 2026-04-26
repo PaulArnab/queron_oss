@@ -155,3 +155,49 @@ def ensure_mysql_binding(binding: dict[str, Any], config_name: str) -> str:
     }
     mysql_core.connect(MysqlConnectRequest(**payload))
     return connection_id
+
+
+def build_mariadb_request_payload(binding: dict[str, Any], config_name: str) -> dict[str, Any]:
+    return {
+        "name": str(binding.get("name") or config_name or "mariadb"),
+        "host": binding.get("host", "localhost"),
+        "port": binding.get("port", 3306),
+        "database": binding.get("database", "mariadb"),
+        "username": binding.get("username"),
+        "password": binding.get("password"),
+        "url": binding.get("url") or binding.get("uri"),
+        "auth_mode": binding.get("auth_mode"),
+        "ssl_ca": binding.get("ssl_ca"),
+        "ssl_cert": binding.get("ssl_cert"),
+        "ssl_key": binding.get("ssl_key"),
+        "unix_socket": binding.get("unix_socket"),
+        "connect_timeout_seconds": binding.get("connect_timeout_seconds"),
+        "save_password": False,
+    }
+
+
+def ensure_mariadb_binding(binding: dict[str, Any], config_name: str) -> str:
+    try:
+        import mariadb_core
+    except ImportError:
+        import importlib.util
+        from pathlib import Path
+
+        module_path = Path(__file__).resolve().parents[1] / "mariadb_core.py"
+        spec = importlib.util.spec_from_file_location("mariadb_core", module_path)
+        if spec is None or spec.loader is None:
+            raise
+        mariadb_core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mariadb_core)
+    from base import MariaDbConnectRequest
+
+    connection_id = str(binding.get("connection_id") or "").strip() or runtime_connection_id("mariadb", config_name, binding)
+    if connection_id in mariadb_core._connections:
+        return connection_id
+
+    payload = {
+        "connection_id": connection_id,
+        **build_mariadb_request_payload(binding, config_name),
+    }
+    mariadb_core.connect(MariaDbConnectRequest(**payload))
+    return connection_id

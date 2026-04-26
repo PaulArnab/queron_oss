@@ -15,8 +15,10 @@ def normalize_binding_type(value: str | None) -> str:
         return "db2"
     if raw in {"mssql", "sqlserver", "sql_server"}:
         return "mssql"
-    if raw in {"mysql", "mariadb"}:
+    if raw == "mysql":
         return "mysql"
+    if raw == "mariadb":
+        return "mariadb"
     raise RuntimeError(f"Unsupported runtime binding type '{value}'.")
 
 
@@ -307,6 +309,49 @@ class MysqlBinding(RuntimeBinding):
     ) -> None:
         super().__init__(
             binding_type="mysql",
+            config_factory=config_factory,
+            name=name,
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            url=url or uri,
+            auth_mode=auth_mode,
+            extras={
+                "ssl_ca": ssl_ca,
+                "ssl_cert": ssl_cert,
+                "ssl_key": ssl_key,
+                "unix_socket": unix_socket,
+                "connect_timeout_seconds": connect_timeout_seconds,
+                **extras,
+            },
+        )
+
+
+class MariaDbBinding(RuntimeBinding):
+    def __init__(
+        self,
+        *,
+        config_factory: ConfigFactory | None = None,
+        name: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+        database: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        url: str | None = None,
+        uri: str | None = None,
+        auth_mode: str | None = None,
+        ssl_ca: str | None = None,
+        ssl_cert: str | None = None,
+        ssl_key: str | None = None,
+        unix_socket: str | None = None,
+        connect_timeout_seconds: int | None = None,
+        **extras: Any,
+    ) -> None:
+        super().__init__(
+            binding_type="mariadb",
             config_factory=config_factory,
             name=name,
             host=host,

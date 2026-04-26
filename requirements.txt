@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 psycopg[binary]
 pymysql
+mariadb
 pyarrow
 ibm-db
 duckdb

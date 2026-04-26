@@ -149,7 +149,7 @@ class VerifyMysqlAuthConfigTests(unittest.TestCase):
         payload = resolve_runtime_binding_payload(
             "MYSQL_LOCAL",
             {
-                "type": "mariadb",
+                "type": "mysql",
                 "uri": "mysql://user:pass@localhost:53307/LOOMDB",
                 "ssl_ca": "ca.crt",
                 "ssl_cert": "client.crt",

@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import pathlib
+import sys
+
+BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
 from base import ColumnMeta, ConnectorEgressResponse
 import db2_core
+import mariadb_core
 import mssql_core
 import mysql_core
 import postgres_core
@@ -94,6 +102,18 @@ def test_mysql_egress_mapping_modes() -> None:
     _assert_mapping_shape(remote[0], connector="mysql", mode="egress_remote_schema", target_type="decimal(12,2)")
 
 
+def test_mariadb_egress_mapping_modes() -> None:
+    source = [ColumnMeta(name="amount", data_type="DECIMAL(38,10)")]
+    inferred = mariadb_core._build_egress_inferred_column_mappings(source)
+    remote = mariadb_core._build_egress_remote_schema_column_mappings(
+        source,
+        [ColumnMeta(name="amount", data_type="decimal(12,2)")],
+        fallback_mappings=inferred,
+    )
+    _assert_mapping_shape(inferred[0], connector="mariadb", mode="egress_inferred", target_type="DECIMAL(38,10)")
+    _assert_mapping_shape(remote[0], connector="mariadb", mode="egress_remote_schema", target_type="decimal(12,2)")
+
+
 if __name__ == "__main__":
     test_connector_response_accepts_column_mappings()
     test_postgres_egress_mapping_modes()
@@ -101,3 +121,4 @@ if __name__ == "__main__":
     test_db2_remote_schema_clears_stale_fallback_warning()
     test_mssql_egress_mapping_modes()
     test_mysql_egress_mapping_modes()
+    test_mariadb_egress_mapping_modes()
