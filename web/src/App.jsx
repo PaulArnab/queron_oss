@@ -20,6 +20,9 @@ ModuleRegistry.registerModules([AllCommunityModule]);
 
 const NODE_WIDTH = 280;
 const NODE_HEIGHT = 142;
+const GRAPH_RANK_SEP = 92;
+const GRAPH_NODE_SEP = 112;
+const GRAPH_MAX_NODES_PER_RANK = 5;
 const FIT_OPTIONS = { padding: 0.18, minZoom: 0.2, maxZoom: 1.2 };
 const RUN_SNAPSHOT = {
   runId: "7137cc46-5791-435f-a797-dde698549c1b",
@@ -171,12 +174,25 @@ function normalizeTone(kind, nodeId) {
   if (nodeId.startsWith("source:") || lowered === "source") return "source";
   if (lowered.includes("file.ingress") || lowered.includes("csv.ingress") || lowered.includes("jsonl.ingress") || lowered.includes("parquet.ingress")) return "file";
   if (lowered.includes("file.egress") || lowered.includes("csv.egress") || lowered.includes("jsonl.egress") || lowered.includes("parquet.egress")) return "fileEgress";
+  if (lowered.includes(".lookup")) return "lookup";
   if (lowered.includes("python")) return "python";
   if (lowered.includes("ingress")) return "ingress";
   if (lowered.includes("check")) return "check";
   if (lowered.includes("egress") || lowered.includes("export")) return "egress";
   if (lowered.includes("model") || lowered.includes("sql")) return "model";
   return "other";
+}
+
+function isLookupKind(kind) {
+  return String(kind || "").trim().toLowerCase().includes(".lookup");
+}
+
+function configTextForKind(kind) {
+  const lowered = String(kind || "").trim().toLowerCase();
+  if (lowered.includes(".lookup")) return "lookup";
+  if (lowered.includes("egress")) return "delivery";
+  if (lowered.includes("check")) return "validation";
+  return "pipeline";
 }
 
 function isLocalArtifactKind(kind) {
@@ -190,6 +206,7 @@ function toneClasses(tone) {
   if (tone === "file") return { border: "border-slate-300", bg: "bg-cyan-50/80", badge: "bg-cyan-100 text-cyan-700", meta: "text-cyan-700/80" };
   if (tone === "fileEgress") return { border: "border-slate-300", bg: "bg-teal-50/80", badge: "bg-teal-100 text-teal-700", meta: "text-teal-700/80" };
   if (tone === "python") return { border: "border-slate-300", bg: "bg-green-50/80", badge: "bg-green-100 text-green-700", meta: "text-green-700/80" };
+  if (tone === "lookup") return { border: "border-slate-300", bg: "bg-orange-50/80", badge: "bg-orange-100 text-orange-700", meta: "text-orange-700/80" };
   if (tone === "check") return { border: "border-slate-300", bg: "bg-slate-50", badge: "bg-slate-200 text-slate-700", meta: "text-slate-500" };
   if (tone === "egress") return { border: "border-slate-300", bg: "bg-violet-50/80", badge: "bg-violet-100 text-violet-700", meta: "text-violet-700/80" };
   if (tone === "model") return { border: "border-slate-300", bg: "bg-emerald-50/80", badge: "bg-emerald-100 text-emerald-700", meta: "text-emerald-700/80" };
@@ -262,7 +279,7 @@ function buildFlowNodeData(id, details) {
     kind: details.kind,
     tone: normalizeTone(details.kind, id),
     relationText: details.artifact || null,
-    configText: details.kind.includes("egress") ? "delivery" : details.kind.includes("check") ? "validation" : "pipeline",
+    configText: configTextForKind(details.kind),
     runtimeTone: runtimeTone(status, warningCount),
     runtimeLabel: runtimeLabel(status, warningCount),
     runtimeHint: details.rows !== null && details.rows !== undefined ? `${formatCount(details.rows)} rows` : (details.artifact || null),
@@ -273,36 +290,71 @@ function buildFlowNodeData(id, details) {
 
 function buildFlowEdge(source, target) {
   const details = NODE_DETAILS[target];
+  const sourceDetails = NODE_DETAILS[source];
   const warningCount = Array.isArray(details?.warnings) ? details.warnings.length : 0;
   const tone = runtimeTone(nodeStatusForDetails(details), warningCount);
   const stroke = edgeStroke(tone);
+  const isLookupEdge = isLookupKind(sourceDetails?.kind) || isLookupKind(details?.kind);
+  const lookupSource = isLookupKind(sourceDetails?.kind);
+  const lookupTarget = isLookupKind(details?.kind);
   return {
     id: `edge-${source}-${target}`,
     source,
     target,
-    type: "step",
+    type: "bezier",
     markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 18, height: 18 },
     animated: false,
-    style: { stroke, strokeWidth: 1.8 },
-    pathOptions: { borderRadius: 14, offset: 18 },
+    style: { stroke, strokeWidth: isLookupEdge ? 2 : 1.8, strokeDasharray: isLookupEdge ? "2 5" : undefined },
+    pathOptions: { curvature: 0.25 },
+    data: { lookupSource, lookupTarget },
     selectable: false,
     focusable: false,
   };
 }
 
-function layoutElements(nodes, edges) {
+function edgeKey(source, target) {
+  return `${source}-->${target}`;
+}
+
+function layoutElements(nodes, edges, layoutEdges = null) {
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: "LR", ranksep: 96, nodesep: 44, marginx: 24, marginy: 24 });
+  graph.setGraph({ rankdir: "LR", ranksep: GRAPH_RANK_SEP, nodesep: GRAPH_NODE_SEP, marginx: 24, marginy: 12 });
   nodes.forEach((node) => graph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT }));
-  edges.forEach((edge) => graph.setEdge(edge.source, edge.target));
+  const renderedEdgesByKey = new Map(edges.map((edge) => [edgeKey(edge.source, edge.target), edge]));
+  const layoutPairs = Array.isArray(layoutEdges) && layoutEdges.length
+    ? layoutEdges
+    : edges.map((edge) => [edge.source, edge.target]);
+  const appliedLayoutEdges = new Set();
+  layoutPairs.forEach((pair) => {
+    if (!Array.isArray(pair) || pair.length < 2) return;
+    const source = String(pair[0] || "").trim();
+    const target = String(pair[1] || "").trim();
+    if (!source || !target || source === target) return;
+    const key = edgeKey(source, target);
+    if (appliedLayoutEdges.has(key)) return;
+    appliedLayoutEdges.add(key);
+    const renderedEdge = renderedEdgesByKey.get(key);
+    graph.setEdge(source, target, {
+      minlen: 1,
+      weight: renderedEdge
+        ? (renderedEdge.data?.lookupSource || renderedEdge.data?.lookupTarget ? 8 : 1)
+        : 0.05,
+    });
+  });
+  edges.forEach((edge) => {
+    const key = edgeKey(edge.source, edge.target);
+    if (appliedLayoutEdges.has(key)) return;
+    graph.setEdge(edge.source, edge.target, { minlen: 1, weight: 1 });
+  });
   dagre.layout(graph);
 
-  const positions = new Map();
+  const dagrePositions = new Map();
   nodes.forEach((node) => {
     const placed = graph.node(node.id);
-    positions.set(node.id, { x: placed.x, y: placed.y });
+    dagrePositions.set(node.id, { x: placed.x, y: placed.y });
   });
+  const positions = compactStaggeredRankPositions(nodes, dagrePositions);
 
   let minLeft = Number.POSITIVE_INFINITY;
   let minTop = Number.POSITIVE_INFINITY;
@@ -329,6 +381,45 @@ function layoutElements(nodes, edges) {
     }),
     edges,
   };
+}
+
+function compactStaggeredRankPositions(nodes, dagrePositions) {
+  const placedNodes = nodes
+    .map((node) => ({ id: node.id, ...(dagrePositions.get(node.id) || { x: 0, y: 0 }) }))
+    .sort((left, right) => left.x - right.x || left.y - right.y || String(left.id).localeCompare(String(right.id)));
+  const dagreRanks = [];
+  placedNodes.forEach((node) => {
+    const current = dagreRanks[dagreRanks.length - 1];
+    if (current && Math.abs(current.x - node.x) < 8) {
+      current.nodes.push(node);
+      return;
+    }
+    dagreRanks.push({ x: node.x, nodes: [node] });
+  });
+
+  const ranks = [];
+  dagreRanks.forEach((rank) => {
+    const sortedNodes = [...rank.nodes].sort((left, right) => left.y - right.y || String(left.id).localeCompare(String(right.id)));
+    for (let index = 0; index < sortedNodes.length; index += GRAPH_MAX_NODES_PER_RANK) {
+      ranks.push(sortedNodes.slice(index, index + GRAPH_MAX_NODES_PER_RANK));
+    }
+  });
+
+  const columnGap = NODE_WIDTH + GRAPH_RANK_SEP;
+  const rowGap = NODE_HEIGHT + GRAPH_NODE_SEP;
+  const maxRows = Math.max(1, ...ranks.map((rank) => rank.length));
+  const positions = new Map();
+  ranks.forEach((rank, rankIndex) => {
+    const centerOffset = ((maxRows - rank.length) * rowGap) / 2;
+    const staggerOffset = (rankIndex % 4) * (rowGap / 4);
+    rank.forEach((node, nodeIndex) => {
+      positions.set(node.id, {
+        x: NODE_WIDTH / 2 + rankIndex * columnGap,
+        y: NODE_HEIGHT / 2 + centerOffset + staggerOffset + nodeIndex * rowGap,
+      });
+    });
+  });
+  return positions;
 }
 
 function timeLabel(startedAt, finishedAt) {
@@ -469,17 +560,18 @@ function buildFlowNodeDataFromApi(node) {
   const kind = String(node?.kind || "");
   const status = String(node?.node_run_status || node?.current_state || "ready");
   const artifactName = node?.artifact_name || null;
+  const lookupTable = node?.lookup_table || null;
   const rows = node?.row_count_out ?? null;
   const runtimeVarNames = Array.isArray(node?.runtime_var_names) ? node.runtime_var_names : [];
   return {
-    label: titleForNode(id, { artifact: artifactName, kind }),
-    title: titleForNode(id, { artifact: artifactName, kind }),
+    label: titleForNode(id, { artifact: lookupTable || artifactName, kind }),
+    title: titleForNode(id, { artifact: lookupTable || artifactName, kind }),
     nodeName: id,
     id,
     kind,
     tone: normalizeTone(kind, id),
-    relationText: artifactName,
-    configText: kind.includes("egress") ? "delivery" : kind.includes("check") ? "validation" : "pipeline",
+    relationText: lookupTable || artifactName,
+    configText: configTextForKind(kind),
     runtimeTone: runtimeTone(status, 0),
     runtimeLabel: runtimeLabel(status, 0),
     runtimeHint: artifactName || null,
@@ -491,19 +583,79 @@ function buildFlowNodeDataFromApi(node) {
 
 function buildFlowEdgeFromApi(source, target, nodeById) {
   const details = nodeById.get(target);
+  const sourceDetails = nodeById.get(source);
   const status = String(details?.node_run_status || details?.current_state || "ready");
   const stroke = edgeStroke(runtimeTone(status, 0));
+  const isLookupEdge = isLookupKind(sourceDetails?.kind) || isLookupKind(details?.kind);
+  const lookupSource = isLookupKind(sourceDetails?.kind);
+  const lookupTarget = isLookupKind(details?.kind);
   return {
     id: `edge-${source}-${target}`,
     source,
     target,
-    type: "step",
+    type: "bezier",
     markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 18, height: 18 },
     animated: false,
-    style: { stroke, strokeWidth: 1.8 },
-    pathOptions: { borderRadius: 14, offset: 18 },
+    style: { stroke, strokeWidth: isLookupEdge ? 2 : 1.8, strokeDasharray: isLookupEdge ? "2 5" : undefined },
+    pathOptions: { curvature: 0.25 },
+    data: { lookupSource, lookupTarget },
     selectable: false,
     focusable: false,
+  };
+}
+
+function buildLineageState(selectedNodeId, nodeById) {
+  const selectedNode = nodeById.get(String(selectedNodeId || ""));
+  if (!selectedNode) {
+    return {
+      active: false,
+      upstream: new Set(),
+      downstream: new Set(),
+      lineage: new Set(),
+    };
+  }
+  const upstream = new Set((Array.isArray(selectedNode.transitive_dependencies) ? selectedNode.transitive_dependencies : []).map(String));
+  const downstream = new Set((Array.isArray(selectedNode.transitive_dependents) ? selectedNode.transitive_dependents : []).map(String));
+  const lineage = new Set([String(selectedNodeId), ...upstream, ...downstream]);
+  return { active: true, upstream, downstream, lineage };
+}
+
+function nodeLineageRole(nodeId, selectedNodeId, lineageState) {
+  const id = String(nodeId || "");
+  if (!lineageState.active) return "none";
+  if (id === String(selectedNodeId || "")) return "selected";
+  if (lineageState.upstream.has(id)) return "upstream";
+  if (lineageState.downstream.has(id)) return "downstream";
+  return "unrelated";
+}
+
+function edgeLineageRole(edge, selectedNodeId, lineageState) {
+  if (!lineageState.active) return "none";
+  const source = String(edge.source || "");
+  const target = String(edge.target || "");
+  const selected = String(selectedNodeId || "");
+  if (!lineageState.lineage.has(source) || !lineageState.lineage.has(target)) return "unrelated";
+  if (lineageState.upstream.has(source) && (lineageState.upstream.has(target) || target === selected)) return "upstream";
+  if ((source === selected || lineageState.downstream.has(source)) && lineageState.downstream.has(target)) return "downstream";
+  return "lineage";
+}
+
+function applyLineageToEdge(edge, role) {
+  if (role === "none") return edge;
+  if (role === "unrelated") {
+    return {
+      ...edge,
+      style: { ...edge.style, opacity: 0.16 },
+      markerEnd: { ...edge.markerEnd, color: edge.markerEnd?.color || edge.style?.stroke },
+    };
+  }
+  return {
+    ...edge,
+    zIndex: 20,
+    style: {
+      ...edge.style,
+      opacity: 1,
+    },
   };
 }
 
@@ -814,6 +966,7 @@ function FlowCardNode({ data, selected }) {
     model: { accent: "#efb247", tint: "#fff6e7", icon: "#7c5710", badgeBg: "#fdebc8", badgeText: "#7c5710" },
     check: { accent: "#f39e8d", tint: "#fff0ec", icon: "#8a3e31", badgeBg: "#ffe0d9", badgeText: "#8a3e31" },
     python: { accent: "#b79df6", tint: "#f3edff", icon: "#5c45a5", badgeBg: "#e6ddff", badgeText: "#5c45a5" },
+    lookup: { accent: "#f28c38", tint: "#fff4e8", icon: "#8a4a12", badgeBg: "#ffe4c7", badgeText: "#8a4a12" },
     egress: { accent: "#9ecbad", tint: "#eef8f1", icon: "#44725a", badgeBg: "#dff0e5", badgeText: "#44725a" },
     other: { accent: "#b8bdc7", tint: "#f2f4f7", icon: "#58606f", badgeBg: "#e7ebf0", badgeText: "#58606f" },
   }[data.tone] || { accent: "#b8bdc7", tint: "#f2f4f7", icon: "#58606f", badgeBg: "#e7ebf0", badgeText: "#58606f" };
@@ -827,12 +980,27 @@ function FlowCardNode({ data, selected }) {
     ready: { bg: "#eceef2", text: "#5f6673" },
   }[data.runtimeTone] || { bg: "#eceef2", text: "#5f6673" };
   const isDecisionNode = data.tone === "check";
+  const dimmed = data.lineageRole === "unrelated";
+  const lineageBorder =
+    data.lineageRole === "selected"
+      ? "#6b7280"
+      : data.lineageRole === "upstream"
+        ? toneStyles.accent
+        : data.lineageRole === "downstream"
+          ? toneStyles.accent
+          : null;
+  const lineageShadow =
+    data.lineageRole === "selected"
+      ? "0 0 0 4px rgba(107,114,128,0.34), 0 14px 32px rgba(15,23,42,0.16)"
+      : lineageBorder
+        ? `0 0 0 2px ${toneStyles.accent}22, 0 4px 14px rgba(15,23,42,0.05)`
+        : null;
 
   if (isDecisionNode) {
     const decisionShape = "polygon(9% 0%, 91% 0%, 100% 50%, 91% 100%, 9% 100%, 0% 50%)";
     const decisionPalette = selected
-      ? { border: "#bcb6b0", fill: "#ffffff", shadow: "drop-shadow(0 10px 30px rgba(15,23,42,0.10))" }
-      : { border: "#dddfe3", fill: "#ffffff", shadow: "none" };
+      ? { border: lineageBorder || "#bcb6b0", fill: "#ffffff", shadow: "drop-shadow(0 10px 30px rgba(15,23,42,0.10))" }
+      : { border: lineageBorder || "#dddfe3", fill: "#ffffff", shadow: lineageBorder ? "drop-shadow(0 4px 14px rgba(2,132,199,0.12))" : "none" };
 
     return (
       <div
@@ -841,6 +1009,7 @@ function FlowCardNode({ data, selected }) {
           height: NODE_HEIGHT,
           position: "relative",
           overflow: "visible",
+          opacity: dimmed ? 0.28 : 1,
         }}
       >
         <Handle
@@ -974,11 +1143,12 @@ function FlowCardNode({ data, selected }) {
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
         background: "#ffffff",
-        border: selected ? "1px solid #bcb6b0" : "1px solid #dddfe3",
+        border: `1px solid ${lineageBorder || (selected ? "#bcb6b0" : "#dddfe3")}`,
         borderRadius: 6,
-        boxShadow: selected ? "0 10px 30px rgba(0,0,0,0.08)" : "0 1px 1px rgba(0,0,0,0.03)",
+        boxShadow: lineageShadow || (selected ? "0 10px 30px rgba(0,0,0,0.08)" : "0 1px 1px rgba(0,0,0,0.03)"),
         position: "relative",
         overflow: "visible",
+        opacity: dimmed ? 0.28 : 1,
       }}
     >
       <div
@@ -1138,6 +1308,7 @@ function kindDotStyle(tone) {
     model: { bg: "#f59e0b" },
     check: { bg: "#8b5cf6" },
     python: { bg: "#a78bfa" },
+    lookup: { bg: "#f97316" },
     egress: { bg: "#10b981" },
     other: { bg: "#94a3b8" },
   }[tone] || { bg: "#94a3b8" };
@@ -2053,18 +2224,26 @@ function GraphCanvas({
   const { nodes, edges } = useMemo(() => {
     const liveNodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
     const liveEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+    const liveLayoutEdges = Array.isArray(graphData?.layout_edges) ? graphData.layout_edges : null;
     const nodeById = new Map(liveNodes.map((node) => [String(node.name || ""), node]));
+    const lineageState = buildLineageState(selectedNodeId, nodeById);
     const baseNodes = liveNodes.map((node) => ({
       id: String(node.name || ""),
       type: "flowCard",
       position: { x: 0, y: 0 },
-      data: buildFlowNodeDataFromApi(node),
+      data: {
+        ...buildFlowNodeDataFromApi(node),
+        lineageRole: nodeLineageRole(node.name, selectedNodeId, lineageState),
+      },
       selected: String(node.name || "") === selectedNodeId,
       draggable: false,
       selectable: true,
     }));
-    const baseEdges = liveEdges.map(([source, target]) => buildFlowEdgeFromApi(source, target, nodeById));
-    return layoutElements(baseNodes, baseEdges);
+    const baseEdges = liveEdges.map(([source, target]) => {
+      const edge = buildFlowEdgeFromApi(source, target, nodeById);
+      return applyLineageToEdge(edge, edgeLineageRole(edge, selectedNodeId, lineageState));
+    });
+    return layoutElements(baseNodes, baseEdges, liveLayoutEdges);
   }, [graphData, layoutVersion, selectedNodeId]);
 
   return (
@@ -2855,6 +3034,12 @@ export default function App() {
     void loadNodeTab(nodeId, "query");
   }
 
+  function handleCloseSheet() {
+    setSheetOpen(false);
+    setSelectedNodeId("");
+    selectedNodeIdRef.current = "";
+  }
+
   async function handleTabChange(nextTab) {
     setActiveTab(nextTab);
     setPanelTabError("");
@@ -3352,7 +3537,7 @@ export default function App() {
             selectedNodeId={selectedNodeId}
             onSelectNode={handleSelectNode}
             sheetOpen={sheetOpen}
-            onCloseSheet={() => setSheetOpen(false)}
+            onCloseSheet={handleCloseSheet}
             activeTab={activeTab}
             onTabChange={handleTabChange}
             panelData={panelData}

@@ -448,6 +448,7 @@ def get_graph_panel(
 ) -> dict[str, Any]:
     normalized_run_id, normalized_run_label = _normalized_selection(run_id, run_label)
     result = inspect_dag(artifact_path, run_id=normalized_run_id, run_label=normalized_run_label)
+    graph_lineage = _build_graph_lineage(result.nodes, result.edges)
     return {
         "ok": True,
         "pipeline_path": result.pipeline_path,
@@ -461,8 +462,70 @@ def get_graph_panel(
         "runtime_vars_contract": result.runtime_vars_contract,
         "active_runtime_vars_contract": result.active_runtime_vars_contract,
         "node_count": len(result.nodes),
-        "nodes": result.nodes,
+        "nodes": graph_lineage["nodes"],
         "edges": result.edges,
+        "layout_edges": graph_lineage["layout_edges"],
+    }
+
+
+def _build_graph_lineage(nodes: list[dict[str, Any]], edges: list[list[str]]) -> dict[str, Any]:
+    node_names = [
+        str(node.get("name") or "").strip()
+        for node in nodes
+        if isinstance(node, dict) and str(node.get("name") or "").strip()
+    ]
+    node_name_set = set(node_names)
+    direct_dependencies: dict[str, set[str]] = {name: set() for name in node_names}
+    direct_dependents: dict[str, set[str]] = {name: set() for name in node_names}
+
+    for raw_source, raw_target in edges:
+        source = str(raw_source or "").strip()
+        target = str(raw_target or "").strip()
+        if source not in node_name_set or target not in node_name_set:
+            continue
+        direct_dependencies[target].add(source)
+        direct_dependents[source].add(target)
+
+    def walk(start: str, adjacency: dict[str, set[str]]) -> set[str]:
+        out: set[str] = set()
+        stack = list(adjacency.get(start, set()))
+        while stack:
+            current = stack.pop()
+            if current in out:
+                continue
+            out.add(current)
+            stack.extend(adjacency.get(current, set()) - out)
+        return out
+
+    transitive_dependencies = {name: walk(name, direct_dependencies) for name in node_names}
+    transitive_dependents = {name: walk(name, direct_dependents) for name in node_names}
+    direct_edge_set = {
+        (str(source or "").strip(), str(target or "").strip())
+        for source, target in edges
+        if str(source or "").strip() in node_name_set and str(target or "").strip() in node_name_set
+    }
+    layout_edge_set = set(direct_edge_set)
+    for target, dependencies in transitive_dependencies.items():
+        for source in dependencies:
+            if source != target:
+                layout_edge_set.add((source, target))
+
+    enriched_nodes: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        name = str(node.get("name") or "").strip()
+        enriched = dict(node)
+        if name:
+            enriched["direct_dependencies"] = sorted(direct_dependencies.get(name, set()))
+            enriched["direct_dependents"] = sorted(direct_dependents.get(name, set()))
+            enriched["transitive_dependencies"] = sorted(transitive_dependencies.get(name, set()))
+            enriched["transitive_dependents"] = sorted(transitive_dependents.get(name, set()))
+        enriched_nodes.append(enriched)
+
+    return {
+        "nodes": enriched_nodes,
+        "layout_edges": [[source, target] for source, target in sorted(layout_edge_set)],
     }
 
 
