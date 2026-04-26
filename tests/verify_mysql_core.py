@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import datetime
 from decimal import Decimal
+import io
 import pathlib
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -16,6 +18,7 @@ import base
 from duckdb_driver import connect_duckdb
 import mysql_core
 import queron
+import queron.cli
 from queron.bindings import MysqlBinding, resolve_runtime_binding_payload
 from queron.compiler import compile_pipeline_code
 from queron.config import resolve_connection_binding
@@ -651,6 +654,145 @@ connections:
     password: LoomMysqlPass123!
     connect_timeout_seconds: 3
 """
+
+
+class VerifyMysqlCliApiIntegrationTests(unittest.TestCase):
+    def test_cli_compile_run_and_inspect_dag_include_mysql_node_kinds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path, config_path, connections_path = self._write_project(root, pipeline_id="mysql_cli_integration")
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                compile_exit = queron.cli.main(["compile", str(pipeline_path), "--config", str(config_path)])
+            self.assertEqual(compile_exit, 0, stderr.getvalue())
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                run_exit = queron.cli.main(
+                    [
+                        "run",
+                        str(pipeline_path),
+                        "--config",
+                        str(config_path),
+                        "--connections",
+                        str(connections_path),
+                        "--clean-existing",
+                    ]
+                )
+            self.assertEqual(run_exit, 0, stderr.getvalue())
+            self.assertIn("Run succeeded.", stdout.getvalue())
+
+            artifact_path = root / ".queron" / "mysql_cli_integration" / "artifact.duckdb"
+            dag = queron.inspect_dag(artifact_path)
+            kinds = {node["name"]: node["kind"] for node in dag.nodes}
+            self.assertEqual(kinds["ingest_mysql_policy"], "mysql.ingress")
+            self.assertEqual(kinds["stage_mysql_lookup"], "mysql.lookup")
+            self.assertEqual(kinds["ingest_mysql_filtered"], "mysql.ingress")
+            self.assertEqual(kinds["egress_mysql_policy"], "mysql.egress")
+
+    def test_api_run_accepts_mysql_runtime_binding(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path, config_path, _connections_path = self._write_project(root, pipeline_id="mysql_api_runtime_binding")
+
+            compiled = queron.compile_pipeline(pipeline_path, config_path=config_path)
+            self.assertEqual([d for d in compiled.diagnostics if d.get("level") == "error"], [])
+            result = queron.run_pipeline(
+                pipeline_path,
+                config_path=config_path,
+                runtime_bindings={
+                    "MYSQL_LOCAL": MysqlBinding(
+                        host="localhost",
+                        port=53307,
+                        database="LOOMDB",
+                        username="loom_user",
+                        password="LoomMysqlPass123!",
+                        connect_timeout_seconds=3,
+                    )
+                },
+                clean_existing=True,
+            )
+
+            self.assertEqual(result.executed_nodes, ["ingest_mysql_policy", "stage_mysql_lookup", "ingest_mysql_filtered", "egress_mysql_policy"])
+            dag = queron.inspect_dag(result.artifact_path)
+            lookup_node = next(node for node in dag.nodes if node["name"] == "stage_mysql_lookup")
+            self.assertEqual(lookup_node["kind"], "mysql.lookup")
+            self.assertEqual(lookup_node["config"], "MYSQL_LOCAL")
+            self.assertEqual(lookup_node["mode"], "replace")
+            self.assertFalse(bool(lookup_node["retain"]))
+
+    def test_inspect_node_shows_mysql_details(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path, config_path, connections_path = self._write_project(root, pipeline_id="mysql_inspect_details")
+
+            queron.compile_pipeline(pipeline_path, config_path=config_path)
+            result = queron.run_pipeline(pipeline_path, config_path=config_path, connections_path=connections_path, clean_existing=True)
+            inspected = queron.inspect_node(result.artifact_path, "egress_mysql_policy")
+            node = next(item for item in inspected.nodes if item["name"] == "egress_mysql_policy")
+
+        self.assertEqual(node["kind"], "mysql.egress")
+        self.assertEqual(node["config"], "MYSQL_LOCAL")
+        self.assertEqual(node["mode"], "replace")
+        self.assertEqual(node["target_relation"], '"phase_cli_egress"')
+        self.assertEqual(node["out"], "phase_cli_egress_artifact")
+
+    def _write_project(self, root: pathlib.Path, *, pipeline_id: str) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+        pipeline_path = root / "pipeline.py"
+        config_path = root / "configurations.yaml"
+        connections_path = root / "connections.yaml"
+        pipeline_path.write_text(
+            f'''
+import queron
+__queron_native__ = {{"pipeline_id": "{pipeline_id}"}}
+@queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_policy", out="mysql_policy", sql='SELECT policy_id, policy_number, active_flag FROM {{{{ queron.source("policy") }}}} ORDER BY policy_id')
+def ingest_mysql_policy(): pass
+@queron.mysql.lookup(config="MYSQL_LOCAL", name="stage_mysql_lookup", table="phase_cli_lookup", out="phase_cli_lookup", sql='SELECT policy_id FROM {{{{ queron.ref("mysql_policy") }}}} WHERE active_flag = true', mode="replace")
+def stage_mysql_lookup(): pass
+@queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_filtered", out="mysql_filtered", sql='SELECT p.policy_id, p.policy_number FROM {{{{ queron.source("policy") }}}} p JOIN {{{{ queron.lookup("phase_cli_lookup") }}}} k ON p.policy_id = k.policy_id ORDER BY p.policy_id')
+def ingest_mysql_filtered(): pass
+@queron.mysql.egress(config="MYSQL_LOCAL", name="egress_mysql_policy", table="phase_cli_egress", out="phase_cli_egress_artifact", sql='SELECT * FROM {{{{ queron.ref("mysql_filtered") }}}}', mode="replace")
+def egress_mysql_policy(): pass
+''',
+            encoding="utf-8",
+        )
+        config_path.write_text(
+            """
+sources:
+  policy:
+    table: policy
+lookup:
+  phase_cli_lookup:
+    table: phase_cli_lookup
+egress:
+  phase_cli_egress:
+    table: phase_cli_egress
+""",
+            encoding="utf-8",
+        )
+        connections_path.write_text(
+            """
+connections:
+  MYSQL_LOCAL:
+    type: mysql
+    host: localhost
+    port: 53307
+    database: LOOMDB
+    username: loom_user
+    password: LoomMysqlPass123!
+    connect_timeout_seconds: 3
+""",
+            encoding="utf-8",
+        )
+        return pipeline_path, config_path, connections_path
+
+    def tearDown(self) -> None:
+        req = base.MysqlConnectRequest(host="localhost", port=53307, database="LOOMDB", username="loom_user", password="LoomMysqlPass123!")
+        mysql_core.drop_table_if_exists(target_request=req, target_table="phase_cli_lookup")
+        mysql_core.drop_table_if_exists(target_request=req, target_table="phase_cli_egress")
 
 
 if __name__ == "__main__":
