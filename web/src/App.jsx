@@ -2304,30 +2304,48 @@ function GraphCanvas({
   artifactPreviewError,
   suppressLoadingOverlay = false,
 }) {
-  const { nodes, edges } = useMemo(() => {
+  const baseLayout = useMemo(() => {
     const liveNodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
     const liveEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
     const liveLayoutEdges = Array.isArray(graphData?.layout_edges) ? graphData.layout_edges : null;
     const nodeById = new Map(liveNodes.map((node) => [String(node.name || ""), node]));
-    const lineageState = buildLineageState(selectedNodeId, nodeById);
     const baseNodes = liveNodes.map((node) => ({
       id: String(node.name || ""),
       type: "flowCard",
       position: { x: 0, y: 0 },
       data: {
         ...buildFlowNodeDataFromApi(node),
-        lineageRole: nodeLineageRole(node.name, selectedNodeId, lineageState),
+        lineageRole: "none",
       },
-      selected: String(node.name || "") === selectedNodeId,
+      selected: false,
       draggable: false,
       selectable: true,
     }));
-    const baseEdges = liveEdges.map(([source, target]) => {
-      const edge = buildFlowEdgeFromApi(source, target, nodeById);
-      return applyLineageToEdge(edge, edgeLineageRole(edge, selectedNodeId, lineageState));
-    });
+    const baseEdges = liveEdges.map(([source, target]) => buildFlowEdgeFromApi(source, target, nodeById));
     return layoutElements(baseNodes, baseEdges, liveLayoutEdges);
-  }, [graphData, layoutVersion, selectedNodeId]);
+  }, [graphData, layoutVersion]);
+
+  const { nodes, edges } = useMemo(() => {
+    const liveNodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+    const nodeById = new Map(liveNodes.map((node) => [String(node.name || ""), node]));
+    const lineageState = buildLineageState(selectedNodeId, nodeById);
+    return {
+      nodes: (Array.isArray(baseLayout?.nodes) ? baseLayout.nodes : []).map((node) => {
+        const sourceNode = nodeById.get(String(node.id || ""));
+        return {
+          ...node,
+          selected: String(node.id || "") === selectedNodeId,
+          data: {
+            ...node.data,
+            lineageRole: nodeLineageRole(sourceNode?.name || node.id, selectedNodeId, lineageState),
+          },
+        };
+      }),
+      edges: (Array.isArray(baseLayout?.edges) ? baseLayout.edges : []).map((edge) =>
+        applyLineageToEdge(edge, edgeLineageRole(edge, selectedNodeId, lineageState)),
+      ),
+    };
+  }, [baseLayout, graphData, selectedNodeId]);
 
   return (
     <div className="relative h-full w-full overflow-hidden">
