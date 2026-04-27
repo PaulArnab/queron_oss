@@ -1,0 +1,1674 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI and Python Commands - Queron Docs</title>
+  <link rel="stylesheet" href="styles.css?v=2">
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, securityLevel: 'loose' });
+  </script>
+</head>
+<body>
+  <aside>
+    <div class="brand">Queron Docs</div>
+    <nav><a href="index.html">Home</a>
+<a href="architecture.html">Architecture</a>
+<a href="internals-guide.html">Internals Guide</a>
+<a href="user-guide.html">User Guide</a>
+<a href="commands-reference.html">Commands Reference</a>
+<a href="pipeline-dsl.html">Pipeline Dsl</a>
+<a href="python-api.html">Python Api</a>
+<a href="cli-reference.html">Cli Reference</a>
+<a href="datatype-mapping.html">Datatype Mapping</a>
+<a href="examples.html">Examples</a></nav>
+  </aside>
+  <main>
+    <h1 id="cli-and-python-commands">CLI and Python Commands</h1>
+<p>This page lists Python functions first, then CLI commands. Both sections are ordered by the way a user usually works: initialize, author/compile, run, resume/stop/reset, inspect, export, and graph UI.</p>
+<h2 id="python-functions">Python Functions</h2>
+<h3 id="project-setup">Project Setup</h3>
+<pre><code class=" language-python">queron.init_pipeline_project(project_path, *, sample=False, force=False)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>project_path</code></td>
+<td>yes</td>
+<td>Directory to create or update.</td>
+</tr>
+<tr>
+<td><code>sample</code></td>
+<td>no</td>
+<td>Write runnable sample pipeline.</td>
+</tr>
+<tr>
+<td><code>force</code></td>
+<td>no</td>
+<td>Overwrite scaffold files.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sql-template-helpers">SQL Template Helpers</h3>
+<pre><code class=" language-python">queron.ref(name)
+queron.source(name)
+queron.lookup(name)</code></pre>
+<table>
+<thead><tr>
+<th>Function</th>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>ref</code></td>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Local artifact name produced by a node&#x27;s <code>out</code>.</td>
+</tr>
+<tr>
+<td><code>source</code></td>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Logical source name from <code>configurations.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>lookup</code></td>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Logical lookup name from <code>configurations.yaml</code>.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">queron.var(name, *, log_value=False, mutable_after_start=False, default=unset)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Runtime variable name.</td>
+</tr>
+<tr>
+<td><code>log_value</code></td>
+<td>no</td>
+<td>Allow value to be logged. Defaults to <code>False</code>.</td>
+</tr>
+<tr>
+<td><code>mutable_after_start</code></td>
+<td>no</td>
+<td>Allow value to change on resume. Defaults to <code>False</code>.</td>
+</tr>
+<tr>
+<td><code>default</code></td>
+<td>no</td>
+<td>Python literal default value.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="local-sql-model">Local SQL Model</h3>
+<pre><code class=" language-python">@queron.model.sql(*, name, query, out, materialized=&quot;artifact&quot;, depends_on=None)
+def node_function():
+    pass</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>query</code></td>
+<td>yes</td>
+<td>DuckDB SQL query.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name produced by this node.</td>
+</tr>
+<tr>
+<td><code>materialized</code></td>
+<td>no</td>
+<td>Materialization mode. Defaults to <code>artifact</code>.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="python-ingress">Python Ingress</h3>
+<pre><code class=" language-python">@queron.python.ingress(fn=None, *, name=None, out, depends_on=None)
+def node_function():
+    return data</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>fn</code></td>
+<td>no</td>
+<td>Callable when used as a bare decorator.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>no</td>
+<td>Unique node name. Defaults to function name.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<p>The function must not require arguments.</p>
+<h3 id="file-ingress">File Ingress</h3>
+<pre><code class=" language-python">@queron.csv.ingress(
+    *,
+    name,
+    out,
+    path,
+    header=True,
+    delimiter=&quot;,&quot;,
+    quote=None,
+    escape=None,
+    skip_rows=0,
+    columns=None,
+    depends_on=None,
+)
+def node_function():
+    pass</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name.</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>yes</td>
+<td>CSV file path.</td>
+</tr>
+<tr>
+<td><code>header</code></td>
+<td>no</td>
+<td>Whether first row is a header. Defaults to <code>True</code>.</td>
+</tr>
+<tr>
+<td><code>delimiter</code></td>
+<td>no</td>
+<td>Single-character delimiter. Defaults to comma.</td>
+</tr>
+<tr>
+<td><code>quote</code></td>
+<td>no</td>
+<td>Optional single-character quote override.</td>
+</tr>
+<tr>
+<td><code>escape</code></td>
+<td>no</td>
+<td>Optional single-character escape override.</td>
+</tr>
+<tr>
+<td><code>skip_rows</code></td>
+<td>no</td>
+<td>Rows to skip before reading.</td>
+</tr>
+<tr>
+<td><code>columns</code></td>
+<td>no</td>
+<td>Explicit column type mapping. Required when <code>header=False</code>.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">@queron.jsonl.ingress(*, name, out, path, depends_on=None)
+@queron.parquet.ingress(*, name, out, path, depends_on=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name.</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>yes</td>
+<td>Input file path.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">@queron.file.ingress(
+    *,
+    name,
+    out,
+    path,
+    format=None,
+    header=True,
+    delimiter=&quot;,&quot;,
+    quote=None,
+    escape=None,
+    skip_rows=0,
+    columns=None,
+    depends_on=None,
+)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name.</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>yes</td>
+<td>Input file path.</td>
+</tr>
+<tr>
+<td><code>format</code></td>
+<td>no</td>
+<td><code>csv</code>, <code>jsonl</code>, or <code>parquet</code>. Can be inferred from extension.</td>
+</tr>
+<tr>
+<td><code>header</code></td>
+<td>no</td>
+<td>CSV only. Defaults to <code>True</code>.</td>
+</tr>
+<tr>
+<td><code>delimiter</code></td>
+<td>no</td>
+<td>CSV only. Defaults to comma.</td>
+</tr>
+<tr>
+<td><code>quote</code></td>
+<td>no</td>
+<td>CSV only.</td>
+</tr>
+<tr>
+<td><code>escape</code></td>
+<td>no</td>
+<td>CSV only.</td>
+</tr>
+<tr>
+<td><code>skip_rows</code></td>
+<td>no</td>
+<td>CSV only.</td>
+</tr>
+<tr>
+<td><code>columns</code></td>
+<td>no</td>
+<td>CSV only.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="file-egress">File Egress</h3>
+<pre><code class=" language-python">@queron.csv.egress(
+    *,
+    name,
+    path,
+    sql,
+    overwrite=False,
+    header=True,
+    delimiter=&quot;,&quot;,
+    out,
+    depends_on=None,
+)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>yes</td>
+<td>Output CSV path.</td>
+</tr>
+<tr>
+<td><code>sql</code></td>
+<td>yes</td>
+<td>DuckDB SQL query to export.</td>
+</tr>
+<tr>
+<td><code>overwrite</code></td>
+<td>no</td>
+<td>Replace existing file.</td>
+</tr>
+<tr>
+<td><code>header</code></td>
+<td>no</td>
+<td>Write header row.</td>
+</tr>
+<tr>
+<td><code>delimiter</code></td>
+<td>no</td>
+<td>Single-character delimiter.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name for this egress node.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">@queron.jsonl.egress(*, name, path, sql, overwrite=False, out, depends_on=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>yes</td>
+<td>Output JSONL path.</td>
+</tr>
+<tr>
+<td><code>sql</code></td>
+<td>yes</td>
+<td>DuckDB SQL query to export.</td>
+</tr>
+<tr>
+<td><code>overwrite</code></td>
+<td>no</td>
+<td>Replace existing file.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">@queron.parquet.egress(*, name, path, sql, overwrite=False, compression=None, out, depends_on=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>path</code></td>
+<td>yes</td>
+<td>Output Parquet path.</td>
+</tr>
+<tr>
+<td><code>sql</code></td>
+<td>yes</td>
+<td>DuckDB SQL query to export.</td>
+</tr>
+<tr>
+<td><code>overwrite</code></td>
+<td>no</td>
+<td>Replace existing file.</td>
+</tr>
+<tr>
+<td><code>compression</code></td>
+<td>no</td>
+<td>Parquet compression setting.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="database-ingress">Database Ingress</h3>
+<pre><code class=" language-python">@queron.&lt;driver&gt;.ingress(*, config, name, out, sql, depends_on=None)</code></pre>
+<p>Drivers:</p>
+<pre><code class=" language-python">queron.postgres.ingress(...)
+queron.db2.ingress(...)
+queron.mssql.ingress(...)
+queron.mysql.ingress(...)
+queron.mariadb.ingress(...)
+queron.oracle.ingress(...)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>config</code></td>
+<td>yes</td>
+<td>Connection binding name.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name.</td>
+</tr>
+<tr>
+<td><code>sql</code></td>
+<td>yes</td>
+<td>Source database SQL.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="database-egress">Database Egress</h3>
+<pre><code class=" language-python">@queron.&lt;driver&gt;.egress(*, config, name, table, sql, mode=&quot;replace&quot;, retain=False, out, depends_on=None)</code></pre>
+<p>Drivers:</p>
+<pre><code class=" language-python">queron.postgres.egress(...)
+queron.db2.egress(...)
+queron.mssql.egress(...)
+queron.mysql.egress(...)
+queron.mariadb.egress(...)
+queron.oracle.egress(...)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>config</code></td>
+<td>yes</td>
+<td>Connection binding name.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>table</code></td>
+<td>yes</td>
+<td>Remote table or configured egress relation name.</td>
+</tr>
+<tr>
+<td><code>sql</code></td>
+<td>yes</td>
+<td>DuckDB SQL query to write.</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td>no</td>
+<td><code>replace</code>, <code>append</code>, <code>create</code>, or <code>create_append</code>.</td>
+</tr>
+<tr>
+<td><code>retain</code></td>
+<td>no</td>
+<td>Retain remote table when supported. Not exposed by DB2 or MSSQL decorators.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="database-lookup">Database Lookup</h3>
+<pre><code class=" language-python">@queron.&lt;driver&gt;.lookup(*, config, name, table, sql, mode=&quot;replace&quot;, retain=False, out, depends_on=None)</code></pre>
+<p>Drivers:</p>
+<pre><code class=" language-python">queron.postgres.lookup(...)
+queron.db2.lookup(...)
+queron.mssql.lookup(...)
+queron.mysql.lookup(...)
+queron.mariadb.lookup(...)
+queron.oracle.lookup(...)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>config</code></td>
+<td>yes</td>
+<td>Connection binding name.</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>table</code></td>
+<td>yes</td>
+<td>Remote lookup table or configured lookup relation name.</td>
+</tr>
+<tr>
+<td><code>sql</code></td>
+<td>yes</td>
+<td>DuckDB SQL query used to build lookup table.</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td>no</td>
+<td><code>replace</code>, <code>append</code>, <code>create</code>, or <code>create_append</code>.</td>
+</tr>
+<tr>
+<td><code>retain</code></td>
+<td>no</td>
+<td>Retain remote lookup table when supported. Not exposed by DB2 or MSSQL decorators.</td>
+</tr>
+<tr>
+<td><code>out</code></td>
+<td>yes</td>
+<td>Logical artifact name.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="checks">Checks</h3>
+<pre><code class=" language-python">@queron.check.fail_if_count(*, name, query, operator, value, depends_on=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>query</code></td>
+<td>yes</td>
+<td>SQL returning one numeric scalar.</td>
+</tr>
+<tr>
+<td><code>operator</code></td>
+<td>yes</td>
+<td>One of <code>==</code>, <code>=</code>, <code>!=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>&lt;</code>, <code>&lt;=</code>.</td>
+</tr>
+<tr>
+<td><code>value</code></td>
+<td>yes</td>
+<td>Numeric comparison value.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">@queron.check.fail_if_true(*, name, query, depends_on=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>yes</td>
+<td>Unique node name.</td>
+</tr>
+<tr>
+<td><code>query</code></td>
+<td>yes</td>
+<td>SQL returning one boolean scalar.</td>
+</tr>
+<tr>
+<td><code>depends_on</code></td>
+<td>no</td>
+<td>Manual dependency node name or list of names.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="compile-and-run-api">Compile and Run API</h3>
+<pre><code class=" language-python">queron.compile_pipeline(pipeline_path, *, config_path=None, target=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline_path</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>config_path</code></td>
+<td>no</td>
+<td>Path to <code>configurations.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>target</code></td>
+<td>no</td>
+<td>Target environment override.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">queron.run_pipeline(
+    pipeline_path,
+    *,
+    config_path=None,
+    connections_path=None,
+    runtime_bindings=None,
+    runtime_vars=None,
+    target=None,
+    target_node=None,
+    clean_existing=False,
+    set_final=False,
+    pipeline_id=None,
+    run_label=None,
+    on_log=None,
+)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline_path</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>config_path</code></td>
+<td>no</td>
+<td>Path to <code>configurations.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>connections_path</code></td>
+<td>no</td>
+<td>Path to <code>connections.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>runtime_bindings</code></td>
+<td>no</td>
+<td>In-memory connection bindings keyed by config name.</td>
+</tr>
+<tr>
+<td><code>runtime_vars</code></td>
+<td>no</td>
+<td>Runtime variable values.</td>
+</tr>
+<tr>
+<td><code>target</code></td>
+<td>no</td>
+<td>Target environment override.</td>
+</tr>
+<tr>
+<td><code>target_node</code></td>
+<td>no</td>
+<td>Run one node and its upstream dependencies.</td>
+</tr>
+<tr>
+<td><code>clean_existing</code></td>
+<td>no</td>
+<td>Drop existing output tables before execution.</td>
+</tr>
+<tr>
+<td><code>set_final</code></td>
+<td>no</td>
+<td>Finalize stale failed/running run before starting.</td>
+</tr>
+<tr>
+<td><code>pipeline_id</code></td>
+<td>no</td>
+<td>Override pipeline ID.</td>
+</tr>
+<tr>
+<td><code>run_label</code></td>
+<td>no</td>
+<td>Unique run label.</td>
+</tr>
+<tr>
+<td><code>on_log</code></td>
+<td>no</td>
+<td>Log callback.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">queron.resume_pipeline(
+    pipeline_path,
+    *,
+    config_path=None,
+    connections_path=None,
+    runtime_bindings=None,
+    runtime_vars=None,
+    target=None,
+    on_log=None,
+)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline_path</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>config_path</code></td>
+<td>no</td>
+<td>Path to <code>configurations.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>connections_path</code></td>
+<td>no</td>
+<td>Path to <code>connections.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>runtime_bindings</code></td>
+<td>no</td>
+<td>In-memory connection bindings.</td>
+</tr>
+<tr>
+<td><code>runtime_vars</code></td>
+<td>no</td>
+<td>Runtime vars for resume.</td>
+</tr>
+<tr>
+<td><code>target</code></td>
+<td>no</td>
+<td>Target environment override.</td>
+</tr>
+<tr>
+<td><code>on_log</code></td>
+<td>no</td>
+<td>Log callback.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="stop-api">Stop API</h3>
+<pre><code class=" language-python">queron.stop_pipeline(pipeline_path, *, run_id=None, reason=None)
+queron.force_stop_pipeline(pipeline_path, *, run_id=None, reason=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline_path</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>run_id</code></td>
+<td>no</td>
+<td>Running run ID. Defaults to latest running run.</td>
+</tr>
+<tr>
+<td><code>reason</code></td>
+<td>no</td>
+<td>Reason stored with stop request.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="reset-api">Reset API</h3>
+<pre><code class=" language-python">queron.reset_node(pipeline_path, *, node_name, config_path=None, target=None, on_log=None)
+queron.reset_downstream(pipeline_path, *, node_name, config_path=None, target=None, on_log=None)
+queron.reset_upstream(pipeline_path, *, node_name, config_path=None, target=None, on_log=None)
+queron.reset_all(pipeline_path, *, config_path=None, target=None, on_log=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline_path</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>node_name</code></td>
+<td>yes for node/upstream/downstream</td>
+<td>Node to reset or use as selection root.</td>
+</tr>
+<tr>
+<td><code>config_path</code></td>
+<td>no</td>
+<td>Path to <code>configurations.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>target</code></td>
+<td>no</td>
+<td>Target environment override.</td>
+</tr>
+<tr>
+<td><code>on_log</code></td>
+<td>no</td>
+<td>Log callback.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inspect-api">Inspect API</h3>
+<pre><code class=" language-python">queron.inspect_dag(artifact_path, *, run_id=None, run_label=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>artifact_path</code></td>
+<td>yes</td>
+<td>Artifact DuckDB path.</td>
+</tr>
+<tr>
+<td><code>run_id</code></td>
+<td>no</td>
+<td>Run ID to inspect.</td>
+</tr>
+<tr>
+<td><code>run_label</code></td>
+<td>no</td>
+<td>Run label to inspect.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">queron.inspect_node(artifact_path, node_name, *, run_id=None, run_label=None, upstream=False, downstream=False)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>artifact_path</code></td>
+<td>yes</td>
+<td>Artifact DuckDB path.</td>
+</tr>
+<tr>
+<td><code>node_name</code></td>
+<td>yes</td>
+<td>Node to inspect.</td>
+</tr>
+<tr>
+<td><code>run_id</code></td>
+<td>no</td>
+<td>Run ID to inspect.</td>
+</tr>
+<tr>
+<td><code>run_label</code></td>
+<td>no</td>
+<td>Run label to inspect.</td>
+</tr>
+<tr>
+<td><code>upstream</code></td>
+<td>no</td>
+<td>Include upstream dependencies.</td>
+</tr>
+<tr>
+<td><code>downstream</code></td>
+<td>no</td>
+<td>Include downstream dependents.</td>
+</tr>
+</tbody>
+</table>
+<pre><code class=" language-python">queron.inspect_node_history(artifact_path, node_name, *, run_id=None, run_label=None)
+queron.inspect_node_logs(artifact_path, node_name, *, run_id=None, run_label=None, tail=None)
+queron.inspect_node_query(artifact_path, node_name, *, run_id=None, run_label=None)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>artifact_path</code></td>
+<td>yes</td>
+<td>Artifact DuckDB path.</td>
+</tr>
+<tr>
+<td><code>node_name</code></td>
+<td>yes</td>
+<td>Node to inspect.</td>
+</tr>
+<tr>
+<td><code>run_id</code></td>
+<td>no</td>
+<td>Run ID to inspect.</td>
+</tr>
+<tr>
+<td><code>run_label</code></td>
+<td>no</td>
+<td>Run label to inspect.</td>
+</tr>
+<tr>
+<td><code>tail</code></td>
+<td>no</td>
+<td>Only for logs; return last N events.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="export-api">Export API</h3>
+<pre><code class=" language-python">queron.export_artifact(
+    artifact_path,
+    *,
+    node_name=None,
+    artifact_name=None,
+    run_id=None,
+    run_label=None,
+    format=&quot;csv&quot;,
+    output_path=None,
+    overwrite=False,
+)</code></pre>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>artifact_path</code></td>
+<td>yes</td>
+<td>Artifact DuckDB path.</td>
+</tr>
+<tr>
+<td><code>node_name</code></td>
+<td>no</td>
+<td>Node whose artifact should be exported.</td>
+</tr>
+<tr>
+<td><code>artifact_name</code></td>
+<td>no</td>
+<td>Physical artifact table, for example <code>main.policy_core</code>.</td>
+</tr>
+<tr>
+<td><code>run_id</code></td>
+<td>no</td>
+<td>Run ID to export.</td>
+</tr>
+<tr>
+<td><code>run_label</code></td>
+<td>no</td>
+<td>Run label to export.</td>
+</tr>
+<tr>
+<td><code>format</code></td>
+<td>no</td>
+<td><code>csv</code>, <code>parquet</code>, or <code>json</code>.</td>
+</tr>
+<tr>
+<td><code>output_path</code></td>
+<td>no</td>
+<td>Explicit output file path.</td>
+</tr>
+<tr>
+<td><code>overwrite</code></td>
+<td>no</td>
+<td>Replace output file.</td>
+</tr>
+</tbody>
+</table>
+<p>Use either <code>node_name</code> or <code>artifact_name</code>.</p>
+<h2 id="cli-commands">CLI Commands</h2>
+<h3 id="project-setup">Project Setup</h3>
+<pre><code class=" language-bash">queron init &lt;path&gt; [--sample] [--force] [--json]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>path</code></td>
+<td>yes</td>
+<td>Directory to create or update.</td>
+</tr>
+<tr>
+<td><code>--sample</code></td>
+<td>no</td>
+<td>Create runnable sample project.</td>
+</tr>
+<tr>
+<td><code>--force</code></td>
+<td>no</td>
+<td>Overwrite scaffold files.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>no</td>
+<td>Emit JSON output.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="compile">Compile</h3>
+<pre><code class=" language-bash">queron compile &lt;pipeline&gt; [--config CONFIG_PATH] [--target TARGET] [--json]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>--config CONFIG_PATH</code></td>
+<td>no</td>
+<td>Path to <code>configurations.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>--target TARGET</code></td>
+<td>no</td>
+<td>Target environment override.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>no</td>
+<td>Emit JSON output.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="run">Run</h3>
+<pre><code class=" language-bash">queron run &lt;pipeline&gt; [--config CONFIG_PATH] [--target TARGET] [--connections CONNECTIONS_PATH]
+                  [--target-node TARGET_NODE] [--run-label RUN_LABEL] [--clean-existing]
+                  [--set-final] [--stream-logs] [--graph-url GRAPH_URL]
+                  [--vars-json VARS_JSON] [--vars-file VARS_FILE] [--json]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>--config CONFIG_PATH</code></td>
+<td>no</td>
+<td>Path to <code>configurations.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>--target TARGET</code></td>
+<td>no</td>
+<td>Target environment override.</td>
+</tr>
+<tr>
+<td><code>--connections CONNECTIONS_PATH</code></td>
+<td>no</td>
+<td>Path to <code>connections.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>--target-node TARGET_NODE</code></td>
+<td>no</td>
+<td>Run one node plus upstream dependencies.</td>
+</tr>
+<tr>
+<td><code>--run-label RUN_LABEL</code></td>
+<td>no</td>
+<td>Unique run label.</td>
+</tr>
+<tr>
+<td><code>--clean-existing</code></td>
+<td>no</td>
+<td>Drop existing output tables before run.</td>
+</tr>
+<tr>
+<td><code>--set-final</code></td>
+<td>no</td>
+<td>Finalize latest failed/stale running run before starting.</td>
+</tr>
+<tr>
+<td><code>--stream-logs</code></td>
+<td>no</td>
+<td>Print runtime logs while running.</td>
+</tr>
+<tr>
+<td><code>--graph-url GRAPH_URL</code></td>
+<td>no</td>
+<td>Publish live logs to graph server.</td>
+</tr>
+<tr>
+<td><code>--vars-json VARS_JSON</code></td>
+<td>no</td>
+<td>Runtime vars as JSON object string.</td>
+</tr>
+<tr>
+<td><code>--vars-file VARS_FILE</code></td>
+<td>no</td>
+<td>Runtime vars JSON file.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>no</td>
+<td>Emit JSON output.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="resume">Resume</h3>
+<pre><code class=" language-bash">queron resume &lt;pipeline&gt; [--config CONFIG_PATH] [--target TARGET] [--connections CONNECTIONS_PATH]
+                     [--stream-logs] [--graph-url GRAPH_URL]
+                     [--vars-json VARS_JSON] [--vars-file VARS_FILE] [--json]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>--config CONFIG_PATH</code></td>
+<td>no</td>
+<td>Path to <code>configurations.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>--target TARGET</code></td>
+<td>no</td>
+<td>Target environment override.</td>
+</tr>
+<tr>
+<td><code>--connections CONNECTIONS_PATH</code></td>
+<td>no</td>
+<td>Path to <code>connections.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>--stream-logs</code></td>
+<td>no</td>
+<td>Print runtime logs while resuming.</td>
+</tr>
+<tr>
+<td><code>--graph-url GRAPH_URL</code></td>
+<td>no</td>
+<td>Publish live logs to graph server.</td>
+</tr>
+<tr>
+<td><code>--vars-json VARS_JSON</code></td>
+<td>no</td>
+<td>Runtime vars as JSON object string.</td>
+</tr>
+<tr>
+<td><code>--vars-file VARS_FILE</code></td>
+<td>no</td>
+<td>Runtime vars JSON file.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>no</td>
+<td>Emit JSON output.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="stop">Stop</h3>
+<pre><code class=" language-bash">queron stop &lt;pipeline&gt; [--run-id RUN_ID] [--reason REASON] [--json]
+queron force-stop &lt;pipeline&gt; [--run-id RUN_ID] [--reason REASON] [--json]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>--run-id RUN_ID</code></td>
+<td>no</td>
+<td>Running run ID. Defaults to latest running run.</td>
+</tr>
+<tr>
+<td><code>--reason REASON</code></td>
+<td>no</td>
+<td>Reason to record with stop request.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>no</td>
+<td>Emit JSON output.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="reset">Reset</h3>
+<pre><code class=" language-bash">queron reset-node &lt;pipeline&gt; &lt;node_name&gt; [--config CONFIG_PATH] [--target TARGET] [--json]
+queron reset-downstream &lt;pipeline&gt; &lt;node_name&gt; [--config CONFIG_PATH] [--target TARGET] [--json]
+queron reset-upstream &lt;pipeline&gt; &lt;node_name&gt; [--config CONFIG_PATH] [--target TARGET] [--json]
+queron reset-all &lt;pipeline&gt; [--config CONFIG_PATH] [--target TARGET] [--json]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>node_name</code></td>
+<td>yes for node/upstream/downstream</td>
+<td>Node to reset or use as graph selection root.</td>
+</tr>
+<tr>
+<td><code>--config CONFIG_PATH</code></td>
+<td>no</td>
+<td>Path to <code>configurations.yaml</code>.</td>
+</tr>
+<tr>
+<td><code>--target TARGET</code></td>
+<td>no</td>
+<td>Target environment override.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>no</td>
+<td>Emit JSON output.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inspect-runs">Inspect Runs</h3>
+<pre><code class=" language-bash">queron inspect_runs [--pipeline-id PIPELINE_ID] [--limit LIMIT]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>--pipeline-id PIPELINE_ID</code></td>
+<td>no</td>
+<td>Pipeline ID. Defaults from local <code>pipeline.py</code>.</td>
+</tr>
+<tr>
+<td><code>--limit LIMIT</code></td>
+<td>no</td>
+<td>Maximum run count.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inspect-logs">Inspect Logs</h3>
+<pre><code class=" language-bash">queron inspect_logs [--pipeline-id PIPELINE_ID] [--run-id RUN_ID] [--run-label RUN_LABEL]
+                    [--tail TAIL] [--verbose] [--json]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>--pipeline-id PIPELINE_ID</code></td>
+<td>no</td>
+<td>Pipeline ID. Defaults from local <code>pipeline.py</code>.</td>
+</tr>
+<tr>
+<td><code>--run-id RUN_ID</code></td>
+<td>no</td>
+<td>Run ID to inspect.</td>
+</tr>
+<tr>
+<td><code>--run-label RUN_LABEL</code></td>
+<td>no</td>
+<td>Run label to inspect.</td>
+</tr>
+<tr>
+<td><code>--tail TAIL</code></td>
+<td>no</td>
+<td>Return only last N log lines.</td>
+</tr>
+<tr>
+<td><code>--verbose</code></td>
+<td>no</td>
+<td>Include source, kind, artifact, and details.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>no</td>
+<td>Emit JSON output.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inspect-dag">Inspect DAG</h3>
+<pre><code class=" language-bash">queron inspect_dag [--pipeline-id PIPELINE_ID] [--run-id RUN_ID] [--run-label RUN_LABEL]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>--pipeline-id PIPELINE_ID</code></td>
+<td>no</td>
+<td>Pipeline ID. Defaults from local <code>pipeline.py</code>.</td>
+</tr>
+<tr>
+<td><code>--run-id RUN_ID</code></td>
+<td>no</td>
+<td>Run ID to inspect.</td>
+</tr>
+<tr>
+<td><code>--run-label RUN_LABEL</code></td>
+<td>no</td>
+<td>Run label to inspect.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inspect-node">Inspect Node</h3>
+<pre><code class=" language-bash">queron inspect_node &lt;node_name&gt; [--pipeline-id PIPELINE_ID] [--run-id RUN_ID]
+                    [--run-label RUN_LABEL] [--upstream] [--downstream]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>node_name</code></td>
+<td>yes</td>
+<td>Node to inspect.</td>
+</tr>
+<tr>
+<td><code>--pipeline-id PIPELINE_ID</code></td>
+<td>no</td>
+<td>Pipeline ID. Defaults from local <code>pipeline.py</code>.</td>
+</tr>
+<tr>
+<td><code>--run-id RUN_ID</code></td>
+<td>no</td>
+<td>Run ID to inspect.</td>
+</tr>
+<tr>
+<td><code>--run-label RUN_LABEL</code></td>
+<td>no</td>
+<td>Run label to inspect.</td>
+</tr>
+<tr>
+<td><code>--upstream</code></td>
+<td>no</td>
+<td>Include upstream dependencies.</td>
+</tr>
+<tr>
+<td><code>--downstream</code></td>
+<td>no</td>
+<td>Include downstream dependents.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="inspect-node-history-logs-and-query">Inspect Node History, Logs, and Query</h3>
+<pre><code class=" language-bash">queron inspect_node_history &lt;node_name&gt; [--pipeline-id PIPELINE_ID] [--run-id RUN_ID] [--run-label RUN_LABEL]
+queron inspect_node_logs &lt;node_name&gt; [--pipeline-id PIPELINE_ID] [--run-id RUN_ID] [--run-label RUN_LABEL] [--tail TAIL]
+queron inspect_node_query &lt;node_name&gt; [--pipeline-id PIPELINE_ID] [--run-id RUN_ID] [--run-label RUN_LABEL]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>node_name</code></td>
+<td>yes</td>
+<td>Node to inspect.</td>
+</tr>
+<tr>
+<td><code>--pipeline-id PIPELINE_ID</code></td>
+<td>no</td>
+<td>Pipeline ID. Defaults from local <code>pipeline.py</code>.</td>
+</tr>
+<tr>
+<td><code>--run-id RUN_ID</code></td>
+<td>no</td>
+<td>Run ID to inspect.</td>
+</tr>
+<tr>
+<td><code>--run-label RUN_LABEL</code></td>
+<td>no</td>
+<td>Run label to inspect.</td>
+</tr>
+<tr>
+<td><code>--tail TAIL</code></td>
+<td>no</td>
+<td>Only for <code>inspect_node_logs</code>; return last N events.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="export">Export</h3>
+<pre><code class=" language-bash">queron export_artifact [--pipeline-id PIPELINE_ID] [--run-id RUN_ID] [--run-label RUN_LABEL]
+                       [--node-name NODE_NAME] [--artifact-name ARTIFACT_NAME]
+                       [--format csv|parquet|json] [--output-path OUTPUT_PATH]
+                       [--overwrite] [--json]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>--pipeline-id PIPELINE_ID</code></td>
+<td>no</td>
+<td>Pipeline ID. Defaults from local <code>pipeline.py</code>.</td>
+</tr>
+<tr>
+<td><code>--run-id RUN_ID</code></td>
+<td>no</td>
+<td>Run ID to export.</td>
+</tr>
+<tr>
+<td><code>--run-label RUN_LABEL</code></td>
+<td>no</td>
+<td>Run label to export.</td>
+</tr>
+<tr>
+<td><code>--node-name NODE_NAME</code></td>
+<td>no</td>
+<td>Export artifact produced by node.</td>
+</tr>
+<tr>
+<td><code>--artifact-name ARTIFACT_NAME</code></td>
+<td>no</td>
+<td>Export physical artifact table, for example <code>main.policy_core</code>.</td>
+</tr>
+<tr>
+<td><code>--format</code></td>
+<td>no</td>
+<td>Output format: <code>csv</code>, <code>parquet</code>, or <code>json</code>. Defaults to <code>csv</code>.</td>
+</tr>
+<tr>
+<td><code>--output-path OUTPUT_PATH</code></td>
+<td>no</td>
+<td>Explicit output file path.</td>
+</tr>
+<tr>
+<td><code>--overwrite</code></td>
+<td>no</td>
+<td>Replace output file if it exists.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>no</td>
+<td>Emit JSON output.</td>
+</tr>
+</tbody>
+</table>
+<p>Use either <code>--node-name</code> or <code>--artifact-name</code>.</p>
+<h3 id="graph-ui">Graph UI</h3>
+<pre><code class=" language-bash">queron open_graph &lt;pipeline&gt; [--host HOST] [--port PORT] [--no-browser] [--json]</code></pre>
+<table>
+<thead><tr>
+<th>Argument/Flag</th>
+<th>Required</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline</code></td>
+<td>yes</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>--host HOST</code></td>
+<td>no</td>
+<td>Host interface to bind.</td>
+</tr>
+<tr>
+<td><code>--port PORT</code></td>
+<td>no</td>
+<td>Port to bind.</td>
+</tr>
+<tr>
+<td><code>--no-browser</code></td>
+<td>no</td>
+<td>Start server without opening browser.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>no</td>
+<td>Emit server metadata as JSON.</td>
+</tr>
+</tbody>
+</table>
+  </main>
+</body>
+</html>

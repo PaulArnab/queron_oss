@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Internals Guide - Queron Docs</title>
+  <link rel="stylesheet" href="styles.css?v=2">
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, securityLevel: 'loose' });
+  </script>
+</head>
+<body>
+  <aside>
+    <div class="brand">Queron Docs</div>
+    <nav><a href="index.html">Home</a>
+<a href="architecture.html">Architecture</a>
+<a href="internals-guide.html">Internals Guide</a>
+<a href="user-guide.html">User Guide</a>
+<a href="commands-reference.html">Commands Reference</a>
+<a href="pipeline-dsl.html">Pipeline Dsl</a>
+<a href="python-api.html">Python Api</a>
+<a href="cli-reference.html">Cli Reference</a>
+<a href="datatype-mapping.html">Datatype Mapping</a>
+<a href="examples.html">Examples</a></nav>
+  </aside>
+  <main>
+    <h1 id="internals-guide">Internals Guide</h1>
+<p>This guide explains what happens under the hood when Queron compiles, runs, retains artifacts, and serves inspection data.</p>
+<h2 id="architecture-diagram">Architecture Diagram</h2>
+<pre class="mermaid">flowchart TD
+    User[&quot;User: CLI or Python API&quot;] --&gt; API[&quot;queron.api / queron.cli&quot;]
+    API --&gt; Compiler[&quot;Compiler&lt;br/&gt;queron/compiler.py&quot;]
+    Compiler --&gt; PipelineFile[&quot;pipeline.py&lt;br/&gt;decorators expose __queron_node__&quot;]
+    Compiler --&gt; Config[&quot;configurations.yaml&lt;br/&gt;sources / egress / lookup / target&quot;]
+    Compiler --&gt; Contract[&quot;CompiledContractRecord&quot;]
+    Contract --&gt; ArtifactDB[&quot;DuckDB artifact database&lt;br/&gt;.queron/&amp;lt;pipeline_id&amp;gt;/artifact.duckdb&quot;]
+
+    API --&gt; Runtime[&quot;PipelineRuntime&lt;br/&gt;queron/runtime.py&quot;]
+    Runtime --&gt; Executor[&quot;Executor&lt;br/&gt;topological order and failure policy&quot;]
+    Executor --&gt; Runtime
+    Runtime --&gt; DuckDB[&quot;DuckDB local artifacts&lt;br/&gt;main.&amp;lt;out&amp;gt;&quot;]
+    Runtime --&gt; Connectors[&quot;Connector cores&lt;br/&gt;postgres/db2/mssql/mysql/mariadb/oracle&quot;]
+    Connectors --&gt; RemoteDB[&quot;Remote databases&quot;]
+    Runtime --&gt; Files[&quot;CSV / JSONL / Parquet files&quot;]
+    Runtime --&gt; Logs[&quot;JSONL run logs&quot;]
+    Runtime --&gt; ArtifactDB
+
+    Inspect[&quot;Inspect / Export / Graph UI&quot;] --&gt; ArtifactDB
+    Graph[&quot;Graph live server&quot;] --&gt; Inspect
+    Graph --&gt; Browser[&quot;Browser UI&quot;]</pre>
+<h2 id="compile-detailed-flow">Compile: Detailed Flow</h2>
+<p>Compile is the metadata and validation phase. It does not execute pipeline nodes.</p>
+<pre class="mermaid">sequenceDiagram
+    participant Caller as CLI/API
+    participant API as queron.api
+    participant Compiler as compiler.py
+    participant Pipeline as pipeline.py
+    participant Config as configurations.yaml
+    participant DuckDB as artifact.duckdb
+
+    Caller-&gt;&gt;API: compile_pipeline(pipeline.py)
+    API-&gt;&gt;Compiler: compile_pipeline_code(...)
+    Compiler-&gt;&gt;Pipeline: execute source in namespace
+    Pipeline--&gt;&gt;Compiler: decorated functions with __queron_node__
+    Compiler-&gt;&gt;Config: load target/source/egress/lookup config
+    Compiler-&gt;&gt;Compiler: build NodeSpec list
+    Compiler-&gt;&gt;Compiler: resolve queron.ref/source/lookup
+    Compiler-&gt;&gt;Compiler: collect queron.var contract
+    Compiler-&gt;&gt;Compiler: validate DAG and node payloads
+    Compiler--&gt;&gt;API: CompiledPipeline
+    API-&gt;&gt;DuckDB: persist active CompiledContractRecord
+    API--&gt;&gt;Caller: diagnostics and artifact path</pre>
+<h3 id="1-pipeline-code-loading">1. Pipeline Code Loading</h3>
+<p>The API reads <code>pipeline.py</code> and compiles it as Python source. The module is executed in a namespace. Decorators from <code>queron/__init__.py</code> attach a <code>__queron_node__</code> dictionary to each decorated function.</p>
+<p>Example metadata shape:</p>
+<pre><code class=" language-python">{
+    &quot;kind&quot;: &quot;model.sql&quot;,
+    &quot;function_name&quot;: &quot;customer_summary&quot;,
+    &quot;name&quot;: &quot;customer_summary&quot;,
+    &quot;out&quot;: &quot;customer_summary&quot;,
+    &quot;query&quot;: &quot;...&quot;,
+}</code></pre>
+<h3 id="2-nodespec-construction">2. NodeSpec Construction</h3>
+<p>The compiler converts decorator payloads into <code>NodeSpec</code> objects. A node spec contains:</p>
+<ul>
+<li><code>name</code>: unique node name</li>
+<li><code>function_name</code>: Python function name</li>
+<li><code>kind</code>: runtime node kind</li>
+<li><code>sql</code> or <code>query</code></li>
+<li><code>out</code>: logical artifact name</li>
+<li><code>target_table</code>: resolved local DuckDB table for materialized outputs</li>
+<li><code>config</code>: database connection binding name</li>
+<li><code>target_relation</code>: remote egress or lookup table</li>
+<li><code>dependencies</code>: final dependency list</li>
+<li><code>auto_dependencies</code>: dependencies inferred from refs/lookups</li>
+<li><code>manual_dependencies</code>: dependencies from <code>depends_on</code></li>
+<li><code>resolved_sql</code>: SQL with ref/source/lookup placeholders resolved</li>
+<li><code>metadata</code>: runtime vars and compiler metadata</li>
+</ul>
+<h3 id="3-config-resolution">3. Config Resolution</h3>
+<p><code>configurations.yaml</code> controls logical-to-physical relation resolution.</p>
+<p>Compile chooses the target in this order:</p>
+<ol>
+<li>API/CLI explicit target</li>
+<li><code>QUERON_TARGET</code></li>
+<li><code>target:</code> from <code>configurations.yaml</code></li>
+</ol>
+<p>For <code>queron.source(&quot;pg_policy&quot;)</code>, the compiler looks under:</p>
+<pre><code class=" language-yaml">sources:
+  pg_policy:
+    dev:
+      schema: public
+      table: policy</code></pre>
+<p>It renders the physical relation with quoted identifiers, for example:</p>
+<pre><code class=" language-sql">&quot;public&quot;.&quot;policy&quot;</code></pre>
+<h3 id="4-dependency-resolution">4. Dependency Resolution</h3>
+<p>The compiler scans SQL for:</p>
+<ul>
+<li><code>{{ queron.ref(&quot;name&quot;) }}</code></li>
+<li><code>{{ queron.source(&quot;name&quot;) }}</code></li>
+<li><code>{{ queron.lookup(&quot;name&quot;) }}</code></li>
+<li><code>{{ queron.var(&quot;name&quot;) }}</code></li>
+</ul>
+<p><code>queron.ref(...)</code> creates a dependency on the node that produced the referenced <code>out</code>.</p>
+<p><code>depends_on</code> creates a manual dependency even if SQL has no ref.</p>
+<p>Final dependencies are:</p>
+<pre><code class=" language-text">auto_dependencies + manual_dependencies</code></pre>
+<p>Duplicates are removed while preserving order.</p>
+<h3 id="5-sql-rendering">5. SQL Rendering</h3>
+<p>At compile time:</p>
+<ul>
+<li><code>queron.ref(...)</code> becomes the local DuckDB artifact table, usually <code>&quot;main&quot;.&quot;&lt;out&gt;&quot;</code>.</li>
+<li><code>queron.source(...)</code> becomes the configured remote source relation.</li>
+<li><code>queron.lookup(...)</code> becomes the configured remote lookup relation.</li>
+<li><code>queron.var(...)</code> remains a runtime placeholder and is validated separately.</li>
+</ul>
+<h3 id="6-runtime-variable-contract">6. Runtime Variable Contract</h3>
+<p>The compiler records every <code>queron.var(...)</code> use into the contract.</p>
+<p>For each variable it stores:</p>
+<ul>
+<li><code>name</code></li>
+<li><code>kind</code>: <code>scalar</code> or <code>list</code></li>
+<li><code>required</code></li>
+<li><code>default</code></li>
+<li><code>log_value</code></li>
+<li><code>mutable_after_start</code></li>
+<li><code>used_in_nodes</code></li>
+</ul>
+<p>Runtime vars are only valid in SQL value positions. The compiler rejects vars in table names, column names, <code>FROM</code>, <code>JOIN</code>, <code>ORDER BY</code>, and similar structural SQL positions.</p>
+<h3 id="7-validation">7. Validation</h3>
+<p>Compile diagnostics include:</p>
+<table>
+<thead><tr>
+<th>Diagnostic area</th>
+<th>Examples</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Node identity</td>
+<td>duplicate node names, duplicate outputs</td>
+</tr>
+<tr>
+<td>References</td>
+<td>unknown refs, raw direct table references</td>
+</tr>
+<tr>
+<td>Config</td>
+<td>missing <code>config</code>, missing source/egress/lookup relation</td>
+</tr>
+<tr>
+<td>File nodes</td>
+<td>missing path, invalid delimiter, unsupported format</td>
+</tr>
+<tr>
+<td>Egress</td>
+<td>missing target relation, invalid mode</td>
+</tr>
+<tr>
+<td>Runtime vars</td>
+<td>invalid placement, unknown options, conflicting var kind</td>
+</tr>
+<tr>
+<td>DAG</td>
+<td>self-dependency, unknown dependency, cycles</td>
+</tr>
+<tr>
+<td>Imports</td>
+<td>project imports that resolve outside project root</td>
+</tr>
+</tbody>
+</table>
+<p>Compile can return a <code>CompiledPipeline</code> with diagnostics even when errors exist. <code>has_compile_errors(compiled)</code> checks whether execution should proceed.</p>
+<h3 id="8-contract-persistence">8. Contract Persistence</h3>
+<p>The active compile contract is stored in the artifact DuckDB database. It includes:</p>
+<ul>
+<li><code>compile_id</code></li>
+<li><code>pipeline_id</code></li>
+<li><code>pipeline_path</code></li>
+<li><code>project_root</code></li>
+<li><code>artifact_path</code></li>
+<li><code>target</code></li>
+<li>hashes of contract/config/project files</li>
+<li>tracked files</li>
+<li>external dependencies</li>
+<li>runtime var contract</li>
+<li>full spec JSON</li>
+<li>diagnostics</li>
+</ul>
+<p>The contract lets run/resume/inspect verify what pipeline version produced the artifact metadata.</p>
+<h2 id="run-detailed-flow">Run: Detailed Flow</h2>
+<p>Run executes the compiled DAG.</p>
+<pre class="mermaid">sequenceDiagram
+    participant Caller as CLI/API
+    participant API as queron.api
+    participant Runtime as PipelineRuntime
+    participant Exec as executor.py
+    participant Node as Node executor
+    participant DuckDB as artifact.duckdb
+    participant Conn as Connector/File
+
+    Caller-&gt;&gt;API: run_pipeline(...)
+    API-&gt;&gt;API: compile/validate active contract
+    API-&gt;&gt;Runtime: build runtime
+    Runtime-&gt;&gt;DuckDB: record pipeline run started
+    API-&gt;&gt;Exec: execute_pipeline(spec, runtime)
+    Exec-&gt;&gt;Exec: topological order
+    loop selected nodes
+        Exec-&gt;&gt;Runtime: mark_node_running
+        Exec-&gt;&gt;Node: execute_node(node)
+        Node-&gt;&gt;Conn: read/write source, file, or remote target
+        Node-&gt;&gt;DuckDB: create/read local artifact tables
+        Node--&gt;&gt;Runtime: NodeExecutionResult
+        Runtime-&gt;&gt;DuckDB: record node success/warnings/mappings
+    end
+    Runtime-&gt;&gt;DuckDB: mark run success or failure
+    API--&gt;&gt;Caller: RunPipelineResult</pre>
+<h3 id="1-runtime-creation">1. Runtime Creation</h3>
+<p><code>run_pipeline(...)</code> builds <code>PipelineRuntime</code> with:</p>
+<ul>
+<li><code>pipeline_id</code></li>
+<li><code>compile_id</code></li>
+<li>artifact DuckDB path</li>
+<li>project working directory</li>
+<li>compiled <code>PipelineSpec</code></li>
+<li>module globals from the pipeline</li>
+<li>runtime bindings</li>
+<li>runtime vars</li>
+<li>connections config</li>
+<li>log callback</li>
+<li>run policy</li>
+</ul>
+<p>The runtime generates:</p>
+<ul>
+<li><code>run_id</code></li>
+<li><code>log_path</code></li>
+<li>active stop request path</li>
+</ul>
+<h3 id="2-connection-resolution">2. Connection Resolution</h3>
+<p>Database nodes use a <code>config</code> name. Runtime resolves it from:</p>
+<ol>
+<li><code>runtime_bindings</code> passed to <code>run_pipeline</code></li>
+<li><code>connections.yaml</code> from explicit path</li>
+<li><code>QUERON_CONNECTIONS_FILE</code></li>
+<li><code>./connections.yaml</code></li>
+</ol>
+<p>Runtime binding objects and mapping payloads normalize into connector-specific request payloads.</p>
+<h3 id="3-runtime-var-validation">3. Runtime Var Validation</h3>
+<p>Before execution, runtime vars are checked against the compiled contract:</p>
+<ul>
+<li>unknown vars are rejected</li>
+<li>missing required vars are rejected</li>
+<li>list vars must be non-empty lists or tuples</li>
+<li>scalar vars cannot be lists</li>
+<li>defaults are applied</li>
+</ul>
+<p>At SQL execution time, vars are replaced with driver-specific placeholders:</p>
+<table>
+<thead><tr>
+<th>Driver/context</th>
+<th>Placeholder style</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>DuckDB, DB2, MSSQL, MySQL, MariaDB</td>
+<td><code>?</code></td>
+</tr>
+<tr>
+<td>PostgreSQL</td>
+<td><code>%s</code></td>
+</tr>
+<tr>
+<td>Oracle</td>
+<td><code>:1</code>, <code>:2</code>, ...</td>
+</tr>
+</tbody>
+</table>
+<p>Values are passed as parameters, not interpolated into SQL text.</p>
+<h3 id="4-node-selection">4. Node Selection</h3>
+<p>Default run selects every node.</p>
+<p><code>target_node</code> selects:</p>
+<ul>
+<li>the target node</li>
+<li>all upstream dependencies needed by that node</li>
+</ul>
+<p>Execution order is topological. Ready check nodes run before other ready nodes at the same dependency level.</p>
+<h3 id="5-node-execution-by-kind">5. Node Execution by Kind</h3>
+<table>
+<thead><tr>
+<th>Node kind</th>
+<th>Runtime behavior</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>model.sql</code></td>
+<td>Executes DuckDB SQL and materializes <code>main.&lt;out&gt;</code>.</td>
+</tr>
+<tr>
+<td><code>python.ingress</code></td>
+<td>Calls Python function, ingests returned data into DuckDB.</td>
+</tr>
+<tr>
+<td><code>csv/jsonl/parquet.ingress</code></td>
+<td>Reads local file into DuckDB.</td>
+</tr>
+<tr>
+<td>database <code>.ingress</code></td>
+<td>Runs source SQL on remote database and writes result into DuckDB.</td>
+</tr>
+<tr>
+<td>database <code>.lookup</code></td>
+<td>Writes DuckDB query result into a remote lookup table.</td>
+</tr>
+<tr>
+<td>database <code>.egress</code></td>
+<td>Writes DuckDB query result into a remote target table.</td>
+</tr>
+<tr>
+<td>file <code>.egress</code></td>
+<td>Exports DuckDB query result to file.</td>
+</tr>
+<tr>
+<td><code>check.count</code></td>
+<td>Fails if numeric comparison is true.</td>
+</tr>
+<tr>
+<td><code>check.boolean</code></td>
+<td>Fails if boolean result is true.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="6-run-and-node-records">6. Run and Node Records</h3>
+<p>The runtime records:</p>
+<ul>
+<li>pipeline run start/end/status</li>
+<li>node run start/end/status</li>
+<li>active node state</li>
+<li>row counts</li>
+<li>artifact table names</li>
+<li>warnings</li>
+<li>error details</li>
+<li>column mappings</li>
+<li>log path</li>
+<li>runtime var values</li>
+</ul>
+<p>Node statuses include:</p>
+<ul>
+<li><code>ready</code></li>
+<li><code>running</code></li>
+<li><code>complete</code></li>
+<li><code>complete_with_warnings</code></li>
+<li><code>failed</code></li>
+<li><code>skipped</code></li>
+<li><code>cleared</code></li>
+</ul>
+<p>Run statuses include:</p>
+<ul>
+<li><code>pending</code></li>
+<li><code>running</code></li>
+<li><code>success</code></li>
+<li><code>success_with_warnings</code></li>
+<li><code>failed</code></li>
+<li><code>skipped</code></li>
+</ul>
+<h3 id="7-failure-handling">7. Failure Handling</h3>
+<p>Default policy:</p>
+<ul>
+<li><code>on_exception = stop</code></li>
+<li><code>on_warning = continue</code></li>
+<li><code>persist_node_outcomes = true</code></li>
+<li><code>downstream_on_hard_failure = skip</code></li>
+</ul>
+<p>When a node fails:</p>
+<ol>
+<li>current node is marked failed</li>
+<li>remaining selected nodes are marked skipped</li>
+<li>run is marked failed</li>
+<li>exception is raised to the caller</li>
+</ol>
+<h2 id="artifact-retention">Artifact Retention</h2>
+<p>Queron uses DuckDB as the local artifact store.</p>
+<p>Default path:</p>
+<pre><code class=" language-text">.queron/&lt;pipeline_id&gt;/artifact.duckdb</code></pre>
+<p>Related directories:</p>
+<pre><code class=" language-text">.queron/&lt;pipeline_id&gt;/logs/
+.queron/&lt;pipeline_id&gt;/exports/
+.queron/&lt;pipeline_id&gt;/stop_requests/</code></pre>
+<h2 id="active-artifacts">Active Artifacts</h2>
+<p>Materialized node outputs are written as DuckDB tables, usually:</p>
+<pre><code class=" language-text">main.&lt;out&gt;</code></pre>
+<p>Examples:</p>
+<pre><code class=" language-text">main.policy_core
+main.customer_profile
+main.policy_servicing_queue</code></pre>
+<p>These active tables represent the current workspace state for the pipeline.</p>
+<h2 id="archived-run-artifacts">Archived Run Artifacts</h2>
+<p>Successful runs can archive local DuckDB artifact tables per run. Inspection can then read either:</p>
+<ul>
+<li>active artifact database</li>
+<li>archived artifact database for the selected run</li>
+</ul>
+<p>The selected run context tracks:</p>
+<ul>
+<li><code>artifact_path</code></li>
+<li><code>archived_artifact_path</code></li>
+<li><code>is_final</code></li>
+<li>per-node <code>artifact_name</code></li>
+<li>per-node <code>archived_artifact_name</code></li>
+</ul>
+<p>This is why inspection results include both active and archived artifact fields.</p>
+<h2 id="final-runs">Final Runs</h2>
+<p>A run can be marked final. Finality matters for inspection and retention because finalized failed runs become immutable historical records instead of active resume candidates.</p>
+<p><code>--set-final</code> finalizes the latest failed or stale running run before starting a new run.</p>
+<h2 id="clean-existing-outputs">Clean Existing Outputs</h2>
+<p><code>clean_existing=True</code> or <code>--clean-existing</code> drops existing output tables before running. Use this when an existing artifact table conflicts with the run you want to produce.</p>
+<p>Without clean mode, Queron protects existing outputs and can require explicit cleanup.</p>
+<h2 id="reset-behavior">Reset Behavior</h2>
+<p>Reset drops output tables and records cleared state.</p>
+<table>
+<thead><tr>
+<th>Reset API</th>
+<th>Effect</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>reset_node</code></td>
+<td>Clears one node output.</td>
+</tr>
+<tr>
+<td><code>reset_upstream</code></td>
+<td>Clears selected node plus upstream dependencies.</td>
+</tr>
+<tr>
+<td><code>reset_downstream</code></td>
+<td>Clears selected node plus downstream dependents.</td>
+</tr>
+<tr>
+<td><code>reset_all</code></td>
+<td>Clears all materialized outputs.</td>
+</tr>
+</tbody>
+</table>
+<p>Reset uses the compiled DAG to select tables. It is intended for failed runs before resume.</p>
+<h2 id="lookup-table-retention">Lookup Table Retention</h2>
+<p>Database lookup nodes write remote lookup tables. The <code>retain</code> option controls whether a lookup table should remain after use when the connector supports it.</p>
+<table>
+<thead><tr>
+<th>Connector</th>
+<th>Lookup <code>retain</code> exposed</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>PostgreSQL</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>DB2</td>
+<td>no</td>
+</tr>
+<tr>
+<td>MSSQL</td>
+<td>no</td>
+</tr>
+<tr>
+<td>MySQL</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>MariaDB</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Oracle</td>
+<td>yes</td>
+</tr>
+</tbody>
+</table>
+<p>Non-retained lookup tables are registered for cleanup.</p>
+<h2 id="inspect-detailed-flow">Inspect: Detailed Flow</h2>
+<p>Inspect functions are read-only. They reconstruct a run/node view from the artifact database and archived artifact metadata.</p>
+<pre class="mermaid">flowchart LR
+    Selector[&quot;run_id / run_label / latest run&quot;] --&gt; RunContext[&quot;SelectedRunContext&quot;]
+    ArtifactDB[&quot;artifact.duckdb&quot;] --&gt; RunContext
+    RunContext --&gt; Contract[&quot;Active compiled contract&quot;]
+    RunContext --&gt; Runs[&quot;pipeline run records&quot;]
+    RunContext --&gt; NodeRuns[&quot;node run records&quot;]
+    RunContext --&gt; States[&quot;active node states&quot;]
+    RunContext --&gt; Logs[&quot;JSONL logs&quot;]
+    RunContext --&gt; Columns[&quot;column mapping metadata&quot;]
+    RunContext --&gt; Result[&quot;Inspect result dataclass&quot;]</pre>
+<h2 id="run-selection">Run Selection</h2>
+<p>Most inspect APIs accept:</p>
+<ul>
+<li><code>run_id</code></li>
+<li><code>run_label</code></li>
+</ul>
+<p>If neither is supplied, Queron selects the latest run for the pipeline where the calling path allows that default.</p>
+<p>If a selected run has an archived artifact database, inspect uses it for artifact data and active metadata DB for run metadata.</p>
+<h2 id="inspectdag"><code>inspect_dag(...)</code></h2>
+<p><code>inspect_dag</code> returns the full graph view:</p>
+<ul>
+<li>pipeline path</li>
+<li>artifact path</li>
+<li>compile/run IDs</li>
+<li>run label and status</li>
+<li>whether selected run is final</li>
+<li>runtime var contract</li>
+<li>nodes</li>
+<li>edges</li>
+<li>dependency edges</li>
+</ul>
+<p>Each node payload can include:</p>
+<ul>
+<li><code>name</code></li>
+<li><code>kind</code></li>
+<li>current state</li>
+<li>logical artifact</li>
+<li>physical artifact table</li>
+<li>row counts</li>
+<li>warnings</li>
+<li>error message</li>
+<li>lookup table</li>
+<li>dependencies and dependents</li>
+<li>column mappings</li>
+</ul>
+<h2 id="inspectnode"><code>inspect_node(...)</code></h2>
+<p><code>inspect_node</code> returns one of three views:</p>
+<ul>
+<li>one node</li>
+<li>requested node plus upstream dependencies</li>
+<li>requested node plus downstream dependents</li>
+</ul>
+<p>It uses the compiled DAG edges and the selected run state.</p>
+<p>Use cases:</p>
+<ul>
+<li>debug why a node did not run</li>
+<li>see dependencies for a node</li>
+<li>find downstream blast radius before reset</li>
+<li>inspect artifact and lookup metadata</li>
+</ul>
+<h2 id="inspectnodehistory"><code>inspect_node_history(...)</code></h2>
+<p>Returns the timeline of state transitions for one node in one run.</p>
+<p>Typical states:</p>
+<pre><code class=" language-text">ready -&gt; running -&gt; complete
+ready -&gt; running -&gt; failed
+cleared
+skipped</code></pre>
+<p>Use it to answer &quot;what happened to this node during this run?&quot;</p>
+<h2 id="inspectnodelogs"><code>inspect_node_logs(...)</code></h2>
+<p>Reads persisted JSONL logs for the selected run and filters them to a node.</p>
+<p>Use <code>tail</code> to limit returned events.</p>
+<h2 id="inspectnodequery"><code>inspect_node_query(...)</code></h2>
+<p>Returns:</p>
+<ul>
+<li>original SQL</li>
+<li>resolved SQL</li>
+<li>runtime dependencies</li>
+<li>logical artifact</li>
+<li>physical artifact</li>
+<li>effective artifact path</li>
+</ul>
+<p>Use it to debug template expansion. It shows what <code>queron.ref(...)</code>, <code>queron.source(...)</code>, and <code>queron.lookup(...)</code> became after compile.</p>
+<h2 id="exportartifact"><code>export_artifact(...)</code></h2>
+<p>Export reads a materialized DuckDB artifact table and writes it as:</p>
+<ul>
+<li>CSV</li>
+<li>Parquet</li>
+<li>JSON</li>
+</ul>
+<p>Selection can be by:</p>
+<ul>
+<li><code>node_name</code></li>
+<li>physical <code>artifact_name</code>, for example <code>main.policy_core</code></li>
+</ul>
+<p>When no output path is supplied, Queron writes under:</p>
+<pre><code class=" language-text">.queron/&lt;pipeline_id&gt;/exports/&lt;run_id&gt;/</code></pre>
+<h2 id="common-debugging-workflow">Common Debugging Workflow</h2>
+<ol>
+<li>Compile with JSON output.</li>
+</ol>
+<pre><code class=" language-bash">queron compile pipeline.py --json</code></pre>
+<ol>
+<li>Run with streamed logs.</li>
+</ol>
+<pre><code class=" language-bash">queron run pipeline.py --stream-logs</code></pre>
+<ol>
+<li>List runs.</li>
+</ol>
+<pre><code class=" language-bash">queron inspect_runs</code></pre>
+<ol>
+<li>Inspect the DAG.</li>
+</ol>
+<pre><code class=" language-bash">queron inspect_dag --run-id &lt;run_id&gt;</code></pre>
+<ol>
+<li>Inspect failed node.</li>
+</ol>
+<pre><code class=" language-bash">queron inspect_node &lt;node_name&gt; --run-id &lt;run_id&gt;
+queron inspect_node_query &lt;node_name&gt; --run-id &lt;run_id&gt;
+queron inspect_node_logs &lt;node_name&gt; --run-id &lt;run_id&gt; --tail 100</code></pre>
+<ol>
+<li>Reset and resume if appropriate.</li>
+</ol>
+<pre><code class=" language-bash">queron reset-downstream pipeline.py &lt;node_name&gt;
+queron resume pipeline.py --stream-logs</code></pre>
+  </main>
+</body>
+</html>

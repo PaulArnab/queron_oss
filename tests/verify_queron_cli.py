@@ -234,6 +234,7 @@ def seed():
                 runtime_vars={"states": ["TX", "CA"], "start_date": "2026-01-02"},
             )
 
+            self.assertEqual(result.status, "success")
             node = queron.inspect_node(result.artifact_path, "seed", run_id=result.run_id)
 
             self.assertEqual(int(node.nodes[0].get("row_count_out") or 0), 1)
@@ -1829,6 +1830,28 @@ connections:
         self.assertEqual(exit_code, 0)
         self.assertIn("Run succeeded.", stdout.getvalue())
         self.assertTrue(connect_mock.called)
+
+    def test_connections_yaml_accepts_mssql_aliases(self):
+        from queron.config import resolve_connection_binding
+
+        for raw_type in ("mssql", "sqlserver", "sql_server"):
+            payload = resolve_connection_binding(
+                "MSSQL_LOCAL",
+                {
+                    "connections": {
+                        "MSSQL_LOCAL": {
+                            "type": raw_type,
+                            "host": "localhost",
+                            "port": 51433,
+                            "database": "LOOMDB",
+                            "username": "loom_user",
+                            "password": "secret",
+                        }
+                    }
+                },
+            )
+
+            self.assertEqual(payload["type"], "mssql")
 
     def test_run_yes_recreates_existing_outputs(self):
         with tempfile.TemporaryDirectory() as tmpdir:

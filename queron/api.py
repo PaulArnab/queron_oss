@@ -32,6 +32,7 @@ class RunPipelineResult:
     artifact_path: str
     run_id: str | None = None
     run_label: str | None = None
+    status: str | None = None
     log_path: str | None = None
 
 
@@ -948,6 +949,21 @@ def has_compile_errors(compiled: CompiledPipeline) -> bool:
     return any(str(diag.get("level") or "").lower() == "error" for diag in compiled.diagnostics)
 
 
+def _pipeline_run_status(*, artifact_path: str | Path, run_id: str | None) -> str | None:
+    if not str(run_id or "").strip():
+        return None
+    try:
+        import duckdb_core
+
+        row = duckdb_core.get_pipeline_run_by_id(
+            database_path=str(Path(artifact_path).expanduser().resolve()),
+            run_id=str(run_id),
+        )
+    except Exception:
+        return None
+    return str(row.get("status") or "").strip() or None if row else None
+
+
 def execute_compiled_pipeline(
     compiled: CompiledPipeline,
     *,
@@ -1020,6 +1036,12 @@ def resume_compiled_pipeline(
         executed_nodes=executed,
         artifact_path=str(getattr(runtime, "duckdb_path", "")),
         run_id=getattr(runtime, "run_id", None),
+        run_label=getattr(runtime, "run_label", None),
+        status=_pipeline_run_status(
+            artifact_path=str(getattr(runtime, "duckdb_path", "")),
+            run_id=getattr(runtime, "run_id", None),
+        ),
+        log_path=getattr(runtime, "log_path", None),
     )
 
 
@@ -2725,6 +2747,7 @@ def _run_pipeline_impl(
             executed_nodes=[],
             artifact_path=str(resolved_artifact_path),
             run_id=None,
+            status="compile_failed",
             log_path=None,
         )
     pre_runtime_events.append(_emit_log_event(
@@ -2834,6 +2857,7 @@ def _run_pipeline_impl(
         artifact_path=str(resolved_artifact_path),
         run_id=runtime.run_id,
         run_label=runtime.run_label,
+        status=_pipeline_run_status(artifact_path=resolved_artifact_path, run_id=runtime.run_id),
         log_path=runtime.log_path,
     )
 
@@ -2913,6 +2937,7 @@ def _resume_pipeline_impl(
             executed_nodes=[],
             artifact_path=str(resolved_artifact_path),
             run_id=None,
+            status="compile_failed",
             log_path=None,
         )
     pre_runtime_events.append(_emit_log_event(
@@ -2946,6 +2971,7 @@ def _resume_pipeline_impl(
         artifact_path=str(resolved_artifact_path),
         run_id=result.run_id,
         run_label=runtime.run_label,
+        status=result.status,
         log_path=runtime.log_path,
     )
 

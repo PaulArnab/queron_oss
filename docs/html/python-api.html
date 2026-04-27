@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Python API Reference - Queron Docs</title>
+  <link rel="stylesheet" href="styles.css?v=2">
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, securityLevel: 'loose' });
+  </script>
+</head>
+<body>
+  <aside>
+    <div class="brand">Queron Docs</div>
+    <nav><a href="index.html">Home</a>
+<a href="architecture.html">Architecture</a>
+<a href="internals-guide.html">Internals Guide</a>
+<a href="user-guide.html">User Guide</a>
+<a href="commands-reference.html">Commands Reference</a>
+<a href="pipeline-dsl.html">Pipeline Dsl</a>
+<a href="python-api.html">Python Api</a>
+<a href="cli-reference.html">Cli Reference</a>
+<a href="datatype-mapping.html">Datatype Mapping</a>
+<a href="examples.html">Examples</a></nav>
+  </aside>
+  <main>
+    <h1 id="python-api-reference">Python API Reference</h1>
+<p>Import:</p>
+<pre><code class=" language-python">import queron</code></pre>
+<p>The public API is exported from <code>queron/__init__.py</code> and implemented in <code>queron/api.py</code>.</p>
+<h2 id="project-setup">Project Setup</h2>
+<h3 id="initpipelineprojectprojectpath-samplefalse-forcefalse"><code>init_pipeline_project(project_path, *, sample=False, force=False)</code></h3>
+<p>Creates a pipeline project scaffold.</p>
+<p>Arguments:</p>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>project_path</code></td>
+<td><code>str or Path</code></td>
+<td>required</td>
+<td>Directory to create or update.</td>
+</tr>
+<tr>
+<td><code>sample</code></td>
+<td><code>bool</code></td>
+<td><code>False</code></td>
+<td>Write runnable sample pipeline.</td>
+</tr>
+<tr>
+<td><code>force</code></td>
+<td><code>bool</code></td>
+<td><code>False</code></td>
+<td>Overwrite scaffold files.</td>
+</tr>
+</tbody>
+</table>
+<p>Returns <code>InitPipelineProjectResult</code>:</p>
+<ul>
+<li><code>project_path</code></li>
+<li><code>written_files</code></li>
+<li><code>created_directories</code></li>
+<li><code>sample</code></li>
+</ul>
+<h2 id="compile">Compile</h2>
+<h3 id="compilepipelinepipelinepath-configpathnone-targetnone"><code>compile_pipeline(pipeline_path, *, config_path=None, target=None)</code></h3>
+<p>Compiles a pipeline file and persists the active contract.</p>
+<p>Returns <code>CompiledPipeline</code>:</p>
+<ul>
+<li><code>spec</code></li>
+<li><code>diagnostics</code></li>
+<li><code>module_globals</code></li>
+<li><code>contract</code></li>
+</ul>
+<h3 id="compilepipelinetextcode-yamltextnone-targetnone"><code>compile_pipeline_text(code, *, yaml_text=None, target=None)</code></h3>
+<p>Compiles pipeline source code from a string. Useful for tests and generated pipelines.</p>
+<h3 id="hascompileerrorscompiled"><code>has_compile_errors(compiled)</code></h3>
+<p>Returns <code>True</code> if diagnostics contain at least one error.</p>
+<h2 id="run">Run</h2>
+<h3 id="runpipeline"><code>run_pipeline(...)</code></h3>
+<pre><code class=" language-python">result = queron.run_pipeline(
+    &quot;pipeline.py&quot;,
+    config_path=&quot;configurations.yaml&quot;,
+    connections_path=&quot;connections.yaml&quot;,
+    runtime_bindings=None,
+    runtime_vars={&quot;start_date&quot;: &quot;2026-01-01&quot;},
+    target=&quot;dev&quot;,
+    target_node=None,
+    clean_existing=False,
+    set_final=False,
+    pipeline_id=None,
+    run_label=&quot;nightly&quot;,
+    on_log=None,
+)</code></pre>
+<p>Arguments:</p>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline_path</code></td>
+<td><code>str or Path</code></td>
+<td>required</td>
+<td>Pipeline Python file.</td>
+</tr>
+<tr>
+<td><code>config_path</code></td>
+<td><code>str, Path, or None</code></td>
+<td><code>None</code></td>
+<td>Path to <code>configurations.yaml</code>. Defaults to local file when present.</td>
+</tr>
+<tr>
+<td><code>connections_path</code></td>
+<td><code>str, Path, or None</code></td>
+<td><code>None</code></td>
+<td>Path to <code>connections.yaml</code>. Defaults to env/local file when present.</td>
+</tr>
+<tr>
+<td><code>runtime_bindings</code></td>
+<td><code>dict[str, Any] or None</code></td>
+<td><code>None</code></td>
+<td>In-memory connection bindings keyed by config name.</td>
+</tr>
+<tr>
+<td><code>runtime_vars</code></td>
+<td><code>dict[str, Any] or None</code></td>
+<td><code>None</code></td>
+<td>Runtime variable values.</td>
+</tr>
+<tr>
+<td><code>target</code></td>
+<td><code>str or None</code></td>
+<td><code>None</code></td>
+<td>Target environment override.</td>
+</tr>
+<tr>
+<td><code>target_node</code></td>
+<td><code>str or None</code></td>
+<td><code>None</code></td>
+<td>Run only this node and upstream dependencies.</td>
+</tr>
+<tr>
+<td><code>clean_existing</code></td>
+<td><code>bool</code></td>
+<td><code>False</code></td>
+<td>Drop existing output tables before execution.</td>
+</tr>
+<tr>
+<td><code>set_final</code></td>
+<td><code>bool</code></td>
+<td><code>False</code></td>
+<td>Finalize stale failed/running run before starting.</td>
+</tr>
+<tr>
+<td><code>pipeline_id</code></td>
+<td><code>str or None</code></td>
+<td><code>None</code></td>
+<td>Override pipeline ID.</td>
+</tr>
+<tr>
+<td><code>run_label</code></td>
+<td><code>str or None</code></td>
+<td><code>None</code></td>
+<td>Unique run label.</td>
+</tr>
+<tr>
+<td><code>on_log</code></td>
+<td><code>Callable[[PipelineLogEvent], None] or None</code></td>
+<td><code>None</code></td>
+<td>Log callback.</td>
+</tr>
+</tbody>
+</table>
+<p>Returns <code>RunPipelineResult</code>:</p>
+<ul>
+<li><code>compiled</code></li>
+<li><code>executed_nodes</code></li>
+<li><code>artifact_path</code></li>
+<li><code>run_id</code></li>
+<li><code>run_label</code></li>
+<li><code>status</code></li>
+<li><code>log_path</code></li>
+</ul>
+<h3 id="resumepipeline"><code>resume_pipeline(...)</code></h3>
+<p>Resumes the latest failed run.</p>
+<p>Arguments:</p>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>pipeline_path</code></td>
+<td><code>str or Path</code></td>
+<td>required</td>
+<td>Pipeline file.</td>
+</tr>
+<tr>
+<td><code>config_path</code></td>
+<td><code>str, Path, or None</code></td>
+<td><code>None</code></td>
+<td>Configuration path.</td>
+</tr>
+<tr>
+<td><code>connections_path</code></td>
+<td><code>str, Path, or None</code></td>
+<td><code>None</code></td>
+<td>Connections path.</td>
+</tr>
+<tr>
+<td><code>runtime_bindings</code></td>
+<td><code>dict[str, Any] or None</code></td>
+<td><code>None</code></td>
+<td>In-memory bindings.</td>
+</tr>
+<tr>
+<td><code>runtime_vars</code></td>
+<td><code>dict[str, Any] or None</code></td>
+<td><code>None</code></td>
+<td>Runtime vars for resume.</td>
+</tr>
+<tr>
+<td><code>target</code></td>
+<td><code>str or None</code></td>
+<td><code>None</code></td>
+<td>Target override.</td>
+</tr>
+<tr>
+<td><code>on_log</code></td>
+<td>callable</td>
+<td><code>None</code></td>
+<td>Log callback.</td>
+</tr>
+</tbody>
+</table>
+<p>Returns <code>RunPipelineResult</code>.</p>
+<h2 id="stop">Stop</h2>
+<h3 id="stoppipelinepipelinepath-runidnone-reasonnone"><code>stop_pipeline(pipeline_path, *, run_id=None, reason=None)</code></h3>
+<p>Requests graceful stop for a running pipeline.</p>
+<p>Returns <code>StopPipelineResult</code>:</p>
+<ul>
+<li><code>artifact_path</code></li>
+<li><code>run_id</code></li>
+<li><code>run_label</code></li>
+<li><code>stop_requested</code></li>
+<li><code>stop_mode</code></li>
+<li><code>request_path</code></li>
+<li><code>message</code></li>
+</ul>
+<h3 id="forcestoppipelinepipelinepath-runidnone-reasonnone"><code>force_stop_pipeline(pipeline_path, *, run_id=None, reason=None)</code></h3>
+<p>Requests force stop.</p>
+<h2 id="reset">Reset</h2>
+<p>Each reset returns <code>ResetPipelineResult</code>:</p>
+<ul>
+<li><code>compiled</code></li>
+<li><code>artifact_path</code></li>
+<li><code>reset_nodes</code></li>
+<li><code>reset_tables</code></li>
+</ul>
+<h3 id="resetnodepipelinepath-nodename-configpathnone-targetnone-onlognone"><code>reset_node(pipeline_path, *, node_name, config_path=None, target=None, on_log=None)</code></h3>
+<p>Drops the output table for one node and clears its state.</p>
+<h3 id="resetdownstreampipelinepath-nodename-configpathnone-targetnone-onlognone"><code>reset_downstream(pipeline_path, *, node_name, config_path=None, target=None, on_log=None)</code></h3>
+<p>Drops one node and all downstream dependent outputs.</p>
+<h3 id="resetupstreampipelinepath-nodename-configpathnone-targetnone-onlognone"><code>reset_upstream(pipeline_path, *, node_name, config_path=None, target=None, on_log=None)</code></h3>
+<p>Drops one node and all upstream dependency outputs.</p>
+<h3 id="resetallpipelinepath-configpathnone-targetnone-onlognone"><code>reset_all(pipeline_path, *, config_path=None, target=None, on_log=None)</code></h3>
+<p>Drops all pipeline output tables.</p>
+<h2 id="inspect">Inspect</h2>
+<h3 id="inspectdagartifactpath-runidnone-runlabelnone"><code>inspect_dag(artifact_path, *, run_id=None, run_label=None)</code></h3>
+<p>Returns <code>InspectDagResult</code>:</p>
+<ul>
+<li>pipeline and artifact identifiers</li>
+<li>compile/run identifiers</li>
+<li>run status/finality</li>
+<li>runtime var contracts</li>
+<li>nodes</li>
+<li>edges</li>
+<li>dependency edges</li>
+</ul>
+<h3 id="inspectnodeartifactpath-nodename-runidnone-runlabelnone-upstreamfalse-downstreamfalse"><code>inspect_node(artifact_path, node_name, *, run_id=None, run_label=None, upstream=False, downstream=False)</code></h3>
+<p>Returns <code>InspectNodeResult</code>.</p>
+<p>Set <code>upstream=True</code> to inspect dependencies. Set <code>downstream=True</code> to inspect dependents.</p>
+<h3 id="inspectnodehistoryartifactpath-nodename-runidnone-runlabelnone"><code>inspect_node_history(artifact_path, node_name, *, run_id=None, run_label=None)</code></h3>
+<p>Returns node run metadata and state timeline.</p>
+<h3 id="inspectnodelogsartifactpath-nodename-runidnone-runlabelnone-tailnone"><code>inspect_node_logs(artifact_path, node_name, *, run_id=None, run_label=None, tail=None)</code></h3>
+<p>Returns persisted logs for one node.</p>
+<h3 id="inspectnodequeryartifactpath-nodename-runidnone-runlabelnone"><code>inspect_node_query(artifact_path, node_name, *, run_id=None, run_label=None)</code></h3>
+<p>Returns original SQL, resolved SQL, dependencies, and artifact metadata.</p>
+<h2 id="export">Export</h2>
+<h3 id="exportartifact"><code>export_artifact(...)</code></h3>
+<pre><code class=" language-python">result = queron.export_artifact(
+    artifact_path,
+    node_name=&quot;customer_summary&quot;,
+    format=&quot;csv&quot;,
+    output_path=&quot;exports/customer_summary.csv&quot;,
+    overwrite=True,
+)</code></pre>
+<p>Arguments:</p>
+<table>
+<thead><tr>
+<th>Argument</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>artifact_path</code></td>
+<td><code>str or Path</code></td>
+<td>required</td>
+<td>Artifact DuckDB path.</td>
+</tr>
+<tr>
+<td><code>node_name</code></td>
+<td><code>str or None</code></td>
+<td><code>None</code></td>
+<td>Node whose artifact should be exported.</td>
+</tr>
+<tr>
+<td><code>artifact_name</code></td>
+<td><code>str or None</code></td>
+<td><code>None</code></td>
+<td>Physical artifact table, for example <code>main.customer_summary</code>.</td>
+</tr>
+<tr>
+<td><code>run_id</code></td>
+<td><code>str or None</code></td>
+<td><code>None</code></td>
+<td>Run selector.</td>
+</tr>
+<tr>
+<td><code>run_label</code></td>
+<td><code>str or None</code></td>
+<td><code>None</code></td>
+<td>Run selector.</td>
+</tr>
+<tr>
+<td><code>format</code></td>
+<td><code>str</code></td>
+<td><code>csv</code></td>
+<td><code>csv</code>, <code>parquet</code>, or <code>json</code>.</td>
+</tr>
+<tr>
+<td><code>output_path</code></td>
+<td><code>str, Path, or None</code></td>
+<td><code>None</code></td>
+<td>Explicit output path.</td>
+</tr>
+<tr>
+<td><code>overwrite</code></td>
+<td><code>bool</code></td>
+<td><code>False</code></td>
+<td>Replace output file.</td>
+</tr>
+</tbody>
+</table>
+<p>Returns <code>ExportArtifactResult</code>.</p>
+<h2 id="runtime-bindings">Runtime Bindings</h2>
+<p>Use binding objects when you do not want to use <code>connections.yaml</code>.</p>
+<pre><code class=" language-python">binding = queron.PostgresBinding(
+    host=&quot;localhost&quot;,
+    port=5432,
+    database=&quot;retail_db&quot;,
+    username=&quot;admin&quot;,
+    password=&quot;password123&quot;,
+)
+
+queron.run_pipeline(
+    &quot;pipeline.py&quot;,
+    runtime_bindings={&quot;PostGres&quot;: binding},
+)</code></pre>
+<p>Available binding classes:</p>
+<ul>
+<li><code>PostgresBinding</code></li>
+<li><code>Db2Binding</code></li>
+<li><code>MssqlBinding</code></li>
+<li><code>MysqlBinding</code></li>
+<li><code>MariaDbBinding</code></li>
+<li><code>OracleBinding</code></li>
+</ul>
+<p>Each binding accepts <code>config_factory</code>. Values returned by the factory override constructor values.</p>
+<h2 id="log-callbacks">Log Callbacks</h2>
+<p>Use <code>on_log</code> to receive structured runtime logs:</p>
+<pre><code class=" language-python">def print_log(event):
+    print(event.timestamp, event.severity, event.code, event.message)
+
+queron.run_pipeline(&quot;pipeline.py&quot;, on_log=print_log)</code></pre>
+<p>Graph log publisher:</p>
+<pre><code class=" language-python">handler = queron.graph_log_publisher(&quot;http://127.0.0.1:8765&quot;)
+queron.run_pipeline(&quot;pipeline.py&quot;, on_log=handler)</code></pre>
+<p>Fan out to multiple handlers:</p>
+<pre><code class=" language-python">handler = queron.fanout_log_handlers(print_log, queron.graph_log_publisher(url))</code></pre>
+  </main>
+</body>
+</html>

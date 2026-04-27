@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queron Documentation - Queron Docs</title>
+  <link rel="stylesheet" href="styles.css?v=2">
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, securityLevel: 'loose' });
+  </script>
+</head>
+<body>
+  <aside>
+    <div class="brand">Queron Docs</div>
+    <nav><a href="index.html">Home</a>
+<a href="architecture.html">Architecture</a>
+<a href="internals-guide.html">Internals Guide</a>
+<a href="user-guide.html">User Guide</a>
+<a href="commands-reference.html">Commands Reference</a>
+<a href="pipeline-dsl.html">Pipeline Dsl</a>
+<a href="python-api.html">Python Api</a>
+<a href="cli-reference.html">Cli Reference</a>
+<a href="datatype-mapping.html">Datatype Mapping</a>
+<a href="examples.html">Examples</a></nav>
+  </aside>
+  <main>
+    <p>﻿# Example Pipeline</p>
+<p>This page uses one large example to show the complete shape of a Queron project: local files, Python ingress, SQL models, checks, lookups, database ingress, database egress, file egress, runtime vars, and runtime bindings.</p>
+<p>For exact command arguments, see <a href="commands-reference.html">CLI and Python Commands</a>. For decorator arguments, see <a href="pipeline-dsl.html">Pipeline DSL Reference</a>.</p>
+<h2 id="project-files">Project Files</h2>
+<pre><code class=" language-text">customer_360_pipeline/
+  pipeline.py
+  configurations.yaml
+  connections.yaml
+  local_files/
+    vip_customers.csv
+    servicing_overrides.jsonl
+    segment_targets.parquet</code></pre>
+<h2 id="interactive-pipelinepy">Interactive <code>pipeline.py</code></h2>
+<section class="interactive-code"><div class="code-toolbar"><strong>pipeline.py</strong><span>Click linked decorators, helpers, and bindings for their reference.</span></div><div class="code-scroll"><div class="code-row"><a class="line-no" id="pipeline-L1" href="#pipeline-L1">1</a><code>from pathlib import Path</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L2" href="#pipeline-L2">2</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L3" href="#pipeline-L3">3</a><code>import queron</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L4" href="#pipeline-L4">4</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L5" href="#pipeline-L5">5</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L6" href="#pipeline-L6">6</a><code>PIPELINE_ID = &quot;customer_360_demo&quot;</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L7" href="#pipeline-L7">7</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L8" href="#pipeline-L8">8</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L9" href="#pipeline-L9">9</a><code><a href="commands-reference.html#file-ingress">@queron.csv.ingress</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L10" href="#pipeline-L10">10</a><code>    name=&quot;vip_customers&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L11" href="#pipeline-L11">11</a><code>    out=&quot;vip_customers&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L12" href="#pipeline-L12">12</a><code>    path=&quot;local_files/vip_customers.csv&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L13" href="#pipeline-L13">13</a><code>    header=True,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L14" href="#pipeline-L14">14</a><code>    delimiter=&quot;,&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L15" href="#pipeline-L15">15</a><code>    columns={</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L16" href="#pipeline-L16">16</a><code>        &quot;customer_number&quot;: &quot;VARCHAR&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L17" href="#pipeline-L17">17</a><code>        &quot;vip_flag&quot;: &quot;BOOLEAN&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L18" href="#pipeline-L18">18</a><code>        &quot;vip_reason&quot;: &quot;VARCHAR&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L19" href="#pipeline-L19">19</a><code>    },</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L20" href="#pipeline-L20">20</a><code>)</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L21" href="#pipeline-L21">21</a><code>def vip_customers():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L22" href="#pipeline-L22">22</a><code>    pass</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L23" href="#pipeline-L23">23</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L24" href="#pipeline-L24">24</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L25" href="#pipeline-L25">25</a><code><a href="commands-reference.html#database-ingress">@queron.postgres.ingress</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L26" href="#pipeline-L26">26</a><code>    config=&quot;PostGres&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L27" href="#pipeline-L27">27</a><code>    name=&quot;policy_core&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L28" href="#pipeline-L28">28</a><code>    out=&quot;policy_core&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L29" href="#pipeline-L29">29</a><code>    sql=f&quot;&quot;&quot;</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L30" href="#pipeline-L30">30</a><code>SELECT</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L31" href="#pipeline-L31">31</a><code>    policy_id,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L32" href="#pipeline-L32">32</a><code>    policy_number,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L33" href="#pipeline-L33">33</a><code>    customer_number,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L34" href="#pipeline-L34">34</a><code>    product_line,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L35" href="#pipeline-L35">35</a><code>    status,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L36" href="#pipeline-L36">36</a><code>    written_premium</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L37" href="#pipeline-L37">37</a><code>FROM {<a href="commands-reference.html#sql-template-helpers">queron.source</a>(&quot;pg_policy&quot;)}</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L38" href="#pipeline-L38">38</a><code>WHERE effective_date &lt;= {<a href="commands-reference.html#sql-template-helpers">queron.var</a>(&quot;as_of_date&quot;)}</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L39" href="#pipeline-L39">39</a><code>  AND written_premium &gt;= {<a href="commands-reference.html#sql-template-helpers">queron.var</a>(&quot;min_premium&quot;, default=0)}</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L40" href="#pipeline-L40">40</a><code>&quot;&quot;&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L41" href="#pipeline-L41">41</a><code>)</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L42" href="#pipeline-L42">42</a><code>def policy_core():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L43" href="#pipeline-L43">43</a><code>    pass</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L44" href="#pipeline-L44">44</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L45" href="#pipeline-L45">45</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L46" href="#pipeline-L46">46</a><code><a href="commands-reference.html#local-sql-model">@queron.model.sql</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L47" href="#pipeline-L47">47</a><code>    name=&quot;active_policy_keys&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L48" href="#pipeline-L48">48</a><code>    out=&quot;active_policy_keys&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L49" href="#pipeline-L49">49</a><code>    query=f&quot;&quot;&quot;</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L50" href="#pipeline-L50">50</a><code>SELECT policy_id, policy_number, customer_number</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L51" href="#pipeline-L51">51</a><code>FROM {<a href="commands-reference.html#sql-template-helpers">queron.ref</a>(&quot;policy_core&quot;)}</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L52" href="#pipeline-L52">52</a><code>WHERE status = &#x27;ACTIVE&#x27;</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L53" href="#pipeline-L53">53</a><code>&quot;&quot;&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L54" href="#pipeline-L54">54</a><code>)</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L55" href="#pipeline-L55">55</a><code>def active_policy_keys():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L56" href="#pipeline-L56">56</a><code>    pass</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L57" href="#pipeline-L57">57</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L58" href="#pipeline-L58">58</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L59" href="#pipeline-L59">59</a><code><a href="commands-reference.html#database-lookup">@queron.postgres.lookup</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L60" href="#pipeline-L60">60</a><code>    config=&quot;PostGres&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L61" href="#pipeline-L61">61</a><code>    name=&quot;stage_pg_active_policy_lookup&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L62" href="#pipeline-L62">62</a><code>    table=&quot;pg_active_policy_lookup&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L63" href="#pipeline-L63">63</a><code>    sql=f&quot;SELECT policy_id FROM {<a href="commands-reference.html#sql-template-helpers">queron.ref</a>(&#x27;active_policy_keys&#x27;)}&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L64" href="#pipeline-L64">64</a><code>    mode=&quot;replace&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L65" href="#pipeline-L65">65</a><code>    retain=False,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L66" href="#pipeline-L66">66</a><code>    out=&quot;stage_pg_active_policy_lookup&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L67" href="#pipeline-L67">67</a><code>)</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L68" href="#pipeline-L68">68</a><code>def stage_pg_active_policy_lookup():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L69" href="#pipeline-L69">69</a><code>    pass</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L70" href="#pipeline-L70">70</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L71" href="#pipeline-L71">71</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L72" href="#pipeline-L72">72</a><code><a href="commands-reference.html#database-lookup">@queron.mysql.lookup</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L73" href="#pipeline-L73">73</a><code>    config=&quot;MySqlMain&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L74" href="#pipeline-L74">74</a><code>    name=&quot;stage_mysql_customer_lookup&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L75" href="#pipeline-L75">75</a><code>    table=&quot;mysql_customer_lookup&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L76" href="#pipeline-L76">76</a><code>    sql=f&quot;SELECT customer_number FROM {<a href="commands-reference.html#sql-template-helpers">queron.ref</a>(&#x27;active_policy_keys&#x27;)}&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L77" href="#pipeline-L77">77</a><code>    mode=&quot;replace&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L78" href="#pipeline-L78">78</a><code>    retain=False,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L79" href="#pipeline-L79">79</a><code>    out=&quot;stage_mysql_customer_lookup&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L80" href="#pipeline-L80">80</a><code>)</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L81" href="#pipeline-L81">81</a><code>def stage_mysql_customer_lookup():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L82" href="#pipeline-L82">82</a><code>    pass</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L83" href="#pipeline-L83">83</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L84" href="#pipeline-L84">84</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L85" href="#pipeline-L85">85</a><code><a href="commands-reference.html#local-sql-model">@queron.model.sql</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L86" href="#pipeline-L86">86</a><code>    name=&quot;customer_360&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L87" href="#pipeline-L87">87</a><code>    out=&quot;customer_360&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L88" href="#pipeline-L88">88</a><code>    query=f&quot;&quot;&quot;</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L89" href="#pipeline-L89">89</a><code>SELECT</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L90" href="#pipeline-L90">90</a><code>    p.policy_id,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L91" href="#pipeline-L91">91</a><code>    p.policy_number,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L92" href="#pipeline-L92">92</a><code>    p.customer_number,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L93" href="#pipeline-L93">93</a><code>    p.product_line,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L94" href="#pipeline-L94">94</a><code>    p.written_premium,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L95" href="#pipeline-L95">95</a><code>    COALESCE(v.vip_flag, FALSE) AS vip_flag,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L96" href="#pipeline-L96">96</a><code>    v.vip_reason</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L97" href="#pipeline-L97">97</a><code>FROM {<a href="commands-reference.html#sql-template-helpers">queron.ref</a>(&quot;policy_core&quot;)} p</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L98" href="#pipeline-L98">98</a><code>LEFT JOIN {<a href="commands-reference.html#sql-template-helpers">queron.ref</a>(&quot;vip_customers&quot;)} v</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L99" href="#pipeline-L99">99</a><code>  ON p.customer_number = v.customer_number</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L100" href="#pipeline-L100">100</a><code>&quot;&quot;&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L101" href="#pipeline-L101">101</a><code>)</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L102" href="#pipeline-L102">102</a><code>def customer_360():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L103" href="#pipeline-L103">103</a><code>    pass</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L104" href="#pipeline-L104">104</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L105" href="#pipeline-L105">105</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L106" href="#pipeline-L106">106</a><code><a href="commands-reference.html#checks">@queron.check.fail_if_count</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L107" href="#pipeline-L107">107</a><code>    name=&quot;require_customer_360_rows&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L108" href="#pipeline-L108">108</a><code>    query=f&quot;SELECT COUNT(*) FROM {<a href="commands-reference.html#sql-template-helpers">queron.ref</a>(&#x27;customer_360&#x27;)}&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L109" href="#pipeline-L109">109</a><code>    operator=&quot;&lt;=&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L110" href="#pipeline-L110">110</a><code>    value=0,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L111" href="#pipeline-L111">111</a><code>)</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L112" href="#pipeline-L112">112</a><code>def require_customer_360_rows():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L113" href="#pipeline-L113">113</a><code>    pass</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L114" href="#pipeline-L114">114</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L115" href="#pipeline-L115">115</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L116" href="#pipeline-L116">116</a><code><a href="commands-reference.html#file-egress">@queron.csv.egress</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L117" href="#pipeline-L117">117</a><code>    name=&quot;export_customer_360_csv&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L118" href="#pipeline-L118">118</a><code>    path=&quot;exports/customer_360.csv&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L119" href="#pipeline-L119">119</a><code>    sql=f&quot;SELECT * FROM {<a href="commands-reference.html#sql-template-helpers">queron.ref</a>(&#x27;customer_360&#x27;)}&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L120" href="#pipeline-L120">120</a><code>    overwrite=True,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L121" href="#pipeline-L121">121</a><code>    header=True,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L122" href="#pipeline-L122">122</a><code>    delimiter=&quot;,&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L123" href="#pipeline-L123">123</a><code>    out=&quot;export_customer_360_csv&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L124" href="#pipeline-L124">124</a><code>)</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L125" href="#pipeline-L125">125</a><code>def export_customer_360_csv():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L126" href="#pipeline-L126">126</a><code>    pass</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L127" href="#pipeline-L127">127</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L128" href="#pipeline-L128">128</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L129" href="#pipeline-L129">129</a><code><a href="commands-reference.html#database-egress">@queron.postgres.egress</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L130" href="#pipeline-L130">130</a><code>    config=&quot;PostGres&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L131" href="#pipeline-L131">131</a><code>    name=&quot;write_pg_customer_360&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L132" href="#pipeline-L132">132</a><code>    table=&quot;pg_customer_360_load&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L133" href="#pipeline-L133">133</a><code>    sql=f&quot;SELECT * FROM {<a href="commands-reference.html#sql-template-helpers">queron.ref</a>(&#x27;customer_360&#x27;)}&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L134" href="#pipeline-L134">134</a><code>    mode=&quot;replace&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L135" href="#pipeline-L135">135</a><code>    retain=False,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L136" href="#pipeline-L136">136</a><code>    out=&quot;write_pg_customer_360&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L137" href="#pipeline-L137">137</a><code>)</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L138" href="#pipeline-L138">138</a><code>def write_pg_customer_360():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L139" href="#pipeline-L139">139</a><code>    pass</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L140" href="#pipeline-L140">140</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L141" href="#pipeline-L141">141</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L142" href="#pipeline-L142">142</a><code>if __name__ == &quot;__main__&quot;:</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L143" href="#pipeline-L143">143</a><code>    runtime_bindings = {</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L144" href="#pipeline-L144">144</a><code>        &quot;PostGres&quot;: <a href="python-api.html#runtime-bindings">queron.PostgresBinding</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L145" href="#pipeline-L145">145</a><code>            host=&quot;localhost&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L146" href="#pipeline-L146">146</a><code>            port=5432,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L147" href="#pipeline-L147">147</a><code>            database=&quot;retail_db&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L148" href="#pipeline-L148">148</a><code>            username=&quot;admin&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L149" href="#pipeline-L149">149</a><code>            password=&quot;password123&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L150" href="#pipeline-L150">150</a><code>        ),</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L151" href="#pipeline-L151">151</a><code>        &quot;MySqlMain&quot;: <a href="python-api.html#runtime-bindings">queron.MysqlBinding</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L152" href="#pipeline-L152">152</a><code>            host=&quot;localhost&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L153" href="#pipeline-L153">153</a><code>            port=3306,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L154" href="#pipeline-L154">154</a><code>            database=&quot;billing&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L155" href="#pipeline-L155">155</a><code>            username=&quot;app&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L156" href="#pipeline-L156">156</a><code>            password=&quot;password123&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L157" href="#pipeline-L157">157</a><code>        ),</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L158" href="#pipeline-L158">158</a><code>    }</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L159" href="#pipeline-L159">159</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L160" href="#pipeline-L160">160</a><code>    result = <a href="commands-reference.html#compile-and-run-api">queron.run_pipeline</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L161" href="#pipeline-L161">161</a><code>        Path(__file__).resolve(),</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L162" href="#pipeline-L162">162</a><code>        config_path=&quot;configurations.yaml&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L163" href="#pipeline-L163">163</a><code>        runtime_bindings=runtime_bindings,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L164" href="#pipeline-L164">164</a><code>        runtime_vars={</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L165" href="#pipeline-L165">165</a><code>            &quot;as_of_date&quot;: &quot;2026-04-01&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L166" href="#pipeline-L166">166</a><code>            &quot;min_premium&quot;: 1000,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L167" href="#pipeline-L167">167</a><code>        },</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L168" href="#pipeline-L168">168</a><code>        clean_existing=True,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L169" href="#pipeline-L169">169</a><code>        run_label=&quot;local_python_run&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L170" href="#pipeline-L170">170</a><code>    )</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L171" href="#pipeline-L171">171</a><code>    print(result)</code></div></div></section>
+<h2 id="configurationsyaml"><code>configurations.yaml</code></h2>
+<pre><code class=" language-yaml">target: dev
+
+sources:
+  pg_policy:
+    dev:
+      schema: public
+      table: policy
+  pg_claim:
+    dev:
+      schema: public
+      table: claim
+  db2_customer:
+    dev:
+      schema: DB2INST1
+      table: CUSTOMER
+  mssql_agent:
+    dev:
+      schema: dbo
+      table: agent
+  mysql_billing:
+    dev:
+      schema: billing
+      table: invoice
+  mariadb_support_case:
+    dev:
+      schema: support
+      table: support_case
+  oracle_risk_score:
+    dev:
+      schema: RISK
+      table: RISK_SCORE
+
+lookup:
+  pg_active_policy_lookup:
+    dev:
+      schema: public
+      table: active_policy_lookup
+  db2_customer_lookup:
+    dev:
+      schema: DB2INST1
+      table: CUSTOMER_LOOKUP
+  mssql_agent_lookup:
+    dev:
+      schema: dbo
+      table: agent_lookup
+  mysql_billing_lookup:
+    dev:
+      schema: billing
+      table: billing_lookup
+  mariadb_case_lookup:
+    dev:
+      schema: support
+      table: case_lookup
+  oracle_risk_lookup:
+    dev:
+      schema: RISK
+      table: RISK_LOOKUP
+
+egress:
+  pg_customer_360_load:
+    dev:
+      schema: public
+      table: customer_360_load
+  db2_customer_360_load:
+    dev:
+      schema: DB2INST1
+      table: CUSTOMER_360_LOAD
+  mssql_customer_360_load:
+    dev:
+      schema: dbo
+      table: customer_360_load
+  mysql_customer_360_load:
+    dev:
+      schema: analytics
+      table: customer_360_load
+  mariadb_customer_360_load:
+    dev:
+      schema: analytics
+      table: customer_360_load
+  oracle_customer_360_load:
+    dev:
+      schema: ANALYTICS
+      table: CUSTOMER_360_LOAD</code></pre>
+<h2 id="connectionsyaml"><code>connections.yaml</code></h2>
+<pre><code class=" language-yaml">connections:
+  PostGres:
+    type: postgres
+    host: localhost
+    port: 5432
+    database: retail_db
+    username: admin
+    password_env: POSTGRES_PASSWORD
+
+  DB2Main:
+    type: db2
+    host: localhost
+    port: 50000
+    database: LOOMDB
+    username: db2inst1
+    password_env: DB2_PASSWORD
+
+  MsSqlMain:
+    type: mssql
+    host: localhost
+    port: 1433
+    database: RetailDW
+    username: sa
+    password_env: MSSQL_PASSWORD
+    driver: ODBC Driver 18 for SQL Server
+    encrypt: true
+    trust_server_certificate: true
+
+  MySqlMain:
+    type: mysql
+    host: localhost
+    port: 3306
+    database: billing
+    username: app
+    password_env: MYSQL_PASSWORD
+
+  MariaDbMain:
+    type: mariadb
+    host: localhost
+    port: 3306
+    database: support
+    username: app
+    password_env: MARIADB_PASSWORD
+
+  OracleMain:
+    type: oracle
+    host: localhost
+    port: 1521
+    service_name: FREEPDB1
+    username: app
+    password_env: ORACLE_PASSWORD</code></pre>
+<h2 id="execution-walkthrough">Execution Walkthrough</h2>
+<p>Start from the project folder.</p>
+<h3 id="1-compile">1. Compile</h3>
+<p>Use <a href="commands-reference.html#compile"><code>queron compile</code></a> to validate decorators, resolve <code>queron.ref</code>, <code>queron.source</code>, and <code>queron.lookup</code>, collect runtime vars, validate the DAG, and write the active contract to the artifact database.</p>
+<pre><code class=" language-bash">queron compile pipeline.py --config configurations.yaml --target dev --json</code></pre>
+<p>Expected result:</p>
+<ul>
+<li><code>pipeline.py</code> is parsed.</li>
+<li>every decorator becomes a node spec.</li>
+<li><code>configurations.yaml</code> resolves source, lookup, and egress relation names.</li>
+<li>runtime vars such as <code>as_of_date</code>, <code>states</code>, and <code>min_premium</code> are added to the contract.</li>
+<li>the active contract is stored under <code>.queron/customer_360_demo/artifact.duckdb</code>.</li>
+</ul>
+<h3 id="2-run">2. Run</h3>
+<p>Use <a href="commands-reference.html#run"><code>queron run</code></a> to execute the DAG.</p>
+<pre><code class=" language-bash">queron run pipeline.py \
+  --config configurations.yaml \
+  --connections connections.yaml \
+  --target dev \
+  --run-label nightly_customer_360 \
+  --vars-json &quot;{\&quot;as_of_date\&quot;:\&quot;2026-04-01\&quot;,\&quot;states\&quot;:[\&quot;TX\&quot;,\&quot;IL\&quot;,\&quot;CA\&quot;],\&quot;min_premium\&quot;:1000}&quot; \
+  --clean-existing \
+  --stream-logs</code></pre>
+<p>Execution order is dependency-driven:</p>
+<ol>
+<li>Local file and Python ingress nodes create local DuckDB artifacts.</li>
+<li>Database ingress nodes read from source systems into DuckDB.</li>
+<li>Lookup nodes publish filtered DuckDB data back into remote lookup tables.</li>
+<li>Lookup consumer ingress nodes read remote records using <code>queron.lookup(...)</code>.</li>
+<li><code>model.sql</code> nodes combine all sources into <code>customer_360</code>.</li>
+<li>Check nodes validate the result.</li>
+<li>File egress nodes export CSV, JSONL, and Parquet.</li>
+<li>Database egress nodes write the final result to every target system.</li>
+</ol>
+<h3 id="3-inspect-runs">3. Inspect Runs</h3>
+<p>Use <a href="commands-reference.html#inspect-runs"><code>queron inspect_runs</code></a> to find the run.</p>
+<pre><code class=" language-bash">queron inspect_runs --pipeline-id customer_360_demo --limit 5</code></pre>
+<h3 id="4-inspect-the-dag">4. Inspect the DAG</h3>
+<p>Use <a href="commands-reference.html#inspect-dag"><code>queron inspect_dag</code></a> to see node status, dependencies, artifact names, and current state.</p>
+<pre><code class=" language-bash">queron inspect_dag --pipeline-id customer_360_demo --run-label nightly_customer_360</code></pre>
+<h3 id="5-inspect-one-node">5. Inspect One Node</h3>
+<p>Use <a href="commands-reference.html#inspect-node"><code>queron inspect_node</code></a> to debug a node or dependency slice.</p>
+<pre><code class=" language-bash">queron inspect_node customer_360 --pipeline-id customer_360_demo --run-label nightly_customer_360
+queron inspect_node customer_360 --pipeline-id customer_360_demo --run-label nightly_customer_360 --upstream
+queron inspect_node customer_360 --pipeline-id customer_360_demo --run-label nightly_customer_360 --downstream</code></pre>
+<h3 id="6-inspect-sql-expansion">6. Inspect SQL Expansion</h3>
+<p>Use <a href="commands-reference.html#inspect-node-history-logs-and-query"><code>queron inspect_node_query</code></a> to see original SQL and resolved SQL.</p>
+<pre><code class=" language-bash">queron inspect_node_query customer_360 --pipeline-id customer_360_demo --run-label nightly_customer_360</code></pre>
+<p>This is where you confirm that:</p>
+<ul>
+<li><code>queron.ref(&quot;policy_core&quot;)</code> became a local DuckDB table.</li>
+<li><code>queron.source(&quot;pg_policy&quot;)</code> became the configured PostgreSQL relation.</li>
+<li><code>queron.lookup(&quot;pg_active_policy_lookup&quot;)</code> became the configured remote lookup table.</li>
+<li>runtime vars remained parameterized.</li>
+</ul>
+<h3 id="7-inspect-logs">7. Inspect Logs</h3>
+<p>Use <a href="commands-reference.html#inspect-logs"><code>queron inspect_logs</code></a> and <a href="commands-reference.html#inspect-node-history-logs-and-query"><code>queron inspect_node_logs</code></a> to debug execution.</p>
+<pre><code class=" language-bash">queron inspect_logs --pipeline-id customer_360_demo --run-label nightly_customer_360 --tail 100 --verbose
+queron inspect_node_logs customer_360 --pipeline-id customer_360_demo --run-label nightly_customer_360 --tail 50</code></pre>
+<h3 id="8-export-an-artifact">8. Export an Artifact</h3>
+<p>Use <a href="commands-reference.html#export"><code>queron export_artifact</code></a> to export a materialized DuckDB artifact after a run.</p>
+<pre><code class=" language-bash">queron export_artifact \
+  --pipeline-id customer_360_demo \
+  --run-label nightly_customer_360 \
+  --node-name customer_360 \
+  --format parquet \
+  --output-path exports/customer_360_from_artifact.parquet \
+  --overwrite</code></pre>
+<h3 id="9-open-the-graph-ui">9. Open the Graph UI</h3>
+<p>Use <a href="commands-reference.html#graph-ui"><code>queron open_graph</code></a> for visual inspection.</p>
+<pre><code class=" language-bash">queron open_graph pipeline.py --port 8765</code></pre>
+<p>Run again and publish live logs:</p>
+<pre><code class=" language-bash">queron run pipeline.py \
+  --connections connections.yaml \
+  --vars-json &quot;{\&quot;as_of_date\&quot;:\&quot;2026-04-01\&quot;,\&quot;states\&quot;:[\&quot;TX\&quot;,\&quot;IL\&quot;,\&quot;CA\&quot;],\&quot;min_premium\&quot;:1000}&quot; \
+  --graph-url http://127.0.0.1:8765 \
+  --stream-logs</code></pre>
+  </main>
+</body>
+</html>

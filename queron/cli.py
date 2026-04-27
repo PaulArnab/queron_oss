@@ -519,6 +519,19 @@ def _build_parser() -> argparse.ArgumentParser:
     export_artifact_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
     export_artifact_parser.set_defaults(handler=_handle_export_artifact)
 
+    docs_parser = subparsers.add_parser(
+        "docs",
+        help="Open the local Queron HTML documentation.",
+    )
+    docs_parser.add_argument(
+        "--no-browser",
+        dest="no_browser",
+        action="store_true",
+        help="Print the docs path without opening a browser window.",
+    )
+    docs_parser.add_argument("--json", action="store_true", dest="json_output", help="Write JSON output.")
+    docs_parser.set_defaults(handler=_handle_docs)
+
     open_graph_parser = subparsers.add_parser(
         "open_graph",
         help="Launch the local graph UI for one compiled pipeline.",
@@ -1436,6 +1449,30 @@ def _handle_export_artifact(args: argparse.Namespace) -> int:
     if result.file_size_bytes is not None:
         print(f"File size: {result.file_size_bytes} bytes")
     print(f"Output: {result.output_path}")
+    return 0
+
+
+def _handle_docs(args: argparse.Namespace) -> int:
+    docs_path = (Path(__file__).resolve().parent.parent / "docs" / "html" / "index.html").resolve()
+    if not docs_path.exists() or not docs_path.is_file():
+        message = f"Docs index was not found at '{docs_path}'."
+        if args.json_output:
+            return _emit_json({"ok": False, "error": message})
+        print(f"Docs failed: {message}", file=sys.stderr)
+        return 1
+
+    url = docs_path.as_uri()
+    payload = {
+        "ok": True,
+        "docs_path": str(docs_path),
+        "url": url,
+    }
+    if args.json_output:
+        return _emit_json(payload)
+
+    print(f"Docs: {docs_path}")
+    if not bool(args.no_browser):
+        webbrowser.open(url)
     return 0
 
 
