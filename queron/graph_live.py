@@ -33,7 +33,7 @@ from .api import (
     force_stop_pipeline,
 )
 from .cli import _load_pipeline_namespace, _pipeline_id_from_file, _runtime_bindings_from_file
-from .runtime_models import LogCode, PipelineLogEvent
+from .runtime_models import LogCode, PipelineLogEvent, normalize_log_event
 
 
 @dataclass
@@ -1294,6 +1294,11 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
                         )
                         return
                     raise
+                return
+            if parsed.path == "/api/events/publish":
+                event = normalize_log_event(payload)
+                self._event_broker().publish(_graph_event_from_log(event))
+                self._write_json({"ok": True})
                 return
             if parsed.path == "/api/resume":
                 runtime_vars = _normalize_runtime_vars_payload(payload.get("runtime_vars"))

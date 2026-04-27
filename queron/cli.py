@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -30,6 +31,7 @@ from .api import (
     force_stop_pipeline,
 )
 from .runtime_models import format_log_event
+from .graph_client import fanout_log_handlers, graph_log_publisher
 
 
 def _load_runtime_vars(
@@ -61,6 +63,13 @@ def _load_runtime_vars(
             raise RuntimeError(f"Runtime vars file '{resolved}' must contain a JSON object.")
         return {str(key): value for key, value in parsed.items()}
     return None
+
+
+def _graph_log_handler(graph_url: str | None):
+    resolved_url = str(graph_url or os.environ.get("QUERON_GRAPH_URL") or "").strip()
+    if not resolved_url:
+        return None
+    return graph_log_publisher(resolved_url)
 
 
 def _load_pipeline_namespace(pipeline_path: str | Path) -> dict[str, Any]:
@@ -252,6 +261,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Stream pipeline logs to the console while the run executes.",
     )
     run_parser.add_argument(
+        "--graph-url",
+        dest="graph_url",
+        default=None,
+        help="Graph server URL that should receive live runtime logs. Defaults to QUERON_GRAPH_URL when set.",
+    )
+    run_parser.add_argument(
         "--vars-json",
         dest="vars_json",
         default=None,
@@ -282,6 +297,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="stream_logs",
         help="Stream pipeline logs to the console while the resume executes.",
+    )
+    resume_parser.add_argument(
+        "--graph-url",
+        dest="graph_url",
+        default=None,
+        help="Graph server URL that should receive live runtime logs. Defaults to QUERON_GRAPH_URL when set.",
     )
     resume_parser.add_argument(
         "--vars-json",
@@ -787,6 +808,10 @@ def _handle_run(args: argparse.Namespace) -> int:
                 return 0
 
     try:
+        on_log = fanout_log_handlers(
+            _log if bool(getattr(args, "stream_logs", False)) and not args.json_output else None,
+            _graph_log_handler(getattr(args, "graph_url", None)),
+        )
         result = run_pipeline(
             args.pipeline,
             config_path=args.config_path,
@@ -798,7 +823,7 @@ def _handle_run(args: argparse.Namespace) -> int:
             clean_existing=bool(args.clean_existing or requires_full_purge),
             set_final=bool(getattr(args, "set_final", False)),
             run_label=args.run_label,
-            on_log=_log if bool(getattr(args, "stream_logs", False)) and not args.json_output else None,
+            on_log=on_log,
         )
     except Exception as exc:
         if args.json_output:
@@ -851,6 +876,10 @@ def _handle_resume(args: argparse.Namespace) -> int:
         print(f"Resume failed: {exc}", file=sys.stderr)
         return 1
     try:
+        on_log = fanout_log_handlers(
+            _log if bool(getattr(args, "stream_logs", False)) and not args.json_output else None,
+            _graph_log_handler(getattr(args, "graph_url", None)),
+        )
         result = resume_pipeline(
             args.pipeline,
             config_path=args.config_path,
@@ -858,7 +887,7 @@ def _handle_resume(args: argparse.Namespace) -> int:
             runtime_bindings=runtime_bindings,
             runtime_vars=runtime_vars,
             target=args.target,
-            on_log=_log if bool(getattr(args, "stream_logs", False)) and not args.json_output else None,
+            on_log=on_log,
         )
     except Exception as exc:
         if args.json_output:

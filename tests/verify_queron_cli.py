@@ -17,7 +17,7 @@ import queron
 import queron.cli
 import duckdb_core
 from duckdb_driver import load_duckdb
-from queron.runtime_models import PipelineVarRecord
+from queron.runtime_models import PipelineVarRecord, build_log_event
 from queron.runtime_vars import resolve_runtime_var_values_for_existing_run
 
 
@@ -49,6 +49,8 @@ class VerifyQueronCliTests(unittest.TestCase):
             "check",
             "ref",
             "source",
+            "graph_log_publisher",
+            "fanout_log_handlers",
         }
         unexpected_exports = {
             "CompiledPipeline",
@@ -429,6 +431,75 @@ def seed():
             self.assertEqual(exit_code, 0)
             self.assertEqual(stderr.getvalue(), "")
             self.assertIn("Run succeeded.", stdout.getvalue())
+
+    def test_cli_run_streams_logs_to_graph_url(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "policy123"}
+
+@queron.model.sql(name='seed', out='seed', query="SELECT 1 AS id")
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            self._compile_pipeline(pipeline_path)
+            events = []
+
+            def _fake_publisher(graph_url):
+                self.assertEqual(graph_url, "http://127.0.0.1:750")
+                return events.append
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with patch("queron.cli.graph_log_publisher", side_effect=_fake_publisher):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = queron.cli.main(
+                        [
+                            "run",
+                            str(pipeline_path),
+                            "--graph-url",
+                            "http://127.0.0.1:750",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertIn("Run succeeded.", stdout.getvalue())
+            self.assertTrue(any(event.code == "pipeline_execution_finished" for event in events))
+
+    def test_graph_log_publisher_posts_runtime_event(self):
+        captured = {}
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        def _fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["timeout"] = timeout
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return _Response()
+
+        event = build_log_event(code="pipeline_execution_started", message="Started.", run_id="run123")
+        with patch("queron.graph_client.request.urlopen", side_effect=_fake_urlopen):
+            queron.graph_log_publisher("http://127.0.0.1:750", timeout_seconds=2)(event)
+
+        self.assertEqual(captured["url"], "http://127.0.0.1:750/api/events/publish")
+        self.assertEqual(captured["timeout"], 2)
+        self.assertEqual(captured["body"]["code"], "pipeline_execution_started")
+        self.assertEqual(captured["body"]["run_id"], "run123")
 
     def test_cli_run_rejects_vars_json_and_vars_file_together(self):
         with tempfile.TemporaryDirectory() as tmpdir:

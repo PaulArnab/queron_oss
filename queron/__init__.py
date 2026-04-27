@@ -722,6 +722,7 @@ from .api import (  # noqa: E402
     force_stop_pipeline,
 )
 from .bindings import Db2Binding, MariaDbBinding, MssqlBinding, MysqlBinding, OracleBinding, PostgresBinding  # noqa: E402
+from .graph_client import fanout_log_handlers, graph_log_publisher  # noqa: E402
 
 __all__ = [
     "Db2Binding",
@@ -736,6 +737,8 @@ __all__ = [
     "db2",
     "export_artifact",
     "file",
+    "fanout_log_handlers",
+    "graph_log_publisher",
     "inspect_node",
     "inspect_node_logs",
     "inspect_node_query",
