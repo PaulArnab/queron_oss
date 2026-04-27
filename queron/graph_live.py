@@ -465,6 +465,7 @@ def get_graph_panel(
         "node_count": len(result.nodes),
         "nodes": graph_lineage["nodes"],
         "edges": result.edges,
+        "dependency_edges": result.dependency_edges,
         "layout_edges": graph_lineage["layout_edges"],
     }
 

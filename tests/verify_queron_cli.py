@@ -576,6 +576,50 @@ def final():
 
             self.assertEqual(result.executed_nodes, ["seed", "middle", "final"])
 
+    def test_inspect_outputs_manual_dependency_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "manual_deps"}
+
+@queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id")
+def seed():
+    pass
+
+@queron.model.sql(name="middle", out="middle", query="SELECT * FROM {{ queron.ref('seed') }}")
+def middle():
+    pass
+
+@queron.model.sql(name="final", out="final", query="SELECT 3 AS id", depends_on=["middle"])
+def final():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            self._compile_pipeline(pipeline_path)
+            result = queron.run_pipeline(pipeline_path)
+            dag = queron.inspect_dag(result.artifact_path)
+            nodes = {node["name"]: node for node in dag.nodes}
+
+            self.assertIn(["seed", "middle"], dag.edges)
+            self.assertIn(["middle", "final"], dag.edges)
+            self.assertIn({"source": "seed", "target": "middle", "kind": "auto"}, dag.dependency_edges)
+            self.assertIn({"source": "middle", "target": "final", "kind": "manual"}, dag.dependency_edges)
+            self.assertEqual(nodes["middle"]["auto_dependencies"], ["seed"])
+            self.assertEqual(nodes["middle"]["manual_dependencies"], [])
+            self.assertEqual(nodes["final"]["auto_dependencies"], [])
+            self.assertEqual(nodes["final"]["manual_dependencies"], ["middle"])
+
+            inspected = queron.inspect_node(result.artifact_path, "final")
+            final_payload = inspected.nodes[0]
+            self.assertEqual(final_payload["dependencies"], ["middle"])
+            self.assertEqual(final_payload["auto_dependencies"], [])
+            self.assertEqual(final_payload["manual_dependencies"], ["middle"])
+
     def test_cli_run_streams_logs_to_graph_url(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)

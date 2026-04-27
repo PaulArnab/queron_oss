@@ -288,7 +288,17 @@ function buildFlowNodeData(id, details) {
   };
 }
 
-function buildFlowEdge(source, target) {
+function edgeStyleForKind({ stroke, isLookupEdge = false, edgeKind = "auto" }) {
+  if (String(edgeKind || "").trim().toLowerCase() === "manual") {
+    return { stroke, strokeWidth: 2.1, strokeDasharray: "1 6", strokeLinecap: "round" };
+  }
+  if (isLookupEdge) {
+    return { stroke, strokeWidth: 2, strokeDasharray: "6 4" };
+  }
+  return { stroke, strokeWidth: 1.8 };
+}
+
+function buildFlowEdge(source, target, edgeKind = "auto") {
   const details = NODE_DETAILS[target];
   const sourceDetails = NODE_DETAILS[source];
   const warningCount = Array.isArray(details?.warnings) ? details.warnings.length : 0;
@@ -304,9 +314,9 @@ function buildFlowEdge(source, target) {
     type: "bezier",
     markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 18, height: 18 },
     animated: false,
-    style: { stroke, strokeWidth: isLookupEdge ? 2 : 1.8, strokeDasharray: isLookupEdge ? "2 5" : undefined },
+    style: edgeStyleForKind({ stroke, isLookupEdge, edgeKind }),
     pathOptions: { curvature: 0.25 },
-    data: { lookupSource, lookupTarget },
+    data: { lookupSource, lookupTarget, edgeKind },
     selectable: false,
     focusable: false,
   };
@@ -582,7 +592,7 @@ function buildFlowNodeDataFromApi(node) {
   };
 }
 
-function buildFlowEdgeFromApi(source, target, nodeById) {
+function buildFlowEdgeFromApi(source, target, nodeById, edgeKind = "auto") {
   const details = nodeById.get(target);
   const sourceDetails = nodeById.get(source);
   const status = String(details?.node_run_status || details?.current_state || "ready");
@@ -597,9 +607,9 @@ function buildFlowEdgeFromApi(source, target, nodeById) {
     type: "bezier",
     markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 18, height: 18 },
     animated: false,
-    style: { stroke, strokeWidth: isLookupEdge ? 2 : 1.8, strokeDasharray: isLookupEdge ? "2 5" : undefined },
+    style: edgeStyleForKind({ stroke, isLookupEdge, edgeKind }),
     pathOptions: { curvature: 0.25 },
-    data: { lookupSource, lookupTarget },
+    data: { lookupSource, lookupTarget, edgeKind },
     selectable: false,
     focusable: false,
   };
@@ -2307,8 +2317,19 @@ function GraphCanvas({
   const baseLayout = useMemo(() => {
     const liveNodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
     const liveEdges = Array.isArray(graphData?.edges) ? graphData.edges : [];
+    const dependencyEdges = Array.isArray(graphData?.dependency_edges) ? graphData.dependency_edges : [];
     const liveLayoutEdges = Array.isArray(graphData?.layout_edges) ? graphData.layout_edges : null;
     const nodeById = new Map(liveNodes.map((node) => [String(node.name || ""), node]));
+    const edgeKindByKey = new Map(
+      dependencyEdges
+        .map((edge) => {
+          const source = String(edge?.source || "").trim();
+          const target = String(edge?.target || "").trim();
+          const kind = String(edge?.kind || "auto").trim().toLowerCase() || "auto";
+          return source && target ? [edgeKey(source, target), kind] : null;
+        })
+        .filter(Boolean),
+    );
     const baseNodes = liveNodes.map((node) => ({
       id: String(node.name || ""),
       type: "flowCard",
@@ -2321,7 +2342,10 @@ function GraphCanvas({
       draggable: false,
       selectable: true,
     }));
-    const baseEdges = liveEdges.map(([source, target]) => buildFlowEdgeFromApi(source, target, nodeById));
+    const baseEdges = liveEdges.map(([source, target]) => {
+      const edgeKind = edgeKindByKey.get(edgeKey(source, target)) || "auto";
+      return buildFlowEdgeFromApi(source, target, nodeById, edgeKind);
+    });
     return layoutElements(baseNodes, baseEdges, liveLayoutEdges);
   }, [graphData, layoutVersion]);
 

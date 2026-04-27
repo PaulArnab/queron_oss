@@ -77,6 +77,7 @@ class InspectDagResult:
     active_runtime_vars_contract: list[dict[str, Any]] = field(default_factory=list)
     nodes: list[dict[str, Any]] = field(default_factory=list)
     edges: list[list[str]] = field(default_factory=list)
+    dependency_edges: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -1794,6 +1795,41 @@ def _contract_nodes_and_edges(contract) -> tuple[list[dict[str, Any]], list[list
     return raw_nodes, edges
 
 
+def _clean_dependency_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _dependency_edges_for_nodes(raw_nodes: list[dict[str, Any]]) -> list[dict[str, str]]:
+    edges: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw_node in raw_nodes:
+        if not isinstance(raw_node, dict):
+            continue
+        target = str(raw_node.get("name") or "").strip()
+        if not target:
+            continue
+        manual = set(_clean_dependency_list(raw_node.get("manual_dependencies")))
+        auto = set(_clean_dependency_list(raw_node.get("auto_dependencies")))
+        for source in sorted(auto | manual):
+            kind = "manual" if source in manual else "auto"
+            key = (source, target, kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append({"source": source, "target": target, "kind": kind})
+    return edges
+
+
 def _order_contract_nodes_breadth_first(
     raw_nodes: list[dict[str, Any]],
     edges: list[list[str]],
@@ -1970,8 +2006,9 @@ def inspect_node(
             node_run=node_run,
         )
         dependencies = raw_node.get("dependencies")
-        if not isinstance(dependencies, list):
-            dependencies = []
+        dependencies = _clean_dependency_list(dependencies)
+        auto_dependencies = _clean_dependency_list(raw_node.get("auto_dependencies"))
+        manual_dependencies = _clean_dependency_list(raw_node.get("manual_dependencies"))
         column_mappings = (
             _load_node_column_mappings(
                 artifact_path=artifact_context["artifact_path"],
@@ -2016,6 +2053,8 @@ def inspect_node(
                     for item in dependencies
                     if str(item).strip()
                 ],
+                "auto_dependencies": auto_dependencies,
+                "manual_dependencies": manual_dependencies,
                 "operator": str(raw_node.get("operator") or "").strip() or None,
                 "value": raw_node.get("value"),
                 "dependents": sorted(
@@ -2429,6 +2468,9 @@ def inspect_dag(
             node_payload=raw_node,
             node_run=node_run,
         )
+        dependencies = _clean_dependency_list(raw_node.get("dependencies"))
+        auto_dependencies = _clean_dependency_list(raw_node.get("auto_dependencies"))
+        manual_dependencies = _clean_dependency_list(raw_node.get("manual_dependencies"))
         nodes.append(
             {
                 "name": name,
@@ -2459,6 +2501,9 @@ def inspect_dag(
                     else None
                 ),
                 "resolved_lookups": dict(raw_node.get("resolved_lookups") or {}) if isinstance(raw_node.get("resolved_lookups"), dict) else {},
+                "dependencies": dependencies,
+                "auto_dependencies": auto_dependencies,
+                "manual_dependencies": manual_dependencies,
                 "has_runtime_vars": bool(runtime_var_names),
                 "runtime_var_names": runtime_var_names,
             }
@@ -2484,6 +2529,7 @@ def inspect_dag(
         ],
         nodes=nodes,
         edges=edges,
+        dependency_edges=_dependency_edges_for_nodes(raw_nodes),
     )
 
 
