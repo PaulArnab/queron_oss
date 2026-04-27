@@ -540,6 +540,8 @@ def _normalized_node_payload(node: NodeSpec) -> dict[str, Any]:
         "connection_type": node.connection_type,
         "target_table": node.target_table,
         "dependencies": sorted(node.dependencies),
+        "auto_dependencies": sorted(node.auto_dependencies),
+        "manual_dependencies": sorted(node.manual_dependencies),
         "refs": sorted(node.refs),
         "sources": sorted(node.sources),
         "lookups": sorted(node.lookups),
@@ -547,6 +549,27 @@ def _normalized_node_payload(node: NodeSpec) -> dict[str, Any]:
         "resolved_lookups": dict(sorted((node.resolved_lookups or {}).items())),
         "vars": _extract_node_var_references(node),
     }
+
+
+def _normalize_dependency_names(value: Any) -> list[str]:
+    if value is None:
+        return []
+    raw_items = [value] if isinstance(value, str) else list(value or [])
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _append_dependency(target: list[str], dependency: str) -> None:
+    text = str(dependency or "").strip()
+    if text and text not in target:
+        target.append(text)
 
 
 def _build_compile_contract(
@@ -770,6 +793,7 @@ def _collect_nodes(module_globals: dict[str, Any]) -> tuple[list[NodeSpec], dict
                 cell_id=int(native_entry.get("cell_id")) if native_entry.get("cell_id") is not None else None,
                 connection_id=str(native_entry.get("connection_id") or "").strip() or None,
                 connection_type=str(native_entry.get("connection_type") or "").strip() or None,
+                manual_dependencies=_normalize_dependency_names(raw_node.get("depends_on")),
                 metadata=native_entry,
             )
         )
@@ -936,6 +960,8 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
         sources = extract_sources(node.sql)
         lookups = extract_lookups(node.sql)
         node.dependencies = []
+        node.auto_dependencies = []
+        node.manual_dependencies = _normalize_dependency_names(node.manual_dependencies)
         node.refs = list(refs)
         node.sources = list(sources)
         node.lookups = list(lookups)
@@ -988,7 +1014,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                     }
                 )
                 continue
-            node.dependencies.append(producer.name)
+            _append_dependency(node.auto_dependencies, producer.name)
 
         for lookup_name in lookups:
             try:
@@ -1005,8 +1031,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                 continue
             producer = lookup_producers.get(lookup_name)
             if producer is not None:
-                if producer.name not in node.dependencies:
-                    node.dependencies.append(producer.name)
+                _append_dependency(node.auto_dependencies, producer.name)
                 producer_connector = str(producer.kind or "").split(".", 1)[0]
                 node_connector = str(node.kind or "").split(".", 1)[0]
                 if node_connector != producer_connector or str(node.config or "").strip() != str(producer.config or "").strip():
@@ -1021,6 +1046,10 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                             "node_name": node.name,
                         }
                     )
+
+        node.dependencies = []
+        for dependency in [*node.auto_dependencies, *node.manual_dependencies]:
+            _append_dependency(node.dependencies, dependency)
 
         if lookups and node.kind not in remote_lookup_consumer_kinds:
             diagnostics.append(

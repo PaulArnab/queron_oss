@@ -11,13 +11,38 @@ def _require_non_empty_string(name: str, value: str) -> str:
     return text
 
 
+def _normalize_depends_on(depends_on: list[str] | tuple[str, ...] | str | None) -> list[str]:
+    if depends_on is None:
+        return []
+    raw_items = [depends_on] if isinstance(depends_on, str) else list(depends_on)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = _require_non_empty_string("depends_on", str(item))
+        if text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _add_depends_on(payload: dict[str, Any], depends_on: list[str] | tuple[str, ...] | str | None) -> dict[str, Any]:
+    normalized = _normalize_depends_on(depends_on)
+    if normalized:
+        payload["depends_on"] = normalized
+    return payload
+
+
 def _node_decorator(kind: str, payload: dict[str, Any]) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        normalized_payload = dict(payload)
+        depends_on = normalized_payload.pop("depends_on", None)
+        _add_depends_on(normalized_payload, depends_on)
         setattr(
             fn,
             "__queron_node__",
             {
-                **payload,
+                **normalized_payload,
                 "kind": kind,
                 "function_name": fn.__name__,
             },
@@ -44,7 +69,7 @@ def _require_zero_argument_callable(fn: Callable[..., Any], *, kind: str) -> Non
 
 
 class _PostgresNamespace:
-    def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def ingress(self, *, config: str, name: str, out: str, sql: str, depends_on: list[str] | tuple[str, ...] | str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "postgres.ingress",
             {
@@ -52,6 +77,7 @@ class _PostgresNamespace:
                 "name": _require_non_empty_string("name", name),
                 "out": _require_non_empty_string("out", out),
                 "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             },
         )
 
@@ -65,12 +91,14 @@ class _PostgresNamespace:
         mode: str = "replace",
         retain: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
@@ -87,12 +115,14 @@ class _PostgresNamespace:
         mode: str = "replace",
         retain: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
@@ -101,7 +131,7 @@ class _PostgresNamespace:
 
 
 class _Db2Namespace:
-    def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def ingress(self, *, config: str, name: str, out: str, sql: str, depends_on: list[str] | tuple[str, ...] | str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "db2.ingress",
             {
@@ -109,6 +139,7 @@ class _Db2Namespace:
                 "name": _require_non_empty_string("name", name),
                 "out": _require_non_empty_string("out", out),
                 "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             },
         )
 
@@ -122,12 +153,14 @@ class _Db2Namespace:
         mode: str = "replace",
         retain: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
@@ -143,12 +176,14 @@ class _Db2Namespace:
         sql: str,
         mode: str = "replace",
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "out": _require_non_empty_string("out", out),
         }
@@ -156,7 +191,7 @@ class _Db2Namespace:
 
 
 class _MssqlNamespace:
-    def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def ingress(self, *, config: str, name: str, out: str, sql: str, depends_on: list[str] | tuple[str, ...] | str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "mssql.ingress",
             {
@@ -164,6 +199,7 @@ class _MssqlNamespace:
                 "name": _require_non_empty_string("name", name),
                 "out": _require_non_empty_string("out", out),
                 "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             },
         )
 
@@ -176,12 +212,14 @@ class _MssqlNamespace:
         sql: str,
         mode: str = "replace",
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "out": _require_non_empty_string("out", out),
         }
@@ -196,12 +234,14 @@ class _MssqlNamespace:
         sql: str,
         mode: str = "replace",
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "out": _require_non_empty_string("out", out),
         }
@@ -209,7 +249,7 @@ class _MssqlNamespace:
 
 
 class _MysqlNamespace:
-    def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def ingress(self, *, config: str, name: str, out: str, sql: str, depends_on: list[str] | tuple[str, ...] | str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "mysql.ingress",
             {
@@ -217,6 +257,7 @@ class _MysqlNamespace:
                 "name": _require_non_empty_string("name", name),
                 "out": _require_non_empty_string("out", out),
                 "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             },
         )
 
@@ -230,12 +271,14 @@ class _MysqlNamespace:
         mode: str = "replace",
         retain: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
@@ -252,12 +295,14 @@ class _MysqlNamespace:
         mode: str = "replace",
         retain: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
@@ -266,7 +311,7 @@ class _MysqlNamespace:
 
 
 class _MariaDbNamespace:
-    def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def ingress(self, *, config: str, name: str, out: str, sql: str, depends_on: list[str] | tuple[str, ...] | str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "mariadb.ingress",
             {
@@ -274,6 +319,7 @@ class _MariaDbNamespace:
                 "name": _require_non_empty_string("name", name),
                 "out": _require_non_empty_string("out", out),
                 "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             },
         )
 
@@ -287,12 +333,14 @@ class _MariaDbNamespace:
         mode: str = "replace",
         retain: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
@@ -309,12 +357,14 @@ class _MariaDbNamespace:
         mode: str = "replace",
         retain: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
@@ -323,7 +373,7 @@ class _MariaDbNamespace:
 
 
 class _OracleNamespace:
-    def ingress(self, *, config: str, name: str, out: str, sql: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def ingress(self, *, config: str, name: str, out: str, sql: str, depends_on: list[str] | tuple[str, ...] | str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "oracle.ingress",
             {
@@ -331,6 +381,7 @@ class _OracleNamespace:
                 "name": _require_non_empty_string("name", name),
                 "out": _require_non_empty_string("out", out),
                 "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             },
         )
 
@@ -344,12 +395,14 @@ class _OracleNamespace:
         mode: str = "replace",
         retain: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
@@ -366,12 +419,14 @@ class _OracleNamespace:
         mode: str = "replace",
         retain: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "config": _require_non_empty_string("config", config),
             "name": _require_non_empty_string("name", name),
             "table": _require_non_empty_string("table", table),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "mode": _require_non_empty_string("mode", mode),
             "retain": bool(retain),
             "out": _require_non_empty_string("out", out),
@@ -387,6 +442,7 @@ class _ModelNamespace:
         query: str,
         out: str,
         materialized: str = "artifact",
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "model.sql",
@@ -394,6 +450,7 @@ class _ModelNamespace:
                 "name": _require_non_empty_string("name", name),
                 "out": _require_non_empty_string("out", out),
                 "query": _require_non_empty_string("query", query),
+            "depends_on": depends_on,
                 "materialized": _require_non_empty_string("materialized", materialized),
             },
         )
@@ -411,6 +468,7 @@ def _build_file_ingress_payload(
     escape: str | None = None,
     skip_rows: int | None = None,
     columns: dict[str, str] | None = None,
+    depends_on: list[str] | tuple[str, ...] | str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": _require_non_empty_string("name", name),
@@ -427,7 +485,7 @@ def _build_file_ingress_payload(
             payload["escape"] = _require_non_empty_string("escape", escape)
         if columns is not None:
             payload["columns"] = dict(columns)
-    return payload
+    return _add_depends_on(payload, depends_on)
 
 
 class _CsvNamespace:
@@ -443,6 +501,7 @@ class _CsvNamespace:
         escape: str | None = None,
         skip_rows: int = 0,
         columns: dict[str, str] | None = None,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "csv.ingress",
@@ -457,6 +516,7 @@ class _CsvNamespace:
                 escape=escape,
                 skip_rows=skip_rows,
                 columns=columns,
+                depends_on=depends_on,
             ),
         )
 
@@ -470,11 +530,13 @@ class _CsvNamespace:
         header: bool = True,
         delimiter: str = ",",
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "name": _require_non_empty_string("name", name),
             "path": _require_non_empty_string("path", path),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "overwrite": bool(overwrite),
             "header": bool(header),
             "delimiter": _require_non_empty_string("delimiter", delimiter),
@@ -490,6 +552,7 @@ class _JsonlNamespace:
         name: str,
         out: str,
         path: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "jsonl.ingress",
@@ -498,6 +561,7 @@ class _JsonlNamespace:
                 name=name,
                 out=out,
                 path=path,
+                depends_on=depends_on,
             ),
         )
 
@@ -509,11 +573,13 @@ class _JsonlNamespace:
         sql: str,
         overwrite: bool = False,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload = {
             "name": _require_non_empty_string("name", name),
             "path": _require_non_empty_string("path", path),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "overwrite": bool(overwrite),
             "out": _require_non_empty_string("out", out),
         }
@@ -527,6 +593,7 @@ class _ParquetNamespace:
         name: str,
         out: str,
         path: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "parquet.ingress",
@@ -535,6 +602,7 @@ class _ParquetNamespace:
                 name=name,
                 out=out,
                 path=path,
+                depends_on=depends_on,
             ),
         )
 
@@ -547,11 +615,13 @@ class _ParquetNamespace:
         overwrite: bool = False,
         compression: str | None = None,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload: dict[str, Any] = {
             "name": _require_non_empty_string("name", name),
             "path": _require_non_empty_string("path", path),
             "sql": _require_non_empty_string("sql", sql),
+            "depends_on": depends_on,
             "overwrite": bool(overwrite),
             "out": _require_non_empty_string("out", out),
         }
@@ -574,6 +644,7 @@ class _FileNamespace:
         escape: str | None = None,
         skip_rows: int = 0,
         columns: dict[str, str] | None = None,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         payload: dict[str, Any] = _build_file_ingress_payload(
             kind="csv.ingress",
@@ -586,6 +657,7 @@ class _FileNamespace:
             escape=escape,
             skip_rows=skip_rows,
             columns=columns,
+            depends_on=depends_on,
         )
         if format is not None:
             payload["format"] = _require_non_empty_string("format", format)
@@ -600,12 +672,14 @@ class _CheckNamespace:
         query: str,
         operator: str,
         value: int | float,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "check.count",
             {
                 "name": _require_non_empty_string("name", name),
                 "query": _require_non_empty_string("query", query),
+                "depends_on": depends_on,
                 "operator": _require_non_empty_string("operator", operator),
                 "value": value,
             },
@@ -616,12 +690,14 @@ class _CheckNamespace:
         *,
         name: str,
         query: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return _node_decorator(
             "check.boolean",
             {
                 "name": _require_non_empty_string("name", name),
                 "query": _require_non_empty_string("query", query),
+                "depends_on": depends_on,
             },
         )
 
@@ -633,6 +709,7 @@ class _PythonNamespace:
         *,
         name: str | None = None,
         out: str,
+        depends_on: list[str] | tuple[str, ...] | str | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]] | Callable[..., Any]:
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
             _require_zero_argument_callable(fn, kind="queron.python.ingress")
@@ -641,6 +718,7 @@ class _PythonNamespace:
                 {
                     "name": _require_non_empty_string("name", name or fn.__name__),
                     "out": _require_non_empty_string("out", out),
+                    "depends_on": depends_on,
                 },
             )(fn)
 
@@ -766,3 +844,8 @@ __all__ = [
     "force_stop_pipeline",
     "source",
 ]
+
+
+
+
+

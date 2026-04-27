@@ -432,6 +432,58 @@ def seed():
             self.assertEqual(stderr.getvalue(), "")
             self.assertIn("Run succeeded.", stdout.getvalue())
 
+    def test_compile_pipeline_tracks_manual_and_auto_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "manual_deps"}
+
+@queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id")
+def seed():
+    pass
+
+@queron.csv.egress(
+    name="write_policy_input",
+    path="exports/policy_input.csv",
+    sql="SELECT * FROM {{ queron.ref('seed') }}",
+    overwrite=True,
+    out="policy_input_file",
+)
+def write_policy_input():
+    pass
+
+@queron.python.ingress(
+    name="run_policy_processor",
+    out="policy_results",
+    depends_on=["write_policy_input"],
+)
+def run_policy_processor():
+    return [{"id": 1}]
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+            self.assertEqual(compiled.diagnostics, [])
+            nodes = {node.name: node for node in compiled.spec.nodes}
+
+            self.assertEqual(nodes["write_policy_input"].auto_dependencies, ["seed"])
+            self.assertEqual(nodes["write_policy_input"].manual_dependencies, [])
+            self.assertEqual(nodes["write_policy_input"].dependencies, ["seed"])
+            self.assertEqual(nodes["run_policy_processor"].auto_dependencies, [])
+            self.assertEqual(nodes["run_policy_processor"].manual_dependencies, ["write_policy_input"])
+            self.assertEqual(nodes["run_policy_processor"].dependencies, ["write_policy_input"])
+
+            contract_nodes = {
+                node["name"]: node
+                for node in compiled.contract.spec_json["nodes"]
+            }
+            self.assertEqual(contract_nodes["run_policy_processor"]["manual_dependencies"], ["write_policy_input"])
+            self.assertEqual(contract_nodes["write_policy_input"]["auto_dependencies"], ["seed"])
+
     def test_cli_run_streams_logs_to_graph_url(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)

@@ -35,6 +35,8 @@ class NodeSpec:
     target_table: str | None = None
     resolved_sql: str | None = None
     dependencies: list[str] = field(default_factory=list)
+    auto_dependencies: list[str] = field(default_factory=list)
+    manual_dependencies: list[str] = field(default_factory=list)
     refs: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     lookups: list[str] = field(default_factory=list)
