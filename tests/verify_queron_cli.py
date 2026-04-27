@@ -484,6 +484,98 @@ def run_policy_processor():
             self.assertEqual(contract_nodes["run_policy_processor"]["manual_dependencies"], ["write_policy_input"])
             self.assertEqual(contract_nodes["write_policy_input"]["auto_dependencies"], ["seed"])
 
+    def test_compile_pipeline_rejects_unknown_manual_dependency(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "manual_deps"}
+
+@queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id", depends_on=["missing_node"])
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+            self.assertIn("unknown_dependency", {item["code"] for item in compiled.diagnostics})
+
+    def test_compile_pipeline_rejects_self_manual_dependency(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "manual_deps"}
+
+@queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id", depends_on=["seed"])
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+            codes = {item["code"] for item in compiled.diagnostics}
+            self.assertIn("self_dependency", codes)
+            self.assertIn("cyclic_dependency", codes)
+
+    def test_compile_pipeline_rejects_manual_dependency_cycle(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "manual_deps"}
+
+@queron.model.sql(name="first", out="first", query="SELECT 1 AS id", depends_on=["second"])
+def first():
+    pass
+
+@queron.model.sql(name="second", out="second", query="SELECT 2 AS id", depends_on=["first"])
+def second():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+            self.assertIn("cyclic_dependency", {item["code"] for item in compiled.diagnostics})
+
+    def test_target_node_executes_transitive_manual_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+__queron_native__ = {"pipeline_id": "manual_deps"}
+
+@queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id")
+def seed():
+    pass
+
+@queron.model.sql(name="middle", out="middle", query="SELECT 2 AS id", depends_on=["seed"])
+def middle():
+    pass
+
+@queron.model.sql(name="final", out="final", query="SELECT 3 AS id", depends_on=["middle"])
+def final():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            self._compile_pipeline(pipeline_path)
+            result = queron.run_pipeline(pipeline_path, target_node="final")
+
+            self.assertEqual(result.executed_nodes, ["seed", "middle", "final"])
+
     def test_cli_run_streams_logs_to_graph_url(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)

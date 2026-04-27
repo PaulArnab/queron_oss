@@ -1047,6 +1047,27 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
                         }
                     )
 
+        for dependency in node.manual_dependencies:
+            if dependency == node.name:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "self_dependency",
+                        "message": f"Node '{node.name}' cannot depend on itself.",
+                        "node_name": node.name,
+                    }
+                )
+                continue
+            if dependency not in node_names:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "code": "unknown_dependency",
+                        "message": f"Node '{node.name}' declares unknown dependency '{dependency}'.",
+                        "node_name": node.name,
+                    }
+                )
+
         node.dependencies = []
         for dependency in [*node.auto_dependencies, *node.manual_dependencies]:
             _append_dependency(node.dependencies, dependency)
