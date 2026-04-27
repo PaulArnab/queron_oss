@@ -6,6 +6,18 @@ setup(
     version="0.0.0",
     packages=find_packages(),
     include_package_data=True,
+    package_data={
+        "queron": [
+            "graph_dist/*",
+            "graph_dist/assets/*",
+            "graph_dist/connector-icons/*",
+        ],
+    },
+    entry_points={
+        "console_scripts": [
+            "queron=queron.cli:main",
+        ],
+    },
     py_modules=[
         "base",
         "db2",

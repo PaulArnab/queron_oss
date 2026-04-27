@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
 import json
 from pathlib import Path
 from queue import Empty, Queue
@@ -1035,10 +1036,15 @@ def force_stop_graph_pipeline(pipeline_path: str | Path, *, reason: str | None =
 
 
 def resolve_graph_live_web_root(web_root: str | Path | None = None) -> Path:
-    resolved = ((Path(__file__).resolve().parents[1] / "web" / "dist") if web_root is None else Path(web_root)).resolve()
+    if web_root is None:
+        packaged_root = Path(str(resources.files("queron").joinpath("graph_dist"))).resolve()
+        source_root = (Path(__file__).resolve().parents[1] / "web" / "dist").resolve()
+        resolved = packaged_root if packaged_root.exists() else source_root
+    else:
+        resolved = Path(web_root).resolve()
     if not resolved.exists() or not resolved.is_dir():
         raise RuntimeError(
-            f"Graph web assets were not found at '{resolved}'. Build web first with `npm install` and `npm run build`."
+            f"Graph web assets were not found at '{resolved}'. Build web first with `npm install` and `npm run build`, then package queron/graph_dist."
         )
     index_path = resolved / "index.html"
     if not index_path.exists():

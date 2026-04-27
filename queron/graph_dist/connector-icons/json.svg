@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <path
+    d="M28 18h48l24 24v68a6 6 0 0 1-6 6H28a6 6 0 0 1-6-6V24a6 6 0 0 1 6-6Z"
+    stroke="#111111"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M76 18v24h24"
+    stroke="#111111"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M22 89h78"
+    stroke="#111111"
+    stroke-width="4"
+    stroke-linecap="round"
+  />
+  <path
+    d="M50 48c-3 0-5 2-5 5v3c0 3-2 5-4 6 2 1 4 3 4 6v3c0 3 2 5 5 5"
+    stroke="#111111"
+    stroke-width="4"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M72 48c3 0 5 2 5 5v3c0 3 2 5 4 6-2 1-4 3-4 6v3c0 3-2 5-5 5"
+    stroke="#111111"
+    stroke-width="4"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M61 55v12"
+    stroke="#111111"
+    stroke-width="4"
+    stroke-linecap="round"
+  />
+  <circle cx="61" cy="73" r="3" fill="#111111" />
+  <text
+    x="61"
+    y="106"
+    text-anchor="middle"
+    font-family="Arial, Helvetica, sans-serif"
+    font-size="15"
+    font-weight="700"
+    fill="#111111"
+  >
+    JSON
+  </text>
+</svg>
