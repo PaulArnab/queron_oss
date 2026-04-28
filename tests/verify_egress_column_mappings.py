@@ -9,6 +9,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from base import ColumnMeta, ConnectorEgressResponse
 import db2_core
+from duckdb_driver import connect_duckdb
 import mariadb_core
 import mssql_core
 import mysql_core
@@ -62,6 +63,52 @@ def test_db2_egress_mapping_modes() -> None:
     assert inferred[0].mapping_mode == "egress_inferred"
     assert remote[0].mapping_mode == "egress_remote_schema"
     assert remote[0].target_type == "DECIMAL(10,2)"
+
+
+def test_db2_varchar_egress_uses_measured_length_with_padding() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR", max_length=18)]
+    inferred = db2_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "VARCHAR(36)"
+    assert inferred[0].warnings == []
+
+
+def test_db2_varchar_egress_falls_back_without_measured_length() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR")]
+    inferred = db2_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "VARCHAR(32672)"
+    assert inferred[0].warnings
+
+
+def test_db2_varchar_egress_caps_oversized_measured_length() -> None:
+    source = [ColumnMeta(name="notes", data_type="VARCHAR", max_length=40000)]
+    inferred = db2_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "VARCHAR(32672)"
+    assert inferred[0].warnings
+
+
+def test_db2_measures_varchar_lengths_from_duckdb_result() -> None:
+    conn = connect_duckdb()
+    try:
+        columns = [
+            ColumnMeta(name="short_text", data_type="VARCHAR"),
+            ColumnMeta(name="amount", data_type="INTEGER"),
+            ColumnMeta(name="empty_text", data_type="VARCHAR"),
+        ]
+        warnings = db2_core._measure_db2_string_column_lengths(
+            conn,
+            """
+            SELECT 'abcd' AS short_text, 1 AS amount, NULL AS empty_text
+            UNION ALL
+            SELECT 'abcdefghijklmnopqr' AS short_text, 2 AS amount, '' AS empty_text
+            """,
+            columns,
+        )
+        assert warnings == []
+        assert columns[0].max_length == 18
+        assert columns[1].max_length is None
+        assert columns[2].max_length == 0
+    finally:
+        conn.close()
 
 
 def test_db2_remote_schema_clears_stale_fallback_warning() -> None:
@@ -146,6 +193,10 @@ if __name__ == "__main__":
     test_connector_response_accepts_column_mappings()
     test_postgres_egress_mapping_modes()
     test_db2_egress_mapping_modes()
+    test_db2_varchar_egress_uses_measured_length_with_padding()
+    test_db2_varchar_egress_falls_back_without_measured_length()
+    test_db2_varchar_egress_caps_oversized_measured_length()
+    test_db2_measures_varchar_lengths_from_duckdb_result()
     test_db2_remote_schema_clears_stale_fallback_warning()
     test_mssql_egress_mapping_modes()
     test_mysql_egress_mapping_modes()

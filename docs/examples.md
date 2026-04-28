@@ -161,16 +161,17 @@ def write_pg_customer_360():
     pass
 
 
-if __name__ == "__main__":
-    runtime_bindings = {
-        "PostGres": queron.PostgresBinding(
+@queron.runtime_configs
+def pipeline_configs():
+    return {
+        "PostGres": queron.bindings.PostgresBinding(
             host="localhost",
             port=5432,
             database="retail_db",
             username="admin",
             password="password123",
         ),
-        "MySqlMain": queron.MysqlBinding(
+        "MySqlMain": queron.bindings.MysqlBinding(
             host="localhost",
             port=3306,
             database="billing",
@@ -179,10 +180,12 @@ if __name__ == "__main__":
         ),
     }
 
+
+if __name__ == "__main__":
     result = queron.run_pipeline(
         Path(__file__).resolve(),
         config_path="configurations.yaml",
-        runtime_bindings=runtime_bindings,
+        runtime_bindings=pipeline_configs(),
         runtime_vars={
             "as_of_date": "2026-04-01",
             "min_premium": 1000,

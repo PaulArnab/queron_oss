@@ -323,6 +323,25 @@ Shorthand:
 queron.pipeline("my_pipeline")
 ```
 
+### Runtime Config Provider
+
+```python
+@queron.runtime_configs
+def pipeline_configs():
+    return {
+        "POSTGRES_LOCAL": queron.bindings.PostgresBinding(
+            config_factory=_postgres_config,
+            connect_timeout_seconds=10,
+        ),
+        "DB2_LOCAL": queron.bindings.Db2Binding(
+            config_factory=_db2_config,
+            connect_timeout_seconds=10,
+        ),
+    }
+```
+
+The function name is not fixed. `queron run pipeline.py` calls the decorated provider when present and uses the returned dict as `runtime_bindings`.
+
 ### Compile and Run API
 
 ```python

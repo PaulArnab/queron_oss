@@ -743,6 +743,20 @@ queron.oracle.lookup(...)</code></pre>
 <p>Declare the pipeline ID at module top level in <code>pipeline.py</code>. This is required before compile/run.</p>
 <p>Shorthand:</p>
 <pre><code class=" language-python">queron.pipeline(&quot;my_pipeline&quot;)</code></pre>
+<h3 id="runtime-config-provider">Runtime Config Provider</h3>
+<pre><code class=" language-python">@queron.runtime_configs
+def pipeline_configs():
+    return {
+        &quot;POSTGRES_LOCAL&quot;: queron.bindings.PostgresBinding(
+            config_factory=_postgres_config,
+            connect_timeout_seconds=10,
+        ),
+        &quot;DB2_LOCAL&quot;: queron.bindings.Db2Binding(
+            config_factory=_db2_config,
+            connect_timeout_seconds=10,
+        ),
+    }</code></pre>
+<p>The function name is not fixed. <code>queron run pipeline.py</code> calls the decorated provider when present and uses the returned dict as <code>runtime_bindings</code>.</p>
 <h3 id="compile-and-run-api">Compile and Run API</h3>
 <pre><code class=" language-python">queron.compile_pipeline(pipeline_path, *, config_path=None, target=None)</code></pre>
 <table>

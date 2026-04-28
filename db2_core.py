@@ -98,8 +98,11 @@ class _FallbackConnectorEgressResponse(BaseModel):
 ConnectorEgressResponse = getattr(_base_models, "ConnectorEgressResponse", _FallbackConnectorEgressResponse)
 _connections: dict[str, dict[str, Any]] = {}
 _DUCKDB_DECIMAL_RE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$", re.IGNORECASE)
+_DUCKDB_VARCHAR_RE = re.compile(r"^VARCHAR\((\d+)\)$", re.IGNORECASE)
 _DBAPI_TYPE_OBJECT_RE = re.compile(r"^DBAPITYPEOBJECT\((.+)\)$", re.IGNORECASE)
 _VALID_DB2_AUTH_MODES = {"basic", "tls"}
+_DB2_MAX_VARCHAR_LENGTH = 32672
+_DB2_MIN_MEASURED_VARCHAR_LENGTH = 32
 
 
 @dataclass
@@ -611,6 +614,63 @@ def _duckdb_column_meta_from_cursor(cursor) -> list[ColumnMeta]:
     return metas
 
 
+def _is_db2_string_like_duckdb_column(column: ColumnMeta) -> bool:
+    normalized = str(column.data_type or "UNKNOWN").strip().upper()
+    return normalized == "VARCHAR" or normalized.startswith("VARCHAR(")
+
+
+def _db2_varchar_length_for_column(column: ColumnMeta) -> tuple[int, list[str]]:
+    normalized = str(column.data_type or "UNKNOWN").strip().upper()
+    warnings: list[str] = []
+    if normalized == "UUID":
+        return 36, warnings
+    if isinstance(column.max_length, int) and column.max_length >= 0:
+        observed_length = int(column.max_length)
+        if observed_length > _DB2_MAX_VARCHAR_LENGTH:
+            warnings.append(
+                f"DuckDB VARCHAR observed length {observed_length} exceeds DB2 max VARCHAR length "
+                f"{_DB2_MAX_VARCHAR_LENGTH}; using VARCHAR({_DB2_MAX_VARCHAR_LENGTH})."
+            )
+            return _DB2_MAX_VARCHAR_LENGTH, warnings
+        padded = max(observed_length * 2, _DB2_MIN_MEASURED_VARCHAR_LENGTH)
+        return min(padded, _DB2_MAX_VARCHAR_LENGTH), warnings
+    varchar_match = _DUCKDB_VARCHAR_RE.match(normalized)
+    if varchar_match:
+        declared_length = int(varchar_match.group(1))
+        return min(max(declared_length, 1), _DB2_MAX_VARCHAR_LENGTH), warnings
+    warnings.append(
+        f"DuckDB type '{normalized}' did not have measured length metadata; using DB2 VARCHAR({_DB2_MAX_VARCHAR_LENGTH})."
+    )
+    return _DB2_MAX_VARCHAR_LENGTH, warnings
+
+
+def _measure_db2_string_column_lengths(
+    duck_conn: Any,
+    source_sql: str,
+    columns: list[ColumnMeta],
+    *,
+    sql_params: list[Any] | None = None,
+) -> list[str]:
+    string_columns = [column for column in columns if _is_db2_string_like_duckdb_column(column)]
+    if not string_columns:
+        return []
+    select_parts = [
+        f"MAX(LENGTH(CAST({_quote_identifier(column.name)} AS VARCHAR))) AS {_quote_identifier(f'__queron_len_{index}')}"
+        for index, column in enumerate(string_columns)
+    ]
+    measurement_sql = f"SELECT {', '.join(select_parts)} FROM ({_strip_sql_terminator(source_sql)}) AS __queron_egress_lengths"
+    try:
+        row = duck_conn.execute(measurement_sql, list(sql_params or [])).fetchone()
+    except Exception as exc:
+        return [f"DB2 egress VARCHAR length measurement failed; using VARCHAR({_DB2_MAX_VARCHAR_LENGTH}). {exc}"]
+    if row is None:
+        return []
+    for index, column in enumerate(string_columns):
+        value = row[index] if index < len(row) else None
+        column.max_length = int(value or 0) if value is not None else 0
+    return []
+
+
 def _map_duckdb_column_to_db2(column: ColumnMeta) -> tuple[str, list[str]]:
     normalized = str(column.data_type or "UNKNOWN").strip().upper()
     warnings: list[str] = []
@@ -622,7 +682,9 @@ def _map_duckdb_column_to_db2(column: ColumnMeta) -> tuple[str, list[str]]:
         warnings.append("DuckDB TIMESTAMPTZ was normalized to DB2 TIMESTAMP.")
         return "TIMESTAMP", warnings
     if normalized in {"UUID", "VARCHAR", "JSON"} or normalized.startswith("VARCHAR"):
-        return "VARCHAR(32672)", warnings
+        length, length_warnings = _db2_varchar_length_for_column(column)
+        warnings.extend(length_warnings)
+        return f"VARCHAR({length})", warnings
     if normalized in {"BLOB", "BYTEA"}:
         return "BLOB", warnings
     decimal_match = _DUCKDB_DECIMAL_RE.match(normalized)
@@ -1054,6 +1116,14 @@ def egress_query_from_duckdb(
         column_meta = _duckdb_column_meta_from_cursor(duck_cur)
         if not column_meta:
             raise RuntimeError("DuckDB egress query did not return any columns.")
+        warnings.extend(
+            _measure_db2_string_column_lengths(
+                duck_conn,
+                sql,
+                column_meta,
+                sql_params=sql_params,
+            )
+        )
         column_mappings = _build_egress_inferred_column_mappings(column_meta)
 
         target_conn = _dbapi_connect(conn_str)

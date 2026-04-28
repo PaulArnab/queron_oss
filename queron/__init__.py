@@ -4,14 +4,24 @@ import inspect
 from typing import Any, Callable
 
 _PIPELINE_METADATA: dict[str, Any] = {}
+_RUNTIME_CONFIGS_PROVIDER: Callable[[], dict[str, Any]] | None = None
 
 
 def _clear_pipeline_registry() -> None:
     _PIPELINE_METADATA.clear()
 
 
+def _clear_runtime_configs_registry() -> None:
+    global _RUNTIME_CONFIGS_PROVIDER
+    _RUNTIME_CONFIGS_PROVIDER = None
+
+
 def _get_pipeline_metadata() -> dict[str, Any]:
     return dict(_PIPELINE_METADATA)
+
+
+def _get_runtime_configs_provider() -> Callable[[], dict[str, Any]] | None:
+    return _RUNTIME_CONFIGS_PROVIDER
 
 
 def pipeline(pipeline_id: str | None = None, **metadata: Any) -> dict[str, Any]:
@@ -22,6 +32,18 @@ def pipeline(pipeline_id: str | None = None, **metadata: Any) -> dict[str, Any]:
     _PIPELINE_METADATA.clear()
     _PIPELINE_METADATA.update({"pipeline_id": normalized_pipeline_id, **dict(metadata)})
     return dict(_PIPELINE_METADATA)
+
+
+def runtime_configs(fn: Callable[[], dict[str, Any]]) -> Callable[[], dict[str, Any]]:
+    global _RUNTIME_CONFIGS_PROVIDER
+    if not callable(fn):
+        raise TypeError("runtime_configs must decorate a callable.")
+    if _RUNTIME_CONFIGS_PROVIDER is not None and _RUNTIME_CONFIGS_PROVIDER is not fn:
+        existing_name = getattr(_RUNTIME_CONFIGS_PROVIDER, "__name__", "<runtime_configs>")
+        new_name = getattr(fn, "__name__", "<runtime_configs>")
+        raise RuntimeError(f"Multiple runtime config providers were declared: {existing_name}, {new_name}.")
+    _RUNTIME_CONFIGS_PROVIDER = fn
+    return fn
 
 
 def _require_non_empty_string(name: str, value: str) -> str:
@@ -801,6 +823,7 @@ model = _ModelNamespace()
 check = _CheckNamespace()
 python = _PythonNamespace()
 
+from . import bindings  # noqa: E402
 from .api import (  # noqa: E402
     compile_pipeline,
     export_artifact,
@@ -829,6 +852,7 @@ __all__ = [
     "MysqlBinding",
     "OracleBinding",
     "PostgresBinding",
+    "bindings",
     "check",
     "csv",
     "compile_pipeline",
@@ -861,6 +885,7 @@ __all__ = [
     "reset_node",
     "resume_pipeline",
     "run_pipeline",
+    "runtime_configs",
     "stop_pipeline",
     "force_stop_pipeline",
     "source",

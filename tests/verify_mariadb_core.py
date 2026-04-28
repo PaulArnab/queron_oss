@@ -197,16 +197,18 @@ lookup:
                     @queron.mariadb.egress(config="MARIADB_LOCAL", name="egress_mariadb_filtered", table="phase_egress", out="phase_egress_artifact", sql='SELECT * FROM {{ queron.ref("mariadb_filtered") }}', mode="replace")
                     def egress_mariadb_filtered(): pass
 
-                    RUNTIME_BINDINGS = {
-                        "MARIADB_LOCAL": MariaDbBinding(
-                            host="localhost",
-                            port=53306,
-                            database="LOOMDB",
-                            username="loom_user",
-                            password="LoomMariaPass123!",
-                            connect_timeout_seconds=10,
-                        )
-                    }
+                    @queron.runtime_configs
+                    def pipeline_configs():
+                        return {
+                            "MARIADB_LOCAL": MariaDbBinding(
+                                host="localhost",
+                                port=53306,
+                                database="LOOMDB",
+                                username="loom_user",
+                                password="LoomMariaPass123!",
+                                connect_timeout_seconds=10,
+                            )
+                        }
                     '''
                 ),
                 encoding="utf-8",

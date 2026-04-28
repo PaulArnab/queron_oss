@@ -37,6 +37,8 @@ class VerifyQueronCliTests(unittest.TestCase):
             "reset_upstream",
             "reset_all",
             "stop_pipeline",
+            "runtime_configs",
+            "bindings",
             "postgres",
             "db2",
             "file",
@@ -930,6 +932,95 @@ def seed():
             self.assertEqual(first.spec.pipeline_id, "first")
             self.assertTrue(any(str(item.get("code")) == "missing_pipeline_id" for item in second.diagnostics))
             self.assertIsNone(second.contract)
+
+    def test_runtime_configs_decorator_provider_is_loaded_by_cli(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="policy123")
+
+@queron.runtime_configs
+def my_connections():
+    return {"POSTGRES_LOCAL": {"type": "postgres", "host": "localhost"}}
+""",
+                encoding="utf-8",
+            )
+
+            bindings = queron.cli._runtime_bindings_from_file(pipeline_path)
+
+            self.assertEqual(bindings, {"POSTGRES_LOCAL": {"type": "postgres", "host": "localhost"}})
+
+    def test_runtime_configs_decorator_clears_prior_provider(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            first_path = root / "first.py"
+            second_path = root / "second.py"
+            first_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="first")
+
+@queron.runtime_configs
+def first_connections():
+    return {"POSTGRES_LOCAL": {"type": "postgres", "host": "localhost"}}
+""",
+                encoding="utf-8",
+            )
+            second_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="second")
+""",
+                encoding="utf-8",
+            )
+
+            self.assertIsNotNone(queron.cli._runtime_bindings_from_file(first_path))
+            self.assertIsNone(queron.cli._runtime_bindings_from_file(second_path))
+
+    def test_runtime_configs_decorator_rejects_non_dict_return(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="policy123")
+
+@queron.runtime_configs
+def my_connections():
+    return []
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "must return a dict"):
+                queron.cli._runtime_bindings_from_file(pipeline_path)
+
+    def test_runtime_configs_decorator_rejects_duplicate_providers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="policy123")
+
+@queron.runtime_configs
+def first_connections():
+    return {}
+
+@queron.runtime_configs
+def second_connections():
+    return {}
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "Multiple runtime config providers"):
+                queron.cli._runtime_bindings_from_file(pipeline_path)
 
     def test_compile_pipeline_allows_out_on_egress_nodes(self):
         with tempfile.TemporaryDirectory() as tmpdir:

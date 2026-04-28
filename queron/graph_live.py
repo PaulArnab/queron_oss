@@ -1135,7 +1135,7 @@ class _GraphLiveHandler(SimpleHTTPRequestHandler):
                     except Empty:
                         payload = {"type": "ping"}
                     self._write_sse_event(payload)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
                 pass
             finally:
                 self._event_broker().unsubscribe(queue)

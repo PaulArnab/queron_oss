@@ -32,7 +32,12 @@ from .api import (
 )
 from .runtime_models import format_log_event
 from .graph_client import fanout_log_handlers, graph_log_publisher
-from . import _clear_pipeline_registry, _get_pipeline_metadata
+from . import (
+    _clear_pipeline_registry,
+    _clear_runtime_configs_registry,
+    _get_pipeline_metadata,
+    _get_runtime_configs_provider,
+)
 
 
 def _load_runtime_vars(
@@ -77,8 +82,16 @@ def _load_pipeline_namespace(pipeline_path: str | Path) -> dict[str, Any]:
     namespace: dict[str, Any] = {"__name__": "__queron_cli_pipeline__"}
     resolved = Path(pipeline_path).expanduser().resolve()
     code = compile(resolved.read_text(encoding="utf-8"), str(resolved), "exec")
+    original_sys_path = list(sys.path)
     _clear_pipeline_registry()
-    exec(code, namespace, namespace)
+    _clear_runtime_configs_registry()
+    try:
+        pipeline_dir = str(resolved.parent)
+        if pipeline_dir not in sys.path:
+            sys.path.insert(0, pipeline_dir)
+        exec(code, namespace, namespace)
+    finally:
+        sys.path[:] = original_sys_path
     return namespace
 
 
@@ -92,9 +105,18 @@ def _pipeline_id_from_file(pipeline_path: str | Path) -> str:
 
 
 def _runtime_bindings_from_file(pipeline_path: str | Path) -> dict[str, Any] | None:
-    namespace = _load_pipeline_namespace(pipeline_path)
-    bindings = namespace.get("RUNTIME_BINDINGS")
-    return bindings if isinstance(bindings, dict) else None
+    _load_pipeline_namespace(pipeline_path)
+    provider = _get_runtime_configs_provider()
+    if provider is None:
+        return None
+    provider_name = getattr(provider, "__name__", "<runtime_configs>")
+    try:
+        bindings = provider()
+    except Exception as exc:
+        raise RuntimeError(f"Runtime configs provider '{provider_name}' failed: {exc}") from exc
+    if not isinstance(bindings, dict):
+        raise RuntimeError(f"Runtime configs provider '{provider_name}' must return a dict.")
+    return bindings
 
 
 def _resolve_cli_cwd(cwd: str | Path | None = None) -> Path:

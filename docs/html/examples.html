@@ -179,36 +179,39 @@
 <div class="code-row"><a class="line-no" id="pipeline-L139" href="#pipeline-L139">139</a><code>    pass</code></div>
 <div class="code-row"><a class="line-no" id="pipeline-L140" href="#pipeline-L140">140</a><code> </code></div>
 <div class="code-row"><a class="line-no" id="pipeline-L141" href="#pipeline-L141">141</a><code> </code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L142" href="#pipeline-L142">142</a><code>if __name__ == &quot;__main__&quot;:</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L143" href="#pipeline-L143">143</a><code>    runtime_bindings = {</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L144" href="#pipeline-L144">144</a><code>        &quot;PostGres&quot;: <a href="python-api.html#runtime-bindings">queron.PostgresBinding</a>(</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L145" href="#pipeline-L145">145</a><code>            host=&quot;localhost&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L146" href="#pipeline-L146">146</a><code>            port=5432,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L147" href="#pipeline-L147">147</a><code>            database=&quot;retail_db&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L148" href="#pipeline-L148">148</a><code>            username=&quot;admin&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L149" href="#pipeline-L149">149</a><code>            password=&quot;password123&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L150" href="#pipeline-L150">150</a><code>        ),</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L151" href="#pipeline-L151">151</a><code>        &quot;MySqlMain&quot;: <a href="python-api.html#runtime-bindings">queron.MysqlBinding</a>(</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L152" href="#pipeline-L152">152</a><code>            host=&quot;localhost&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L153" href="#pipeline-L153">153</a><code>            port=3306,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L154" href="#pipeline-L154">154</a><code>            database=&quot;billing&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L155" href="#pipeline-L155">155</a><code>            username=&quot;app&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L156" href="#pipeline-L156">156</a><code>            password=&quot;password123&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L157" href="#pipeline-L157">157</a><code>        ),</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L158" href="#pipeline-L158">158</a><code>    }</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L159" href="#pipeline-L159">159</a><code> </code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L160" href="#pipeline-L160">160</a><code>    result = <a href="commands-reference.html#compile-and-run-api">queron.run_pipeline</a>(</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L161" href="#pipeline-L161">161</a><code>        Path(__file__).resolve(),</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L162" href="#pipeline-L162">162</a><code>        config_path=&quot;configurations.yaml&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L163" href="#pipeline-L163">163</a><code>        runtime_bindings=runtime_bindings,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L164" href="#pipeline-L164">164</a><code>        runtime_vars={</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L165" href="#pipeline-L165">165</a><code>            &quot;as_of_date&quot;: &quot;2026-04-01&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L166" href="#pipeline-L166">166</a><code>            &quot;min_premium&quot;: 1000,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L167" href="#pipeline-L167">167</a><code>        },</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L168" href="#pipeline-L168">168</a><code>        clean_existing=True,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L169" href="#pipeline-L169">169</a><code>        run_label=&quot;local_python_run&quot;,</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L170" href="#pipeline-L170">170</a><code>    )</code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L171" href="#pipeline-L171">171</a><code>    print(result)</code></div></div></section>
+<div class="code-row"><a class="line-no" id="pipeline-L142" href="#pipeline-L142">142</a><code>@queron.runtime_configs</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L143" href="#pipeline-L143">143</a><code>def pipeline_configs():</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L144" href="#pipeline-L144">144</a><code>    return {</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L145" href="#pipeline-L145">145</a><code>        &quot;PostGres&quot;: queron.bindings.PostgresBinding(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L146" href="#pipeline-L146">146</a><code>            host=&quot;localhost&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L147" href="#pipeline-L147">147</a><code>            port=5432,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L148" href="#pipeline-L148">148</a><code>            database=&quot;retail_db&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L149" href="#pipeline-L149">149</a><code>            username=&quot;admin&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L150" href="#pipeline-L150">150</a><code>            password=&quot;password123&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L151" href="#pipeline-L151">151</a><code>        ),</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L152" href="#pipeline-L152">152</a><code>        &quot;MySqlMain&quot;: queron.bindings.MysqlBinding(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L153" href="#pipeline-L153">153</a><code>            host=&quot;localhost&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L154" href="#pipeline-L154">154</a><code>            port=3306,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L155" href="#pipeline-L155">155</a><code>            database=&quot;billing&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L156" href="#pipeline-L156">156</a><code>            username=&quot;app&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L157" href="#pipeline-L157">157</a><code>            password=&quot;password123&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L158" href="#pipeline-L158">158</a><code>        ),</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L159" href="#pipeline-L159">159</a><code>    }</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L160" href="#pipeline-L160">160</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L161" href="#pipeline-L161">161</a><code> </code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L162" href="#pipeline-L162">162</a><code>if __name__ == &quot;__main__&quot;:</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L163" href="#pipeline-L163">163</a><code>    result = <a href="commands-reference.html#compile-and-run-api">queron.run_pipeline</a>(</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L164" href="#pipeline-L164">164</a><code>        Path(__file__).resolve(),</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L165" href="#pipeline-L165">165</a><code>        config_path=&quot;configurations.yaml&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L166" href="#pipeline-L166">166</a><code>        runtime_bindings=pipeline_configs(),</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L167" href="#pipeline-L167">167</a><code>        runtime_vars={</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L168" href="#pipeline-L168">168</a><code>            &quot;as_of_date&quot;: &quot;2026-04-01&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L169" href="#pipeline-L169">169</a><code>            &quot;min_premium&quot;: 1000,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L170" href="#pipeline-L170">170</a><code>        },</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L171" href="#pipeline-L171">171</a><code>        clean_existing=True,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L172" href="#pipeline-L172">172</a><code>        run_label=&quot;local_python_run&quot;,</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L173" href="#pipeline-L173">173</a><code>    )</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L174" href="#pipeline-L174">174</a><code>    print(result)</code></div></div></section>
 <h2 id="configurationsyaml"><code>configurations.yaml</code></h2>
 <pre><code class=" language-yaml">target: dev
 

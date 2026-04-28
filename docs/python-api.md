@@ -26,6 +26,27 @@ queron.pipeline("my_pipeline")
 
 Returns the normalized pipeline metadata dictionary.
 
+### `runtime_configs(fn)`
+
+Decorates one module-level function as the runtime binding provider for CLI runs. The function name is not fixed.
+
+```python
+@queron.runtime_configs
+def pipeline_configs():
+    return {
+        "POSTGRES_LOCAL": queron.bindings.PostgresBinding(
+            config_factory=_postgres_config,
+            connect_timeout_seconds=10,
+        ),
+        "DB2_LOCAL": queron.bindings.Db2Binding(
+            config_factory=_db2_config,
+            connect_timeout_seconds=10,
+        ),
+    }
+```
+
+`queron run pipeline.py` loads `pipeline.py`, calls the decorated provider when present, and passes the returned dict as `runtime_bindings`.
+
 ## Project Setup
 
 ### `init_pipeline_project(project_path, *, sample=False, force=False)`

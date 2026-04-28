@@ -115,7 +115,7 @@ lookup:
 <li><code>target:</code> in <code>configurations.yaml</code></li>
 </ol>
 <h2 id="configure-connections">Configure Connections</h2>
-<p>Database nodes use <code>config=&quot;...&quot;</code>. The config name must exist in <code>connections.yaml</code> unless you pass <code>runtime_bindings</code> from Python.</p>
+<p>Database nodes use <code>config=&quot;...&quot;</code>. The config name must exist in <code>connections.yaml</code> unless you pass <code>runtime_bindings</code> from Python or declare a runtime config provider in <code>pipeline.py</code>.</p>
 <pre><code class=" language-yaml">connections:
   PostGres:
     type: postgres
@@ -126,6 +126,19 @@ lookup:
     password_env: POSTGRES_PASSWORD</code></pre>
 <p>Use <code>_env</code> suffixes for secrets:</p>
 <pre><code class=" language-yaml">password_env: POSTGRES_PASSWORD</code></pre>
+<p>Python runtime bindings can be declared for CLI runs with <code>@queron.runtime_configs</code>:</p>
+<pre><code class=" language-python">@queron.runtime_configs
+def pipeline_configs():
+    return {
+        &quot;PostGres&quot;: queron.bindings.PostgresBinding(
+            host=&quot;localhost&quot;,
+            port=5432,
+            database=&quot;retail_db&quot;,
+            username=&quot;admin&quot;,
+            password=&quot;password123&quot;,
+        )
+    }</code></pre>
+<p>The function name is not fixed.</p>
 <p>Supported connection types:</p>
 <ul>
 <li><code>postgres</code> / <code>postgresql</code></li>

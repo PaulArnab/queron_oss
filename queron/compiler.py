@@ -13,7 +13,7 @@ import sysconfig
 from typing import Any
 
 from .config import load_config, resolve_lookup_relation, resolve_source_relation, resolve_target, try_resolve_egress_relation
-from . import _clear_pipeline_registry, _get_pipeline_metadata
+from . import _clear_pipeline_registry, _clear_runtime_configs_registry, _get_pipeline_metadata
 from .runtime_models import CompiledContractRecord, PipelineVarRecord
 from .runtime_vars import _VAR_PATTERN, parse_runtime_var_options
 from .specs import NodeSpec, PipelineSpec
@@ -715,6 +715,7 @@ def _load_module_from_code(
     module_globals: dict[str, Any] = {"__name__": "__queron_generated__", "__file__": str(resolved_source_path or "<queron_generated_pipeline>")}
     original_sys_path = list(sys.path)
     _clear_pipeline_registry()
+    _clear_runtime_configs_registry()
     try:
         if resolved_source_path is not None:
             project_root_text = str(resolved_source_path.parent)

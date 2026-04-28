@@ -36,6 +36,21 @@
 <p>Shorthand:</p>
 <pre><code class=" language-python">queron.pipeline(&quot;my_pipeline&quot;)</code></pre>
 <p>Returns the normalized pipeline metadata dictionary.</p>
+<h3 id="runtimeconfigsfn"><code>runtime_configs(fn)</code></h3>
+<p>Decorates one module-level function as the runtime binding provider for CLI runs. The function name is not fixed.</p>
+<pre><code class=" language-python">@queron.runtime_configs
+def pipeline_configs():
+    return {
+        &quot;POSTGRES_LOCAL&quot;: queron.bindings.PostgresBinding(
+            config_factory=_postgres_config,
+            connect_timeout_seconds=10,
+        ),
+        &quot;DB2_LOCAL&quot;: queron.bindings.Db2Binding(
+            config_factory=_db2_config,
+            connect_timeout_seconds=10,
+        ),
+    }</code></pre>
+<p><code>queron run pipeline.py</code> loads <code>pipeline.py</code>, calls the decorated provider when present, and passes the returned dict as <code>runtime_bindings</code>.</p>
 <h2 id="project-setup">Project Setup</h2>
 <h3 id="initpipelineprojectprojectpath-samplefalse-forcefalse"><code>init_pipeline_project(project_path, *, sample=False, force=False)</code></h3>
 <p>Creates a pipeline project scaffold.</p>

@@ -130,7 +130,7 @@ Target resolution order:
 
 ## Configure Connections
 
-Database nodes use `config="..."`. The config name must exist in `connections.yaml` unless you pass `runtime_bindings` from Python.
+Database nodes use `config="..."`. The config name must exist in `connections.yaml` unless you pass `runtime_bindings` from Python or declare a runtime config provider in `pipeline.py`.
 
 ```yaml
 connections:
@@ -148,6 +148,24 @@ Use `_env` suffixes for secrets:
 ```yaml
 password_env: POSTGRES_PASSWORD
 ```
+
+Python runtime bindings can be declared for CLI runs with `@queron.runtime_configs`:
+
+```python
+@queron.runtime_configs
+def pipeline_configs():
+    return {
+        "PostGres": queron.bindings.PostgresBinding(
+            host="localhost",
+            port=5432,
+            database="retail_db",
+            username="admin",
+            password="password123",
+        )
+    }
+```
+
+The function name is not fixed.
 
 Supported connection types:
 
