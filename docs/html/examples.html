@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Queron Documentation - Queron Docs</title>
+  <title>Example Pipeline - Queron Docs</title>
   <link rel="stylesheet" href="styles.css?v=2">
   <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
@@ -25,7 +25,7 @@
 <a href="examples.html">Examples</a></nav>
   </aside>
   <main>
-    <p>﻿# Example Pipeline</p>
+    <h1 id="example-pipeline">Example Pipeline</h1>
 <p>This page uses one large example to show the complete shape of a Queron project: local files, Python ingress, SQL models, checks, lookups, database ingress, database egress, file egress, runtime vars, and runtime bindings.</p>
 <p>For exact command arguments, see <a href="commands-reference.html">CLI and Python Commands</a>. For decorator arguments, see <a href="pipeline-dsl.html">Pipeline DSL Reference</a>.</p>
 <h2 id="project-files">Project Files</h2>
@@ -43,7 +43,7 @@
 <div class="code-row"><a class="line-no" id="pipeline-L3" href="#pipeline-L3">3</a><code>import queron</code></div>
 <div class="code-row"><a class="line-no" id="pipeline-L4" href="#pipeline-L4">4</a><code> </code></div>
 <div class="code-row"><a class="line-no" id="pipeline-L5" href="#pipeline-L5">5</a><code> </code></div>
-<div class="code-row"><a class="line-no" id="pipeline-L6" href="#pipeline-L6">6</a><code>PIPELINE_ID = &quot;customer_360_demo&quot;</code></div>
+<div class="code-row"><a class="line-no" id="pipeline-L6" href="#pipeline-L6">6</a><code>queron.pipeline(pipeline_id=&quot;customer_360_demo&quot;)</code></div>
 <div class="code-row"><a class="line-no" id="pipeline-L7" href="#pipeline-L7">7</a><code> </code></div>
 <div class="code-row"><a class="line-no" id="pipeline-L8" href="#pipeline-L8">8</a><code> </code></div>
 <div class="code-row"><a class="line-no" id="pipeline-L9" href="#pipeline-L9">9</a><code><a href="commands-reference.html#file-ingress">@queron.csv.ingress</a>(</code></div>

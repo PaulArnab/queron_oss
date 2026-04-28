@@ -3,6 +3,26 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable
 
+_PIPELINE_METADATA: dict[str, Any] = {}
+
+
+def _clear_pipeline_registry() -> None:
+    _PIPELINE_METADATA.clear()
+
+
+def _get_pipeline_metadata() -> dict[str, Any]:
+    return dict(_PIPELINE_METADATA)
+
+
+def pipeline(pipeline_id: str | None = None, **metadata: Any) -> dict[str, Any]:
+    if pipeline_id is not None and "pipeline_id" in metadata:
+        raise ValueError("Use either pipeline_id as an argument or keyword, not both.")
+    resolved_pipeline_id = pipeline_id if pipeline_id is not None else metadata.pop("pipeline_id", None)
+    normalized_pipeline_id = _require_non_empty_string("pipeline_id", str(resolved_pipeline_id or ""))
+    _PIPELINE_METADATA.clear()
+    _PIPELINE_METADATA.update({"pipeline_id": normalized_pipeline_id, **dict(metadata)})
+    return dict(_PIPELINE_METADATA)
+
 
 def _require_non_empty_string(name: str, value: str) -> str:
     text = str(value or "").strip()
@@ -830,6 +850,7 @@ __all__ = [
     "mysql",
     "oracle",
     "parquet",
+    "pipeline",
     "postgres",
     "python",
     "ref",

@@ -13,6 +13,7 @@ import sysconfig
 from typing import Any
 
 from .config import load_config, resolve_lookup_relation, resolve_source_relation, resolve_target, try_resolve_egress_relation
+from . import _clear_pipeline_registry, _get_pipeline_metadata
 from .runtime_models import CompiledContractRecord, PipelineVarRecord
 from .runtime_vars import _VAR_PATTERN, parse_runtime_var_options
 from .specs import NodeSpec, PipelineSpec
@@ -713,6 +714,7 @@ def _load_module_from_code(
     resolved_source_path = _resolve_path(source_path)
     module_globals: dict[str, Any] = {"__name__": "__queron_generated__", "__file__": str(resolved_source_path or "<queron_generated_pipeline>")}
     original_sys_path = list(sys.path)
+    _clear_pipeline_registry()
     try:
         if resolved_source_path is not None:
             project_root_text = str(resolved_source_path.parent)
@@ -745,8 +747,7 @@ def _load_module_from_code(
 
 
 def _collect_nodes(module_globals: dict[str, Any]) -> tuple[list[NodeSpec], dict[str, Any]]:
-    native_metadata = module_globals.get("__queron_native__")
-    native = native_metadata if isinstance(native_metadata, dict) else {}
+    native = _get_pipeline_metadata()
     native_cells = native.get("cells") if isinstance(native.get("cells"), dict) else {}
     nodes: list[NodeSpec] = []
 
@@ -818,7 +819,7 @@ def compile_pipeline_code(
     effective_target = resolve_target(config, target)
     spec = PipelineSpec(
         pipeline_id=(
-            str(native_metadata.get("pipeline_id") or native_metadata.get("notebook_id") or "").strip() or None
+            str(native_metadata.get("pipeline_id") or "").strip() or None
         ),
         target=effective_target,
         nodes=nodes,
@@ -887,7 +888,7 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
             {
                 "level": "error",
                 "code": "missing_pipeline_id",
-                "message": "Pipeline is missing a required pipeline_id in __queron_native__.",
+                "message": 'Pipeline is missing queron.pipeline(pipeline_id="...").',
             }
         )
 

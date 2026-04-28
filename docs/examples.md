@@ -1,4 +1,4 @@
-﻿# Example Pipeline
+# Example Pipeline
 
 This page uses one large example to show the complete shape of a Queron project: local files, Python ingress, SQL models, checks, lookups, database ingress, database egress, file egress, runtime vars, and runtime bindings.
 
@@ -25,7 +25,7 @@ from pathlib import Path
 import queron
 
 
-PIPELINE_ID = "customer_360_demo"
+queron.pipeline(pipeline_id="customer_360_demo")
 
 
 @queron.csv.ingress(

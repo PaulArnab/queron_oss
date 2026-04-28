@@ -50,6 +50,8 @@ queron run pipeline.py</code></pre>
 <p>A pipeline is a Python file that imports <code>queron</code> and declares nodes with decorators.</p>
 <pre><code class=" language-python">import queron
 
+queron.pipeline(pipeline_id=&quot;numbers_pipeline&quot;)
+
 
 @queron.model.sql(
     name=&quot;seed_numbers&quot;,

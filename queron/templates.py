@@ -68,6 +68,8 @@ def build_init_pipeline_text(*, sample: bool = False) -> str:
     if sample:
         return """import queron
 
+queron.pipeline(pipeline_id="sample_pipeline")
+
 
 @queron.model.sql(
     name="seed_numbers",
@@ -100,6 +102,7 @@ def enriched_numbers():
 
 @queron.csv.egress(
     name="export_enriched_numbers",
+    out="export_enriched_numbers",
     path="exports/enriched_numbers.csv",
     sql=f\"\"\"
 SELECT *
@@ -114,6 +117,8 @@ def export_enriched_numbers():
     return '''"""Starter Queron pipeline project."""
 
 import queron
+
+queron.pipeline(pipeline_id="starter_pipeline")
 
 # Add pipeline nodes here.
 # To replace this starter with the built-in sample scaffold, run:

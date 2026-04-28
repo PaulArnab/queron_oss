@@ -120,7 +120,7 @@ class VerifyMariaDbCoreTests(unittest.TestCase):
     def test_compile_allows_mariadb_lookup_consumer_with_same_config(self):
         code = '''
 import queron
-__queron_native__ = {"pipeline_id": "mariadb_lookup_compile"}
+queron.pipeline(pipeline_id="mariadb_lookup_compile")
 @queron.mariadb.ingress(config="MARIADB_LOCAL", name="ingest_mariadb_policy", out="mariadb_policy", sql='SELECT policy_id, active_flag FROM {{ queron.source("policy") }}')
 def ingest_mariadb_policy(): pass
 @queron.mariadb.lookup(config="MARIADB_LOCAL", name="stage_mariadb_lookup", table="phase_lookup_keys", out="phase_lookup_keys", sql='SELECT policy_id FROM {{ queron.ref("mariadb_policy") }}', mode="replace")
@@ -183,7 +183,7 @@ lookup:
                     import queron
                     from queron.bindings import MariaDbBinding
 
-                    __queron_native__ = {"pipeline_id": "mariadb_native_smoke"}
+                    queron.pipeline(pipeline_id="mariadb_native_smoke")
 
                     @queron.mariadb.ingress(config="MARIADB_LOCAL", name="ingest_mariadb_policy", out="mariadb_policy", sql='SELECT policy_id, policy_number, active_flag FROM {{ queron.source("policy") }} ORDER BY policy_id')
                     def ingest_mariadb_policy(): pass

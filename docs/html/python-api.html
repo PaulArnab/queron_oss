@@ -29,6 +29,13 @@
 <p>Import:</p>
 <pre><code class=" language-python">import queron</code></pre>
 <p>The public API is exported from <code>queron/__init__.py</code> and implemented in <code>queron/api.py</code>.</p>
+<h2 id="pipeline-declaration">Pipeline Declaration</h2>
+<h3 id="pipelinepipelineid-metadata"><code>pipeline(pipeline_id, **metadata)</code></h3>
+<p>Declares the pipeline ID at module top level in <code>pipeline.py</code>.</p>
+<pre><code class=" language-python">queron.pipeline(pipeline_id=&quot;my_pipeline&quot;)</code></pre>
+<p>Shorthand:</p>
+<pre><code class=" language-python">queron.pipeline(&quot;my_pipeline&quot;)</code></pre>
+<p>Returns the normalized pipeline metadata dictionary.</p>
 <h2 id="project-setup">Project Setup</h2>
 <h3 id="initpipelineprojectprojectpath-samplefalse-forcefalse"><code>init_pipeline_project(project_path, *, sample=False, force=False)</code></h3>
 <p>Creates a pipeline project scaffold.</p>
@@ -94,7 +101,6 @@
     target_node=None,
     clean_existing=False,
     set_final=False,
-    pipeline_id=None,
     run_label=&quot;nightly&quot;,
     on_log=None,
 )</code></pre>
@@ -160,12 +166,6 @@
 <td><code>bool</code></td>
 <td><code>False</code></td>
 <td>Finalize stale failed/running run before starting.</td>
-</tr>
-<tr>
-<td><code>pipeline_id</code></td>
-<td><code>str or None</code></td>
-<td><code>None</code></td>
-<td>Override pipeline ID.</td>
 </tr>
 <tr>
 <td><code>run_label</code></td>

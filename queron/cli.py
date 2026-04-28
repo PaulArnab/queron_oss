@@ -32,6 +32,7 @@ from .api import (
 )
 from .runtime_models import format_log_event
 from .graph_client import fanout_log_handlers, graph_log_publisher
+from . import _clear_pipeline_registry, _get_pipeline_metadata
 
 
 def _load_runtime_vars(
@@ -76,19 +77,17 @@ def _load_pipeline_namespace(pipeline_path: str | Path) -> dict[str, Any]:
     namespace: dict[str, Any] = {"__name__": "__queron_cli_pipeline__"}
     resolved = Path(pipeline_path).expanduser().resolve()
     code = compile(resolved.read_text(encoding="utf-8"), str(resolved), "exec")
+    _clear_pipeline_registry()
     exec(code, namespace, namespace)
     return namespace
 
 
 def _pipeline_id_from_file(pipeline_path: str | Path) -> str:
     resolved = Path(pipeline_path).expanduser().resolve()
-    namespace = _load_pipeline_namespace(pipeline_path)
-    native = namespace.get("__queron_native__")
-    if not isinstance(native, dict):
-        raise RuntimeError(f"Pipeline '{resolved}' is missing __queron_native__.")
-    pipeline_id = str(native.get("pipeline_id") or "").strip()
+    _load_pipeline_namespace(pipeline_path)
+    pipeline_id = str(_get_pipeline_metadata().get("pipeline_id") or "").strip()
     if not pipeline_id:
-        raise RuntimeError(f"Pipeline '{resolved}' is missing __queron_native__.pipeline_id.")
+        raise RuntimeError(f'Pipeline "{resolved}" is missing queron.pipeline(pipeline_id="...").')
     return pipeline_id
 
 

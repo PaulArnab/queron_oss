@@ -720,7 +720,7 @@ def _fallback_artifact_path_for_diagnostics(pipeline_path: Path) -> Path:
 def _default_artifact_path(pipeline_path: Path, *, pipeline_id: str) -> Path:
     normalized_pipeline_id = str(pipeline_id or "").strip()
     if not normalized_pipeline_id:
-        raise RuntimeError("Pipeline is missing a required pipeline_id in __queron_native__.")
+        raise RuntimeError('Pipeline is missing queron.pipeline(pipeline_id="...").')
     return pipeline_path.parent / ".queron" / normalized_pipeline_id / "artifact.duckdb"
 
 
@@ -2711,7 +2711,6 @@ def _run_pipeline_impl(
     target_node: str | None = None,
     clean_existing: bool = False,
     set_final: bool = False,
-    pipeline_id: str | None = None,
     run_label: str | None = None,
     on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> RunPipelineResult:
@@ -2873,7 +2872,6 @@ def run_pipeline(
     target_node: str | None = None,
     clean_existing: bool = False,
     set_final: bool = False,
-    pipeline_id: str | None = None,
     run_label: str | None = None,
     on_log: Callable[[PipelineLogEvent], None] | None = None,
 ) -> RunPipelineResult:
@@ -2888,7 +2886,6 @@ def run_pipeline(
         target_node=target_node,
         clean_existing=clean_existing,
         set_final=set_final,
-        pipeline_id=pipeline_id,
         run_label=run_label,
         on_log=on_log,
     )

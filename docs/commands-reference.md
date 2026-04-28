@@ -309,6 +309,20 @@ queron.oracle.lookup(...)
 | `query` | yes | SQL returning one boolean scalar. |
 | `depends_on` | no | Manual dependency node name or list of names. |
 
+### Pipeline Declaration
+
+```python
+queron.pipeline(pipeline_id="my_pipeline")
+```
+
+Declare the pipeline ID at module top level in `pipeline.py`. This is required before compile/run.
+
+Shorthand:
+
+```python
+queron.pipeline("my_pipeline")
+```
+
 ### Compile and Run API
 
 ```python
@@ -333,7 +347,6 @@ queron.run_pipeline(
     target_node=None,
     clean_existing=False,
     set_final=False,
-    pipeline_id=None,
     run_label=None,
     on_log=None,
 )
@@ -350,7 +363,6 @@ queron.run_pipeline(
 | `target_node` | no | Run one node and its upstream dependencies. |
 | `clean_existing` | no | Drop existing output tables before execution. |
 | `set_final` | no | Finalize stale failed/running run before starting. |
-| `pipeline_id` | no | Override pipeline ID. |
 | `run_label` | no | Unique run label. |
 | `on_log` | no | Log callback. |
 
@@ -686,4 +698,3 @@ queron open_graph <pipeline> [--host HOST] [--port PORT] [--no-browser] [--json]
 | `--port PORT` | no | Port to bind. |
 | `--no-browser` | no | Start server without opening browser. |
 | `--json` | no | Emit server metadata as JSON. |
-

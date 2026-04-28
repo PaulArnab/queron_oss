@@ -89,7 +89,7 @@ class VerifyQueronCliTests(unittest.TestCase):
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -137,7 +137,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -164,7 +164,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed_a',
@@ -203,7 +203,7 @@ def seed_b():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -246,7 +246,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -275,7 +275,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -308,7 +308,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -356,7 +356,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -399,7 +399,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -440,7 +440,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "manual_deps"}
+queron.pipeline(pipeline_id="manual_deps")
 
 @queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id")
 def seed():
@@ -492,7 +492,7 @@ def run_policy_processor():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "manual_deps"}
+queron.pipeline(pipeline_id="manual_deps")
 
 @queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id", depends_on=["missing_node"])
 def seed():
@@ -511,7 +511,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "manual_deps"}
+queron.pipeline(pipeline_id="manual_deps")
 
 @queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id", depends_on=["seed"])
 def seed():
@@ -532,7 +532,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "manual_deps"}
+queron.pipeline(pipeline_id="manual_deps")
 
 @queron.model.sql(name="first", out="first", query="SELECT 1 AS id", depends_on=["second"])
 def first():
@@ -555,7 +555,7 @@ def second():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "manual_deps"}
+queron.pipeline(pipeline_id="manual_deps")
 
 @queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id")
 def seed():
@@ -584,7 +584,7 @@ def final():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "manual_deps"}
+queron.pipeline(pipeline_id="manual_deps")
 
 @queron.model.sql(name="seed", out="seed", query="SELECT 1 AS id")
 def seed():
@@ -628,7 +628,7 @@ def final():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(name='seed', out='seed', query="SELECT 1 AS id")
 def seed():
@@ -699,7 +699,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -741,7 +741,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -835,7 +835,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -859,6 +859,78 @@ def seed():
                 (root / ".queron" / "policy123.duckdb").resolve(),
             )
 
+    def test_compile_pipeline_accepts_positional_pipeline_declaration(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+queron.pipeline("policy123")
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertEqual(compiled.spec.pipeline_id, "policy123")
+            self.assertFalse(queron.has_compile_errors(compiled))
+
+    def test_compile_pipeline_clears_prior_pipeline_declaration(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            first_path = root / "first.py"
+            second_path = root / "second.py"
+            first_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="first")
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+            second_path.write_text(
+                """import queron
+
+@queron.model.sql(
+    name='seed',
+    out='seed',
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            first = queron.compile_pipeline(first_path)
+            second = queron.compile_pipeline(second_path)
+
+            self.assertEqual(first.spec.pipeline_id, "first")
+            self.assertTrue(any(str(item.get("code")) == "missing_pipeline_id" for item in second.diagnostics))
+            self.assertIsNone(second.contract)
+
     def test_compile_pipeline_allows_out_on_egress_nodes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)
@@ -866,7 +938,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -909,7 +981,7 @@ def export_seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -990,7 +1062,7 @@ lookup:
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -1071,7 +1143,7 @@ lookup:
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='bad_model',
@@ -1115,7 +1187,7 @@ lookup:
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.postgres.ingress(
     config='PostGres',
@@ -1159,7 +1231,7 @@ lookup:
                 pipeline_path.write_text(
                     f'''import queron
 
-__queron_native__ = {{"pipeline_id": "policy123"}}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -1239,7 +1311,7 @@ def stage_policy_keys():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -1269,7 +1341,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -1302,7 +1374,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -1327,7 +1399,7 @@ def seed():
             self.assertEqual(pathlib.Path(result.log_path).resolve(), expected_log_path)
             self.assertTrue(expected_log_path.exists())
 
-    def test_run_pipeline_uses_compiled_pipeline_id_instead_of_runtime_override(self):
+    def test_run_pipeline_uses_declared_pipeline_id(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)
             pipeline_path = root / "pipeline.py"
@@ -1335,7 +1407,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -1353,7 +1425,7 @@ def seed():
             compiled = queron.compile_pipeline(pipeline_path)
             self.assertFalse(any(str(item.get("level")) == "error" for item in compiled.diagnostics))
 
-            result = queron.run_pipeline(pipeline_path, pipeline_id="override-not-used")
+            result = queron.run_pipeline(pipeline_path)
             self.assertIsNotNone(result.run_id)
 
             conn = load_duckdb().connect(str(artifact_path))
@@ -1449,7 +1521,7 @@ def seed():
 import pyarrow as pa
 import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.python.ingress(
     name='slow_seed',
@@ -1562,7 +1634,7 @@ def leaf():
 import pyarrow as pa
 import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.python.ingress(
     name='slow_seed',
@@ -2289,7 +2361,7 @@ def leaf():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy_non_final"}
+queron.pipeline(pipeline_id="policy_non_final")
 
 @queron.model.sql(
     name='seed',
@@ -2332,7 +2404,7 @@ def broken():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy_fresh_run"}
+queron.pipeline(pipeline_id="policy_fresh_run")
 
 @queron.model.sql(
     name='seed',
@@ -2379,7 +2451,7 @@ def broken():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy_compile_final"}
+queron.pipeline(pipeline_id="policy_compile_final")
 
 @queron.model.sql(
     name='seed',
@@ -2763,7 +2835,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -2881,7 +2953,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -2942,7 +3014,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -3008,7 +3080,7 @@ def seed():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -3062,7 +3134,7 @@ def final():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -3178,7 +3250,7 @@ def final():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -3329,7 +3401,7 @@ def leaf():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -3434,7 +3506,7 @@ def leaf():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',
@@ -3479,7 +3551,7 @@ def final():
             pipeline_path.write_text(
                 """import queron
 
-__queron_native__ = {"pipeline_id": "policy123"}
+queron.pipeline(pipeline_id="policy123")
 
 @queron.model.sql(
     name='seed',

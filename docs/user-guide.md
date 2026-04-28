@@ -47,6 +47,8 @@ A pipeline is a Python file that imports `queron` and declares nodes with decora
 ```python
 import queron
 
+queron.pipeline(pipeline_id="numbers_pipeline")
+
 
 @queron.model.sql(
     name="seed_numbers",
@@ -346,4 +348,3 @@ Send live logs from a run to an open graph server:
 ```bash
 queron run pipeline.py --graph-url http://127.0.0.1:8765
 ```
-

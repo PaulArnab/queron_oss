@@ -8,6 +8,24 @@ import queron
 
 The public API is exported from `queron/__init__.py` and implemented in `queron/api.py`.
 
+## Pipeline Declaration
+
+### `pipeline(pipeline_id, **metadata)`
+
+Declares the pipeline ID at module top level in `pipeline.py`.
+
+```python
+queron.pipeline(pipeline_id="my_pipeline")
+```
+
+Shorthand:
+
+```python
+queron.pipeline("my_pipeline")
+```
+
+Returns the normalized pipeline metadata dictionary.
+
 ## Project Setup
 
 ### `init_pipeline_project(project_path, *, sample=False, force=False)`
@@ -65,7 +83,6 @@ result = queron.run_pipeline(
     target_node=None,
     clean_existing=False,
     set_final=False,
-    pipeline_id=None,
     run_label="nightly",
     on_log=None,
 )
@@ -84,7 +101,6 @@ Arguments:
 | `target_node` | `str or None` | `None` | Run only this node and upstream dependencies. |
 | `clean_existing` | `bool` | `False` | Drop existing output tables before execution. |
 | `set_final` | `bool` | `False` | Finalize stale failed/running run before starting. |
-| `pipeline_id` | `str or None` | `None` | Override pipeline ID. |
 | `run_label` | `str or None` | `None` | Unique run label. |
 | `on_log` | `Callable[[PipelineLogEvent], None] or None` | `None` | Log callback. |
 

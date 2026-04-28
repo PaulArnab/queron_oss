@@ -558,7 +558,7 @@ class VerifyMysqlLookupRuntimeTests(unittest.TestCase):
     def test_full_lookup_pipeline_ingress_lookup_ingress_egress(self):
         pipeline = r'''
 import queron
-__queron_native__ = {"pipeline_id": "mysql_lookup_full_smoke"}
+queron.pipeline(pipeline_id="mysql_lookup_full_smoke")
 @queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_policy", out="mysql_policy", sql='SELECT policy_id, policy_number, active_flag FROM {{ queron.source("policy") }} ORDER BY policy_id')
 def ingest_mysql_policy(): pass
 @queron.mysql.lookup(config="MYSQL_LOCAL", name="stage_mysql_lookup", table="phase_lookup_keys", out="phase_lookup_keys", sql='SELECT policy_id FROM {{ queron.ref("mysql_policy") }} WHERE active_flag = true', mode="replace")
@@ -598,7 +598,7 @@ def egress_mysql_filtered(): pass
         retain_text = "True" if retain else "False"
         return f'''
 import queron
-__queron_native__ = {{"pipeline_id": "mysql_lookup_runtime"}}
+queron.pipeline(pipeline_id="mysql_lookup_runtime")
 @queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_policy", out="mysql_policy", sql='SELECT policy_id, active_flag FROM {{{{ queron.source("policy") }}}} ORDER BY policy_id')
 def ingest_mysql_policy(): pass
 @queron.mysql.lookup(config="MYSQL_LOCAL", name="stage_mysql_lookup", table="phase_lookup_keys", out="phase_lookup_keys", sql='SELECT policy_id FROM {{{{ queron.ref("mysql_policy") }}}} WHERE active_flag = true', mode="replace", retain={retain_text})
@@ -608,7 +608,7 @@ def stage_mysql_lookup(): pass
     def _lookup_consumer_pipeline(self, *, consumer_config: str) -> str:
         return f'''
 import queron
-__queron_native__ = {{"pipeline_id": "mysql_lookup_compile"}}
+queron.pipeline(pipeline_id="mysql_lookup_compile")
 @queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_policy", out="mysql_policy", sql='SELECT policy_id, active_flag FROM {{{{ queron.source("policy") }}}}')
 def ingest_mysql_policy(): pass
 @queron.mysql.lookup(config="MYSQL_LOCAL", name="stage_mysql_lookup", table="phase_lookup_keys", out="phase_lookup_keys", sql='SELECT policy_id FROM {{{{ queron.ref("mysql_policy") }}}}', mode="replace")
@@ -747,7 +747,7 @@ class VerifyMysqlCliApiIntegrationTests(unittest.TestCase):
         pipeline_path.write_text(
             f'''
 import queron
-__queron_native__ = {{"pipeline_id": "{pipeline_id}"}}
+queron.pipeline(pipeline_id="{pipeline_id}")
 @queron.mysql.ingress(config="MYSQL_LOCAL", name="ingest_mysql_policy", out="mysql_policy", sql='SELECT policy_id, policy_number, active_flag FROM {{{{ queron.source("policy") }}}} ORDER BY policy_id')
 def ingest_mysql_policy(): pass
 @queron.mysql.lookup(config="MYSQL_LOCAL", name="stage_mysql_lookup", table="phase_cli_lookup", out="phase_cli_lookup", sql='SELECT policy_id FROM {{{{ queron.ref("mysql_policy") }}}} WHERE active_flag = true', mode="replace")

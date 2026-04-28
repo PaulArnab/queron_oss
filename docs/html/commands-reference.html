@@ -738,6 +738,11 @@ queron.oracle.lookup(...)</code></pre>
 </tr>
 </tbody>
 </table>
+<h3 id="pipeline-declaration">Pipeline Declaration</h3>
+<pre><code class=" language-python">queron.pipeline(pipeline_id=&quot;my_pipeline&quot;)</code></pre>
+<p>Declare the pipeline ID at module top level in <code>pipeline.py</code>. This is required before compile/run.</p>
+<p>Shorthand:</p>
+<pre><code class=" language-python">queron.pipeline(&quot;my_pipeline&quot;)</code></pre>
 <h3 id="compile-and-run-api">Compile and Run API</h3>
 <pre><code class=" language-python">queron.compile_pipeline(pipeline_path, *, config_path=None, target=None)</code></pre>
 <table>
@@ -775,7 +780,6 @@ queron.oracle.lookup(...)</code></pre>
     target_node=None,
     clean_existing=False,
     set_final=False,
-    pipeline_id=None,
     run_label=None,
     on_log=None,
 )</code></pre>
@@ -830,11 +834,6 @@ queron.oracle.lookup(...)</code></pre>
 <td><code>set_final</code></td>
 <td>no</td>
 <td>Finalize stale failed/running run before starting.</td>
-</tr>
-<tr>
-<td><code>pipeline_id</code></td>
-<td>no</td>
-<td>Override pipeline ID.</td>
 </tr>
 <tr>
 <td><code>run_label</code></td>
