@@ -138,6 +138,52 @@ def test_mssql_egress_mapping_modes() -> None:
     _assert_mapping_shape(remote[0], connector="mssql", mode="egress_remote_schema", target_type="DECIMAL(12,2)")
 
 
+def test_mssql_varchar_egress_uses_measured_length_with_padding() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR", max_length=18)]
+    inferred = mssql_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "NVARCHAR(36)"
+    assert inferred[0].warnings == []
+
+
+def test_mssql_varchar_egress_falls_back_without_measured_length() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR")]
+    inferred = mssql_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "NVARCHAR(MAX)"
+    assert inferred[0].warnings
+
+
+def test_mssql_varchar_egress_uses_max_for_oversized_measured_length() -> None:
+    source = [ColumnMeta(name="notes", data_type="VARCHAR", max_length=5000)]
+    inferred = mssql_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "NVARCHAR(MAX)"
+    assert inferred[0].warnings
+
+
+def test_mssql_measures_varchar_lengths_from_duckdb_result() -> None:
+    conn = connect_duckdb()
+    try:
+        columns = [
+            ColumnMeta(name="short_text", data_type="VARCHAR"),
+            ColumnMeta(name="amount", data_type="INTEGER"),
+            ColumnMeta(name="empty_text", data_type="VARCHAR"),
+        ]
+        warnings = mssql_core._measure_mssql_string_column_lengths(
+            conn,
+            """
+            SELECT 'abcd' AS short_text, 1 AS amount, NULL AS empty_text
+            UNION ALL
+            SELECT 'abcdefghijklmnopqr' AS short_text, 2 AS amount, '' AS empty_text
+            """,
+            columns,
+        )
+        assert warnings == []
+        assert columns[0].max_length == 18
+        assert columns[1].max_length is None
+        assert columns[2].max_length == 0
+    finally:
+        conn.close()
+
+
 def test_mysql_egress_mapping_modes() -> None:
     source = [ColumnMeta(name="amount", data_type="DECIMAL(38,10)")]
     inferred = mysql_core._build_egress_inferred_column_mappings(source)
@@ -199,6 +245,10 @@ if __name__ == "__main__":
     test_db2_measures_varchar_lengths_from_duckdb_result()
     test_db2_remote_schema_clears_stale_fallback_warning()
     test_mssql_egress_mapping_modes()
+    test_mssql_varchar_egress_uses_measured_length_with_padding()
+    test_mssql_varchar_egress_falls_back_without_measured_length()
+    test_mssql_varchar_egress_uses_max_for_oversized_measured_length()
+    test_mssql_measures_varchar_lengths_from_duckdb_result()
     test_mysql_egress_mapping_modes()
     test_mariadb_egress_mapping_modes()
     test_oracle_egress_mapping_modes()
