@@ -349,6 +349,48 @@ class VerifyIngestColumnMappingTests(unittest.TestCase):
             finally:
                 duckdb_core._connections.pop(conn_res.connection_id, None)
 
+    def test_column_mapping_metadata_matches_target_columns_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "runtime.duckdb"
+            conn_res = duckdb_core.connect(base.DuckDbConnectRequest(database=str(db_path)))
+            try:
+                duckdb_core.run_query(
+                    base.PgQueryRequest(
+                        connection_id=conn_res.connection_id,
+                        sql='CREATE TABLE "main"."oracle_out" ("policy_id" INTEGER)',
+                    )
+                )
+                duckdb_core.record_ingest_column_mappings(
+                    connection_id=conn_res.connection_id,
+                    target_table="main.oracle_out",
+                    column_mappings=[
+                        base.ColumnMappingRecord(
+                            ordinal_position=1,
+                            source_column="policy_id",
+                            source_type="INTEGER",
+                            target_column="POLICY_ID",
+                            target_type="NUMBER(10,0)",
+                            connector_type="oracle",
+                            mapping_mode="egress_remote_schema",
+                        ),
+                    ],
+                )
+
+                columns = duckdb_core.get_object_details(
+                    conn_res.connection_id,
+                    schema="main",
+                    name="oracle_out",
+                    category="table",
+                    tab="columns",
+                )
+                self.assertEqual(columns[0]["source_column"], "policy_id")
+                self.assertEqual(columns[0]["source_type"], "INTEGER")
+                self.assertEqual(columns[0]["target_type"], "NUMBER(10,0)")
+                self.assertEqual(columns[0]["connector_type"], "oracle")
+                self.assertEqual(columns[0]["mapping_mode"], "egress_remote_schema")
+            finally:
+                duckdb_core._connections.pop(conn_res.connection_id, None)
+
 
 if __name__ == "__main__":
     unittest.main()

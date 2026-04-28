@@ -7,6 +7,7 @@ MariaDB-specific connection, ingress, egress, and lookup-table cleanup helpers.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -39,6 +40,9 @@ TestConnectionResponse = _base_models.TestConnectionResponse
 _connections: dict[str, dict[str, Any]] = {}
 _DEFAULT_QUERY_CHUNK_SIZE = int(getattr(_base_models, "DEFAULT_QUERY_CHUNK_SIZE", 200) or 200)
 _VALID_MARIADB_AUTH_MODES = {"basic", "tls", "mtls", "socket"}
+_DUCKDB_VARCHAR_RE = re.compile(r"^VARCHAR\((\d+)\)$", re.IGNORECASE)
+_MARIADB_MAX_INLINE_VARCHAR_LENGTH = 16383
+_MARIADB_MIN_MEASURED_VARCHAR_LENGTH = 32
 
 
 class _MappedMariaDbColumn:
@@ -298,6 +302,65 @@ def _duckdb_column_meta_from_cursor(cursor: Any) -> list[ColumnMeta]:
     return metas
 
 
+def _is_mariadb_string_like_duckdb_column(column: ColumnMeta) -> bool:
+    normalized = str(column.data_type or "UNKNOWN").strip().upper()
+    return normalized == "VARCHAR" or normalized.startswith("VARCHAR(")
+
+
+def _mariadb_varchar_type_for_column(column: ColumnMeta) -> tuple[str, list[str]]:
+    normalized = str(column.data_type or "UNKNOWN").strip().upper()
+    warnings: list[str] = []
+    if isinstance(column.max_length, int) and column.max_length >= 0:
+        observed_length = int(column.max_length)
+        if observed_length > _MARIADB_MAX_INLINE_VARCHAR_LENGTH:
+            warnings.append(
+                f"DuckDB VARCHAR observed length {observed_length} exceeds MariaDB inline VARCHAR limit "
+                f"{_MARIADB_MAX_INLINE_VARCHAR_LENGTH}; using LONGTEXT."
+            )
+            return "LONGTEXT", warnings
+        padded = max(observed_length * 2, _MARIADB_MIN_MEASURED_VARCHAR_LENGTH)
+        return f"VARCHAR({min(padded, _MARIADB_MAX_INLINE_VARCHAR_LENGTH)})", warnings
+    varchar_match = _DUCKDB_VARCHAR_RE.match(normalized)
+    if varchar_match:
+        declared_length = int(varchar_match.group(1))
+        if declared_length > _MARIADB_MAX_INLINE_VARCHAR_LENGTH:
+            warnings.append(
+                f"DuckDB VARCHAR({declared_length}) exceeds MariaDB inline VARCHAR limit "
+                f"{_MARIADB_MAX_INLINE_VARCHAR_LENGTH}; using LONGTEXT."
+            )
+            return "LONGTEXT", warnings
+        return f"VARCHAR({max(declared_length, 1)})", warnings
+    warnings.append("DuckDB VARCHAR did not have measured length metadata; using MariaDB LONGTEXT.")
+    return "LONGTEXT", warnings
+
+
+def _measure_mariadb_string_column_lengths(
+    duck_conn: Any,
+    source_sql: str,
+    columns: list[ColumnMeta],
+    *,
+    sql_params: list[Any] | None = None,
+) -> list[str]:
+    string_columns = [column for column in columns if _is_mariadb_string_like_duckdb_column(column)]
+    if not string_columns:
+        return []
+    select_parts = [
+        f"MAX(LENGTH(CAST({_quote_duckdb_identifier(column.name)} AS VARCHAR))) AS {_quote_duckdb_identifier(f'__queron_len_{index}')}"
+        for index, column in enumerate(string_columns)
+    ]
+    measurement_sql = f"SELECT {', '.join(select_parts)} FROM ({_strip_sql_terminator(source_sql)}) AS __queron_egress_lengths"
+    try:
+        row = duck_conn.execute(measurement_sql, list(sql_params or [])).fetchone()
+    except Exception as exc:
+        return [f"MariaDB egress VARCHAR length measurement failed; using LONGTEXT. {exc}"]
+    if row is None:
+        return []
+    for index, column in enumerate(string_columns):
+        value = row[index] if index < len(row) else None
+        column.max_length = int(value or 0) if value is not None else 0
+    return []
+
+
 def _map_duckdb_column_to_mariadb(column: ColumnMeta) -> tuple[str, list[str]]:
     normalized = str(column.data_type or "UNKNOWN").strip().upper()
     warnings: list[str] = []
@@ -329,8 +392,14 @@ def _map_duckdb_column_to_mariadb(column: ColumnMeta) -> tuple[str, list[str]]:
         return f"DECIMAL({min(precision, 65)},{min(scale, 30)})", warnings
     if normalized in {"BLOB", "BYTEA"}:
         return "LONGBLOB", warnings
-    if normalized in {"VARCHAR", "JSON", "UUID"} or normalized.startswith("VARCHAR"):
+    if normalized == "UUID":
+        return "VARCHAR(36)", warnings
+    if normalized == "JSON":
         return "LONGTEXT", warnings
+    if normalized == "VARCHAR" or normalized.startswith("VARCHAR"):
+        target_type, length_warnings = _mariadb_varchar_type_for_column(column)
+        warnings.extend(length_warnings)
+        return target_type, warnings
     warnings.append(f"DuckDB type '{normalized}' was widened to MariaDB LONGTEXT.")
     return "LONGTEXT", warnings
 
@@ -695,6 +764,14 @@ def egress_query_from_duckdb(
         column_meta = _duckdb_column_meta_from_cursor(duck_cur)
         if not column_meta:
             raise RuntimeError("DuckDB egress query did not return any columns.")
+        warnings.extend(
+            _measure_mariadb_string_column_lengths(
+                duck_conn,
+                sql,
+                column_meta,
+                sql_params=sql_params,
+            )
+        )
         column_mappings = _build_egress_inferred_column_mappings(column_meta)
         target_conn = _connect_from_request(target_request)
         if callable(on_interrupt_open):
@@ -706,16 +783,19 @@ def egress_query_from_duckdb(
         if normalized_mode == "replace":
             if table_exists:
                 target_cur.execute(f"DROP TABLE {quoted_target_table}")
-            create_sql, warnings = _build_mariadb_create_table_sql(normalized_target_table, column_meta)
+            create_sql, create_warnings = _build_mariadb_create_table_sql(normalized_target_table, column_meta)
+            warnings.extend(create_warnings)
             target_cur.execute(create_sql)
         elif normalized_mode == "create":
             if table_exists:
                 raise RuntimeError(f"Target table '{quoted_target_table}' already exists.")
-            create_sql, warnings = _build_mariadb_create_table_sql(normalized_target_table, column_meta)
+            create_sql, create_warnings = _build_mariadb_create_table_sql(normalized_target_table, column_meta)
+            warnings.extend(create_warnings)
             target_cur.execute(create_sql)
         elif normalized_mode == "create_append":
             if not table_exists:
-                create_sql, warnings = _build_mariadb_create_table_sql(normalized_target_table, column_meta)
+                create_sql, create_warnings = _build_mariadb_create_table_sql(normalized_target_table, column_meta)
+                warnings.extend(create_warnings)
                 target_cur.execute(create_sql)
         elif not table_exists:
             raise RuntimeError(f"Target table '{quoted_target_table}' does not exist for append mode.")

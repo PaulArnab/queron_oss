@@ -184,11 +184,16 @@ def _load_node_column_mappings(
                 schema=schema_name,
                 name=table_name,
             )
+            mapping_metadata_by_lower = {
+                str(key or "").lower(): value
+                for key, value in mapping_metadata.items()
+            }
             merged_columns: list[dict[str, Any]] = []
             for column in columns if isinstance(columns, list) else []:
                 if not isinstance(column, dict):
                     continue
-                metadata = mapping_metadata.get(str(column.get("name") or "").strip(), {})
+                column_name = str(column.get("name") or "").strip()
+                metadata = mapping_metadata.get(column_name) or mapping_metadata_by_lower.get(column_name.lower(), {})
                 merged_columns.append({**column, **metadata})
             columns = merged_columns
         except Exception:

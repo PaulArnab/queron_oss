@@ -3720,6 +3720,20 @@ def _load_column_mapping_metadata(cur, schema: str, name: str) -> dict[str, dict
     return metadata
 
 
+def _column_mapping_metadata_for_column(
+    mapping_metadata: dict[str, dict[str, Any]],
+    column_name: str,
+) -> dict[str, Any]:
+    metadata = mapping_metadata.get(column_name)
+    if metadata is not None:
+        return metadata
+    normalized_name = str(column_name or "").lower()
+    for mapped_name, mapped_metadata in mapping_metadata.items():
+        if str(mapped_name or "").lower() == normalized_name:
+            return mapped_metadata
+    return {}
+
+
 def get_column_mapping_metadata_by_database(
     *,
     database_path: str,
@@ -3994,7 +4008,7 @@ def _get_columns(cur, schema: str, name: str):
     out: list[dict[str, Any]] = []
     for row in rows:
         column_name = str(row[0] or "")
-        metadata = mapping_metadata.get(column_name, {})
+        metadata = _column_mapping_metadata_for_column(mapping_metadata, column_name)
         out.append(
             {
                 "name": column_name,

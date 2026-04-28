@@ -196,6 +196,59 @@ def test_mysql_egress_mapping_modes() -> None:
     _assert_mapping_shape(remote[0], connector="mysql", mode="egress_remote_schema", target_type="decimal(12,2)")
 
 
+def test_mysql_varchar_egress_uses_measured_length_with_padding() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR", max_length=18)]
+    inferred = mysql_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "VARCHAR(36)"
+    assert inferred[0].warnings == []
+
+
+def test_mysql_varchar_egress_falls_back_without_measured_length() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR")]
+    inferred = mysql_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "LONGTEXT"
+    assert inferred[0].warnings
+
+
+def test_mysql_varchar_egress_uses_longtext_for_oversized_measured_length() -> None:
+    source = [ColumnMeta(name="notes", data_type="VARCHAR", max_length=20000)]
+    inferred = mysql_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "LONGTEXT"
+    assert inferred[0].warnings
+
+
+def test_mysql_uuid_egress_uses_bounded_varchar() -> None:
+    source = [ColumnMeta(name="id", data_type="UUID")]
+    inferred = mysql_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "VARCHAR(36)"
+    assert inferred[0].warnings == []
+
+
+def test_mysql_measures_varchar_lengths_from_duckdb_result() -> None:
+    conn = connect_duckdb()
+    try:
+        columns = [
+            ColumnMeta(name="short_text", data_type="VARCHAR"),
+            ColumnMeta(name="amount", data_type="INTEGER"),
+            ColumnMeta(name="empty_text", data_type="VARCHAR"),
+        ]
+        warnings = mysql_core._measure_mysql_string_column_lengths(
+            conn,
+            """
+            SELECT 'abcd' AS short_text, 1 AS amount, NULL AS empty_text
+            UNION ALL
+            SELECT 'abcdefghijklmnopqr' AS short_text, 2 AS amount, '' AS empty_text
+            """,
+            columns,
+        )
+        assert warnings == []
+        assert columns[0].max_length == 18
+        assert columns[1].max_length is None
+        assert columns[2].max_length == 0
+    finally:
+        conn.close()
+
+
 def test_mariadb_egress_mapping_modes() -> None:
     source = [ColumnMeta(name="amount", data_type="DECIMAL(38,10)")]
     inferred = mariadb_core._build_egress_inferred_column_mappings(source)
@@ -208,6 +261,59 @@ def test_mariadb_egress_mapping_modes() -> None:
     _assert_mapping_shape(remote[0], connector="mariadb", mode="egress_remote_schema", target_type="decimal(12,2)")
 
 
+def test_mariadb_varchar_egress_uses_measured_length_with_padding() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR", max_length=18)]
+    inferred = mariadb_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "VARCHAR(36)"
+    assert inferred[0].warnings == []
+
+
+def test_mariadb_varchar_egress_falls_back_without_measured_length() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR")]
+    inferred = mariadb_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "LONGTEXT"
+    assert inferred[0].warnings
+
+
+def test_mariadb_varchar_egress_uses_longtext_for_oversized_measured_length() -> None:
+    source = [ColumnMeta(name="notes", data_type="VARCHAR", max_length=20000)]
+    inferred = mariadb_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "LONGTEXT"
+    assert inferred[0].warnings
+
+
+def test_mariadb_uuid_egress_uses_bounded_varchar() -> None:
+    source = [ColumnMeta(name="id", data_type="UUID")]
+    inferred = mariadb_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "VARCHAR(36)"
+    assert inferred[0].warnings == []
+
+
+def test_mariadb_measures_varchar_lengths_from_duckdb_result() -> None:
+    conn = connect_duckdb()
+    try:
+        columns = [
+            ColumnMeta(name="short_text", data_type="VARCHAR"),
+            ColumnMeta(name="amount", data_type="INTEGER"),
+            ColumnMeta(name="empty_text", data_type="VARCHAR"),
+        ]
+        warnings = mariadb_core._measure_mariadb_string_column_lengths(
+            conn,
+            """
+            SELECT 'abcd' AS short_text, 1 AS amount, NULL AS empty_text
+            UNION ALL
+            SELECT 'abcdefghijklmnopqr' AS short_text, 2 AS amount, '' AS empty_text
+            """,
+            columns,
+        )
+        assert warnings == []
+        assert columns[0].max_length == 18
+        assert columns[1].max_length is None
+        assert columns[2].max_length == 0
+    finally:
+        conn.close()
+
+
 def test_oracle_egress_mapping_modes() -> None:
     source = [ColumnMeta(name="amount", data_type="DECIMAL(38,10)")]
     inferred = oracle_core._build_egress_inferred_column_mappings(source)
@@ -218,6 +324,52 @@ def test_oracle_egress_mapping_modes() -> None:
     )
     _assert_mapping_shape(inferred[0], connector="oracle", mode="egress_inferred", target_type="NUMBER(38,10)")
     _assert_mapping_shape(remote[0], connector="oracle", mode="egress_remote_schema", target_type="NUMBER(12,2)")
+
+
+def test_oracle_varchar_egress_uses_measured_length_with_padding() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR", max_length=18)]
+    inferred = oracle_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "VARCHAR2(36)"
+    assert inferred[0].warnings == []
+
+
+def test_oracle_varchar_egress_falls_back_without_measured_length() -> None:
+    source = [ColumnMeta(name="customer_name", data_type="VARCHAR")]
+    inferred = oracle_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "VARCHAR2(4000)"
+    assert inferred[0].warnings
+
+
+def test_oracle_varchar_egress_uses_clob_for_oversized_measured_length() -> None:
+    source = [ColumnMeta(name="notes", data_type="VARCHAR", max_length=5000)]
+    inferred = oracle_core._build_egress_inferred_column_mappings(source)
+    assert inferred[0].target_type == "CLOB"
+    assert inferred[0].warnings
+
+
+def test_oracle_measures_varchar_lengths_from_duckdb_result() -> None:
+    conn = connect_duckdb()
+    try:
+        columns = [
+            ColumnMeta(name="short_text", data_type="VARCHAR"),
+            ColumnMeta(name="amount", data_type="INTEGER"),
+            ColumnMeta(name="empty_text", data_type="VARCHAR"),
+        ]
+        warnings = oracle_core._measure_oracle_string_column_lengths(
+            conn,
+            """
+            SELECT 'abcd' AS short_text, 1 AS amount, NULL AS empty_text
+            UNION ALL
+            SELECT 'abcdefghijklmnopqr' AS short_text, 2 AS amount, '' AS empty_text
+            """,
+            columns,
+        )
+        assert warnings == []
+        assert columns[0].max_length == 18
+        assert columns[1].max_length is None
+        assert columns[2].max_length == 0
+    finally:
+        conn.close()
 
 
 def test_oracle_remote_schema_clears_stale_fallback_warning() -> None:
@@ -250,6 +402,20 @@ if __name__ == "__main__":
     test_mssql_varchar_egress_uses_max_for_oversized_measured_length()
     test_mssql_measures_varchar_lengths_from_duckdb_result()
     test_mysql_egress_mapping_modes()
+    test_mysql_varchar_egress_uses_measured_length_with_padding()
+    test_mysql_varchar_egress_falls_back_without_measured_length()
+    test_mysql_varchar_egress_uses_longtext_for_oversized_measured_length()
+    test_mysql_uuid_egress_uses_bounded_varchar()
+    test_mysql_measures_varchar_lengths_from_duckdb_result()
     test_mariadb_egress_mapping_modes()
+    test_mariadb_varchar_egress_uses_measured_length_with_padding()
+    test_mariadb_varchar_egress_falls_back_without_measured_length()
+    test_mariadb_varchar_egress_uses_longtext_for_oversized_measured_length()
+    test_mariadb_uuid_egress_uses_bounded_varchar()
+    test_mariadb_measures_varchar_lengths_from_duckdb_result()
     test_oracle_egress_mapping_modes()
+    test_oracle_varchar_egress_uses_measured_length_with_padding()
+    test_oracle_varchar_egress_falls_back_without_measured_length()
+    test_oracle_varchar_egress_uses_clob_for_oversized_measured_length()
+    test_oracle_measures_varchar_lengths_from_duckdb_result()
     test_oracle_remote_schema_clears_stale_fallback_warning()

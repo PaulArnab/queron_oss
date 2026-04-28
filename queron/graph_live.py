@@ -1058,6 +1058,12 @@ def resolve_graph_live_web_root(web_root: str | Path | None = None) -> Path:
 class _GraphLiveHandler(SimpleHTTPRequestHandler):
     server_version = "QueronGraphLive/0.2"
 
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+
     def _write_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
