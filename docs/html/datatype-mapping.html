@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Datatype Mapping - Queron Docs</title>
-  <link rel="stylesheet" href="styles.css?v=2">
+  <link rel="stylesheet" href="styles.css?v=3">
   <script type="module">
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
     mermaid.initialize({ startOnLoad: true, securityLevel: 'loose' });
@@ -16,6 +16,7 @@
     <nav><a href="index.html">Home</a>
 <a href="architecture.html">Architecture</a>
 <a href="internals-guide.html">Internals Guide</a>
+<a href="flowcharts.html">Flowcharts</a>
 <a href="user-guide.html">User Guide</a>
 <a href="commands-reference.html">Commands Reference</a>
 <a href="pipeline-dsl.html">Pipeline Dsl</a>
@@ -27,6 +28,12 @@
   <main>
     <h1 id="datatype-mapping">Datatype Mapping</h1>
 <p>Queron records datatype mappings during ingress and egress. These mappings are exposed in node inspection and persisted in the artifact database.</p>
+<p>The mapping record answers two practical questions:</p>
+<ul>
+<li>When a source column entered a DuckDB artifact, what DuckDB type did Queron choose?</li>
+<li>When a DuckDB artifact was written to another system, what target type did Queron choose?</li>
+</ul>
+<p>Mappings are visible through <code>queron.inspect_node(...)</code> and the <code>queron inspect_node ...</code> CLI. For egress nodes, Queron stores the mapping against the local artifact table for that node so inspect can show how the exported columns were typed.</p>
 <p>Each mapping records:</p>
 <table>
 <thead><tr>
@@ -68,6 +75,17 @@
 </tr>
 </tbody>
 </table>
+<p>Example inspect shape:</p>
+<pre><code class=" language-json">{
+  &quot;source_column&quot;: &quot;premium_amount&quot;,
+  &quot;source_type&quot;: &quot;NUMERIC(12,2)&quot;,
+  &quot;target_column&quot;: &quot;premium_amount&quot;,
+  &quot;target_type&quot;: &quot;DECIMAL(12,2)&quot;,
+  &quot;connector_type&quot;: &quot;postgres&quot;,
+  &quot;mapping_mode&quot;: &quot;ingress&quot;,
+  &quot;warnings&quot;: [],
+  &quot;lossy&quot;: false
+}</code></pre>
 <h2 id="mapping-modes">Mapping Modes</h2>
 <table>
 <thead><tr>
@@ -98,6 +116,94 @@
 </tbody>
 </table>
 <p>When egress mode appends to or uses an existing remote table, <code>egress_remote_schema</code> takes precedence over inferred mapping.</p>
+<h2 id="egress-mode-behavior">Egress Mode Behavior</h2>
+<p>The target datatype depends on the egress mode and whether the remote table already exists.</p>
+<table>
+<thead><tr>
+<th>Egress mode</th>
+<th>Remote table state</th>
+<th>Datatype behavior</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>replace</code></td>
+<td>Table may or may not exist.</td>
+<td>Queron drops/recreates or replaces the target table using types inferred from the DuckDB result. The mapping mode is usually <code>egress_inferred</code>.</td>
+</tr>
+<tr>
+<td><code>append</code></td>
+<td>Table must already exist.</td>
+<td>Queron does not change the remote table datatype. It reads the existing remote schema and records <code>egress_remote_schema</code>.</td>
+</tr>
+<tr>
+<td><code>append</code></td>
+<td>Incoming value does not fit the existing remote type.</td>
+<td>The load fails at the connector/database layer. Queron records the failure instead of widening or changing the target column.</td>
+</tr>
+<tr>
+<td><code>replace</code> with remote schema inspection available</td>
+<td>Existing table can be inspected before write.</td>
+<td>Queron may record the inspected target type as <code>egress_remote_schema</code>, but the write is still allowed to replace the table depending on connector behavior.</td>
+</tr>
+</tbody>
+</table>
+<p>In simple terms:</p>
+<ul>
+<li><code>replace</code> means Queron is allowed to choose the target table shape from the artifact data.</li>
+<li><code>append</code> means the target table shape already owns the contract, so Queron must fit the artifact data into that existing schema.</li>
+<li>If append data is incompatible, for example a DuckDB <code>VARCHAR</code> value is too long for a remote <code>VARCHAR(20)</code>, Queron should not silently widen the column. The run fails so the user can fix the target schema or source data.</li>
+</ul>
+<h2 id="egress-string-lengths">Egress String Lengths</h2>
+<p>For egress to DB2, MSSQL, MySQL, MariaDB, and Oracle, Queron measures <code>VARCHAR</code> result values before creating a new target table when it can. This avoids creating maximum-size text columns for short values.</p>
+<p>Measured string mappings use padding so the target column has room for later values that are slightly longer than the rows seen in the current run.</p>
+<p>The padding rule is:</p>
+<pre><code class=" language-text">target_length = measured_max_length * 2</code></pre>
+<p>For example, if the longest value in the DuckDB result is 18 characters, Queron creates a 36-character target column when the connector supports that size:</p>
+<pre><code class=" language-text">measured_max_length = 18
+target_length = 18 * 2 = 36</code></pre>
+<p>This padding is only used when Queron is creating or replacing a target table from the current result shape. It does not apply to append mode, because append mode must use the existing remote table schema.</p>
+<p>If the padded length is too large for the target database, Queron falls back to that connector&#x27;s large text type or maximum supported bounded type and records a warning.</p>
+<table>
+<thead><tr>
+<th>Target</th>
+<th>Measured <code>VARCHAR</code> length 18</th>
+<th>No measured length</th>
+<th>Oversized measured length</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>DB2</td>
+<td><code>VARCHAR(36)</code></td>
+<td><code>VARCHAR(32672)</code> with warning</td>
+<td><code>VARCHAR(32672)</code> with warning</td>
+</tr>
+<tr>
+<td>MSSQL</td>
+<td><code>NVARCHAR(36)</code></td>
+<td><code>NVARCHAR(MAX)</code> with warning</td>
+<td><code>NVARCHAR(MAX)</code> with warning</td>
+</tr>
+<tr>
+<td>MySQL</td>
+<td><code>VARCHAR(36)</code></td>
+<td><code>LONGTEXT</code> with warning</td>
+<td><code>LONGTEXT</code> with warning</td>
+</tr>
+<tr>
+<td>MariaDB</td>
+<td><code>VARCHAR(36)</code></td>
+<td><code>LONGTEXT</code> with warning</td>
+<td><code>LONGTEXT</code> with warning</td>
+</tr>
+<tr>
+<td>Oracle</td>
+<td><code>VARCHAR2(36)</code></td>
+<td><code>VARCHAR2(4000)</code> with warning</td>
+<td><code>CLOB</code> with warning</td>
+</tr>
+</tbody>
+</table>
+<p>If Queron can inspect an existing remote table, the remote column type is recorded as <code>egress_remote_schema</code> and stale fallback warnings are cleared.</p>
 <h2 id="postgresql">PostgreSQL</h2>
 <h3 id="postgresql-ingress-to-duckdb">PostgreSQL Ingress to DuckDB</h3>
 <table>
@@ -485,8 +591,13 @@
 </tr>
 <tr>
 <td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
+<td><code>VARCHAR(2 * measured_length)</code></td>
+<td>If measured length is available and within DB2 limits.</td>
+</tr>
+<tr>
+<td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
 <td><code>VARCHAR(32672)</code></td>
-<td></td>
+<td>Fallback when length is unknown, or cap for oversized values; warning.</td>
 </tr>
 <tr>
 <td><code>JSON</code></td>
@@ -656,8 +767,13 @@
 </tr>
 <tr>
 <td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
+<td><code>NVARCHAR(2 * measured_length)</code></td>
+<td>If measured length is available and within MSSQL limits.</td>
+</tr>
+<tr>
+<td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
 <td><code>NVARCHAR(MAX)</code></td>
-<td></td>
+<td>Fallback when length is unknown, or for oversized values; warning.</td>
 </tr>
 <tr>
 <td><code>JSON</code></td>
@@ -862,8 +978,13 @@
 </tr>
 <tr>
 <td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
+<td><code>VARCHAR(2 * measured_length)</code></td>
+<td>If measured length is available and within MySQL limits.</td>
+</tr>
+<tr>
+<td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
 <td><code>LONGTEXT</code></td>
-<td></td>
+<td>Fallback when length is unknown, or for oversized values; warning.</td>
 </tr>
 <tr>
 <td><code>JSON</code></td>
@@ -872,7 +993,7 @@
 </tr>
 <tr>
 <td><code>UUID</code></td>
-<td><code>LONGTEXT</code></td>
+<td><code>VARCHAR(36)</code></td>
 <td></td>
 </tr>
 <tr>
@@ -1054,8 +1175,13 @@
 </tr>
 <tr>
 <td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
+<td><code>VARCHAR(2 * measured_length)</code></td>
+<td>If measured length is available and within MariaDB limits.</td>
+</tr>
+<tr>
+<td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
 <td><code>LONGTEXT</code></td>
-<td></td>
+<td>Fallback when length is unknown, or for oversized values; warning.</td>
 </tr>
 <tr>
 <td><code>JSON</code></td>
@@ -1064,7 +1190,7 @@
 </tr>
 <tr>
 <td><code>UUID</code></td>
-<td><code>LONGTEXT</code></td>
+<td><code>VARCHAR(36)</code></td>
 <td></td>
 </tr>
 <tr>
@@ -1209,19 +1335,19 @@
 <td></td>
 </tr>
 <tr>
-<td><code>VARCHAR(n)</code></td>
-<td><code>VARCHAR2(n)</code></td>
-<td>If length &lt;= 4000.</td>
+<td><code>VARCHAR</code>, <code>VARCHAR(n)</code></td>
+<td><code>VARCHAR2(2 * measured_length)</code></td>
+<td>If measured length is available and &lt;= 4000 after padding.</td>
 </tr>
 <tr>
-<td><code>VARCHAR(n)</code> with length &gt; 4000</td>
+<td><code>VARCHAR</code>, <code>VARCHAR(n)</code> with oversized measured length</td>
 <td><code>CLOB</code></td>
 <td>Warning.</td>
 </tr>
 <tr>
-<td>unbounded <code>VARCHAR</code></td>
+<td>unbounded <code>VARCHAR</code> without measured length</td>
 <td><code>VARCHAR2(4000)</code></td>
-<td></td>
+<td>Warning.</td>
 </tr>
 <tr>
 <td><code>UUID</code></td>

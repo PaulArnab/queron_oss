@@ -800,6 +800,26 @@ def seed():
             compiled = queron.compile_pipeline(pipeline_path)
 
             self.assertTrue(any(str(item.get("code")) == "missing_pipeline_id" for item in compiled.diagnostics))
+
+    def test_compile_pipeline_rejects_top_level_run_pipeline_call(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="policy123")
+queron.run_pipeline(__file__)
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertTrue(any(str(item.get("code")) == "python_load_error" for item in compiled.diagnostics))
+            self.assertTrue(
+                any("Do not call queron.run_pipeline" in str(item.get("message") or "") for item in compiled.diagnostics)
+            )
             self.assertIsNone(compiled.contract)
 
     def test_compile_command_fails_without_pipeline_id(self):

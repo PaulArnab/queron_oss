@@ -29,4 +29,32 @@ ul, ol { padding-left: 24px; }
 .code-row code a:hover { color: #0b5f58; border-bottom-color: #0b5f58; }
 .line-no { color: #8a99a3; text-align: right; padding-right: 12px; text-decoration: none; font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; user-select: none; }
 .line-no:hover { color: var(--fg); }
+.flowchart-page { margin-top: 18px; }
+.flowchart-section-head { margin: 28px 0 12px; }
+.flowchart-section-head span { display: block; color: var(--fg); font-weight: 700; font-size: 18px; }
+.flowchart-section-head p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+.flowchart-actions { display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch; }
+.flowchart-function-actions .flowchart-open { width: calc((100% - 28px) / 3); min-width: 220px; }
+.flowchart-open { width: min(520px, 100%); text-align: left; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--fg); padding: 16px; cursor: pointer; box-shadow: 0 1px 2px rgba(20, 31, 37, .04); }
+.flowchart-open:hover, .flowchart-open:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px rgba(15, 118, 110, .12); }
+.flowchart-open strong { display: block; margin-bottom: 6px; font-size: 16px; }
+.flowchart-open span { display: block; color: var(--muted); font-size: 14px; line-height: 1.4; }
+.flowchart-modal[hidden] { display: none; }
+.flowchart-modal { position: fixed; inset: 0; z-index: 50; background: rgba(23, 32, 38, .55); padding: 28px; overflow: auto; }
+.flowchart-modal-panel { width: min(1120px, 100%); min-height: calc(100vh - 56px); margin: 0 auto; background: #fff; border-radius: 8px; border: 1px solid var(--line); box-shadow: 0 18px 48px rgba(20, 31, 37, .22); }
+.flowchart-modal-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; background: var(--bg); border-bottom: 1px solid var(--line); border-radius: 8px 8px 0 0; }
+.flowchart-close { width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--fg); cursor: pointer; }
+.compiler-flowchart { display: flex; align-items: stretch; gap: 14px; min-height: calc(100vh - 110px); padding: 20px; overflow: auto; }
+.compiler-flow-column { flex: 0 0 260px; border: 1px solid var(--line); border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgba(20, 31, 37, .04); }
+.compiler-flow-column h3 { margin: 0; padding: 12px 14px; font-size: 15px; border-bottom: 1px solid var(--line); background: var(--bg); border-radius: 8px 8px 0 0; }
+.compiler-flow-column ol { margin: 0; padding: 12px 14px 14px 32px; }
+.compiler-flow-column li { margin: 0 0 9px; color: var(--fg); font-size: 13px; line-height: 1.35; }
+.compiler-flow-arrow { flex: 0 0 auto; align-self: center; color: var(--muted); font: 700 20px/1 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.artifact-modal-panel { max-width: 980px; }
+.artifact-table-detail { display: grid; grid-template-columns: 1fr; gap: 14px; padding: 20px; }
+.artifact-table-detail section { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 14px; }
+.artifact-table-detail h3 { margin: 0 0 10px; font-size: 15px; }
+.artifact-table-detail p { color: var(--muted); }
+.artifact-table-detail pre { margin: 0; max-height: none; max-width: 100%; overflow: auto; }
+.flowchart-modal-open { overflow: hidden; }
 @media (max-width: 860px) { aside { position: static; width: auto; border-right: 0; border-bottom: 1px solid var(--line); } main { margin-left: 0; padding: 24px; } }

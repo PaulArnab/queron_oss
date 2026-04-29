@@ -37,6 +37,7 @@ from . import (
     _clear_runtime_configs_registry,
     _get_pipeline_metadata,
     _get_runtime_configs_provider,
+    _pipeline_module_load_context,
 )
 
 
@@ -89,7 +90,8 @@ def _load_pipeline_namespace(pipeline_path: str | Path) -> dict[str, Any]:
         pipeline_dir = str(resolved.parent)
         if pipeline_dir not in sys.path:
             sys.path.insert(0, pipeline_dir)
-        exec(code, namespace, namespace)
+        with _pipeline_module_load_context():
+            exec(code, namespace, namespace)
     finally:
         sys.path[:] = original_sys_path
     return namespace

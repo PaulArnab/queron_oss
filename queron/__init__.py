@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import contextmanager
 from typing import Any, Callable
 
 _PIPELINE_METADATA: dict[str, Any] = {}
 _RUNTIME_CONFIGS_PROVIDER: Callable[[], dict[str, Any]] | None = None
+_PIPELINE_LOAD_DEPTH = 0
 
 
 def _clear_pipeline_registry() -> None:
@@ -22,6 +24,29 @@ def _get_pipeline_metadata() -> dict[str, Any]:
 
 def _get_runtime_configs_provider() -> Callable[[], dict[str, Any]] | None:
     return _RUNTIME_CONFIGS_PROVIDER
+
+
+def _is_loading_pipeline_module() -> bool:
+    return _PIPELINE_LOAD_DEPTH > 0
+
+
+@contextmanager
+def _pipeline_module_load_context():
+    global _PIPELINE_LOAD_DEPTH
+    _PIPELINE_LOAD_DEPTH += 1
+    try:
+        yield
+    finally:
+        _PIPELINE_LOAD_DEPTH = max(_PIPELINE_LOAD_DEPTH - 1, 0)
+
+
+def _reject_pipeline_execution_during_load(api_name: str) -> None:
+    if _is_loading_pipeline_module():
+        raise RuntimeError(
+            f"Do not call queron.{api_name}(...) at module import time. "
+            "The compiler imports the pipeline file to collect decorators, so execution must be under "
+            'if __name__ == "__main__": or run from the Queron CLI.'
+        )
 
 
 def pipeline(pipeline_id: str | None = None, **metadata: Any) -> dict[str, Any]:
@@ -825,7 +850,7 @@ python = _PythonNamespace()
 
 from . import bindings  # noqa: E402
 from .api import (  # noqa: E402
-    compile_pipeline,
+    compile_pipeline as _api_compile_pipeline,
     export_artifact,
     inspect_node,
     inspect_node_logs,
@@ -838,12 +863,23 @@ from .api import (  # noqa: E402
     reset_upstream,
     reset_node,
     resume_pipeline,
-    run_pipeline,
+    run_pipeline as _api_run_pipeline,
     stop_pipeline,
     force_stop_pipeline,
 )
 from .bindings import Db2Binding, MariaDbBinding, MssqlBinding, MysqlBinding, OracleBinding, PostgresBinding  # noqa: E402
 from .graph_client import fanout_log_handlers, graph_log_publisher  # noqa: E402
+
+
+def compile_pipeline(*args: Any, **kwargs: Any):
+    _reject_pipeline_execution_during_load("compile_pipeline")
+    return _api_compile_pipeline(*args, **kwargs)
+
+
+def run_pipeline(*args: Any, **kwargs: Any):
+    _reject_pipeline_execution_during_load("run_pipeline")
+    return _api_run_pipeline(*args, **kwargs)
+
 
 __all__ = [
     "Db2Binding",

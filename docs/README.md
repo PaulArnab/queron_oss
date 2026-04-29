@@ -6,6 +6,7 @@ This folder contains the Queron OSS documentation.
 
 - [Architecture](architecture.md): system design, compile/runtime flow, artifact layout, and graph UI architecture.
 - [Internals Guide](internals-guide.md): detailed compile, run, artifact retention, and inspect behavior.
+- [Interactive Flowcharts](flowcharts.md): detailed compiler flow, run flow, run-control functions, and artifact table popups.
 - [User Guide](user-guide.md): installation, project setup, pipeline authoring, configuration, running, inspection, reset, export, and graph UI usage.
 - [CLI and Python Commands](commands-reference.md): Python function shapes and CLI command arguments in workflow order.
 - [Pipeline DSL Reference](pipeline-dsl.md): every decorator, helper, function argument, and node type exposed by `import queron`.

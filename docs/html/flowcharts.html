@@ -1,0 +1,984 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interactive Flowcharts - Queron Docs</title>
+  <link rel="stylesheet" href="styles.css?v=3">
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, securityLevel: 'loose' });
+  </script>
+</head>
+<body>
+  <aside>
+    <div class="brand">Queron Docs</div>
+    <nav><a href="index.html">Home</a>
+<a href="architecture.html">Architecture</a>
+<a href="internals-guide.html">Internals Guide</a>
+<a href="flowcharts.html">Flowcharts</a>
+<a href="user-guide.html">User Guide</a>
+<a href="commands-reference.html">Commands Reference</a>
+<a href="pipeline-dsl.html">Pipeline Dsl</a>
+<a href="python-api.html">Python Api</a>
+<a href="cli-reference.html">Cli Reference</a>
+<a href="datatype-mapping.html">Datatype Mapping</a>
+<a href="examples.html">Examples</a></nav>
+  </aside>
+  <main>
+    <h1 id="interactive-flowcharts">Interactive Flowcharts</h1>
+<p>Open a diagram to see the compiler path, run path, each run-control function, or the artifact database structure in detail.</p>
+
+<section class="flowchart-page">
+  <div class="flowchart-section-head">
+    <span>Core flows</span>
+    <p>Start with the two big lifecycle diagrams.</p>
+  </div>
+  <div class="flowchart-actions">
+    
+  <button class="flowchart-open" type="button" data-flowchart-open="compiler-flowchart-modal">
+    <strong>Compiler Flowchart</strong>
+    <span>Open the full compiler, validation, hashing, and contract persistence flow.</span>
+  </button>
+  <div class="flowchart-modal" id="compiler-flowchart-modal" hidden role="dialog" aria-modal="true" aria-label="Compiler Flowchart">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>Compiler Flowchart</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>API entry</h3><ol><li>compile_pipeline(pipeline.py)</li><li>Read pipeline.py text</li><li>Resolve configurations.yaml text</li><li>Preview compile_pipeline_code</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Load source</h3><ol><li>Prepare a temporary Python module for the pipeline file</li><li>Run the pipeline file so Python creates the decorated functions</li><li>Each Queron decorator stores node settings on its function</li><li>Walk through the loaded functions and find Queron nodes</li><li>Convert each decorated function into an internal node record</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Build spec</h3><ol><li>Read the configuration text into a structured config object</li><li>Choose the active target from the argument or config default</li><li>Group the pipeline id, target, nodes, and notebook metadata</li><li>Start validating and filling in missing runtime details</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Validate graph</h3><ol><li>Make sure the pipeline has a pipeline id</li><li>Check duplicate node names</li><li>Make sure artifact-producing nodes have unique output names</li><li>Convert each output name into a safe DuckDB table name</li><li>Find refs, sources, and lookups inside SQL templates</li><li>Use refs and manual depends_on to build dependencies</li><li>Replace template helpers with real table or relation names</li><li>Check runtime variables are used only in safe SQL positions</li><li>Validate node-specific settings like files, targets, and checks</li><li>Reject dependency loops before anything can run</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifact path</h3><ol><li>If validation found errors, stop and return diagnostics</li><li>Use the pipeline id to choose the artifact.duckdb location</li><li>Look at the latest recorded run in the artifact database</li><li>Do not compile over a run that is still active</li><li>Clean up stale or failed run state when it is safe</li><li>Compile again now that the exact artifact path is known</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Hash contract</h3><ol><li>Build a compile contract that describes this exact pipeline version</li><li>Check project Python imports do not point outside the project</li><li>Hash every project Python file from its file bytes</li><li>Combine those file hashes into one project Python hash</li><li>Hash whether config exists and the exact config text</li><li>Normalize each node and hash its SQL, settings, outputs, and dependencies</li><li>Sort dependency edges and hash the graph shape</li><li>Collect runtime variable rules and reject conflicting usage</li><li>Create one final contract hash from pipeline, nodes, edges, config, project files, and vars</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Persist</h3><ol><li>Create the compiled contract record used by run and inspect</li><li>Store hashes, graph edges, tracked files, variables, spec, and diagnostics</li><li>Open artifact.duckdb and save the contract metadata</li><li>Write the row into the Queron metadata compiled contracts table</li><li>Mark older compile contracts as inactive</li><li>Make this compile the active contract for future run and inspect calls</li></ol></section></div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="run-flowchart-modal">
+    <strong>Run Flowchart</strong>
+    <span>Open the runtime execution, artifact, node state, and run status flow.</span>
+  </button>
+  <div class="flowchart-modal" id="run-flowchart-modal" hidden role="dialog" aria-modal="true" aria-label="Run Flowchart">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>Run Flowchart</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>Run request</h3><ol><li>User calls run_pipeline with pipeline path and optional runtime inputs</li><li>Queron emits early run and compile validation log events</li><li>The pipeline file is compiled or validated before execution begins</li><li>If compile validation fails, no nodes run and the result is compile_failed</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Run safety</h3><ol><li>Resolve the artifact.duckdb path for this pipeline</li><li>Check the latest run stored in the artifact database</li><li>Refuse to start if another run is still active</li><li>If allowed, finalize or archive stale failed and orphaned running runs</li><li>Check that a requested run label is not already used</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Build runtime</h3><ol><li>Create a PipelineRuntime for this run id</li><li>Attach the compiled pipeline spec and module globals</li><li>Open the artifact database path and working directory</li><li>Validate runtime variables against the compiled contract</li><li>Attach runtime database bindings and connections path</li><li>Persist early log events into the runtime log stream</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Prepare outputs</h3><ol><li>If clean_existing is enabled, preserve incomplete outputs first</li><li>Drop selected existing local artifact tables before running</li><li>If target_node is set, select that node and all required upstream nodes</li><li>Register this runtime as active so stop and force-stop can find it</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Choose order</h3><ol><li>Build a topological order from the compiled dependency graph</li><li>Start with nodes that have no unmet dependencies</li><li>Run check nodes before other ready nodes when possible</li><li>Skip nodes outside the selected run scope</li><li>A node only runs after all selected dependencies are complete</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Start run</h3><ol><li>Write a pipeline run row with status running</li><li>Start the stop request watcher</li><li>Create one node run row for each selected node</li><li>Mark selected nodes as ready in node state history</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Execute nodes</h3><ol><li>Before each node, check whether a stop was requested</li><li>Mark the node as running and record its start time</li><li>Dispatch to the runtime handler for that node kind</li><li>Ingress nodes load data into local DuckDB artifact tables</li><li>Model SQL nodes read refs and write a new local artifact table</li><li>Check nodes run validation queries and may fail the run</li><li>Egress nodes read artifacts and write files or database targets</li><li>Lookup nodes prepare database lookup tables for later SQL</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Record outcome</h3><ol><li>Normalize the node execution result</li><li>Record row counts, artifact name, warnings, details, and finish time</li><li>If warnings exist, mark the node complete_with_warnings</li><li>If a node fails, mark it failed and skip downstream work when policy says so</li><li>After each node, check again for stop requests at a safe boundary</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Finish run</h3><ol><li>When all selected nodes finish, mark the run success or success_with_warnings</li><li>Archive completed local artifact tables for the run</li><li>Clean up temporary lookup tables when retention does not keep them</li><li>If execution failed, mark the run failed and preserve error details</li><li>Unregister the active runtime and return executed nodes, run id, status, and log path</li></ol></section></div>
+    </div>
+  </div>
+
+  </div>
+  <div class="flowchart-section-head flowchart-section-head-spaced">
+    <span>Run Functions</span>
+    <p>Each function below explains what happens to artifacts and node state.</p>
+  </div>
+  <div class="flowchart-actions flowchart-function-actions">
+    
+  <button class="flowchart-open" type="button" data-flowchart-open="run-function-1">
+    <strong>compile_pipeline</strong>
+    <span>Compile pipeline.py and write the active contract.</span>
+  </button>
+  <div class="flowchart-modal" id="run-function-1" hidden role="dialog" aria-modal="true" aria-label="compile_pipeline">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>compile_pipeline</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>How to call</h3><ol><li>Python: queron.compile_pipeline(...)</li><li>CLI: queron compile ...</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifact use</h3><ol><li>Reads pipeline.py and configurations.yaml</li><li>Creates or updates artifact.duckdb for the pipeline</li><li>Writes one active row into _queron_meta.compiled_contracts</li><li>Marks older compiled contracts inactive</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>What the user gets</h3><ol><li>A compiled pipeline object with diagnostics</li><li>The artifact database path</li><li>The compile id and hashes used by later runs</li><li>No pipeline nodes execute during compile</li></ol></section></div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="run-function-2">
+    <strong>run_pipeline</strong>
+    <span>Start a new run and execute nodes.</span>
+  </button>
+  <div class="flowchart-modal" id="run-function-2" hidden role="dialog" aria-modal="true" aria-label="run_pipeline">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>run_pipeline</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>How to call</h3><ol><li>Python: queron.run_pipeline(...)</li><li>CLI: queron run ...</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>What happens</h3><ol><li>Validates or recompiles the pipeline before execution</li><li>Creates a new run id and a running row in artifact.duckdb</li><li>Creates node run rows for the selected nodes</li><li>Executes nodes in dependency order</li><li>Returns executed nodes, artifact path, run id, status, and log path</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifacts and nodes</h3><ol><li>Each artifact-producing node writes to its compiled local table</li><li>A target_node run executes that node plus required upstream nodes</li><li>clean_existing drops selected existing artifact tables before execution</li><li>Successful node rows store artifact name, row counts, warnings, and details</li><li>Finished runs archive completed local artifact tables by run id</li></ol></section></div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="run-function-3">
+    <strong>resume_pipeline</strong>
+    <span>Continue work from the latest incomplete run.</span>
+  </button>
+  <div class="flowchart-modal" id="run-function-3" hidden role="dialog" aria-modal="true" aria-label="resume_pipeline">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>resume_pipeline</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>How to call</h3><ol><li>Python: queron.resume_pipeline(...)</li><li>CLI: queron resume ...</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>What happens</h3><ol><li>Finds the latest failed or incomplete run in artifact.duckdb</li><li>Validates the current compile contract before resuming</li><li>Reuses stored runtime variables unless new values are provided</li><li>Builds a runtime for the existing run context</li><li>Runs only work that is still safe and necessary</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifacts and nodes</h3><ol><li>Completed artifact tables are kept instead of rebuilt</li><li>Failed or skipped node states guide what needs to run again</li><li>Previously completed nodes can stay complete when their artifacts exist</li><li>New node outcomes are written back to the same artifact database</li><li>The resumed run finishes with updated run and node status</li></ol></section></div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="run-function-4">
+    <strong>stop_pipeline</strong>
+    <span>Ask a running pipeline to stop cleanly.</span>
+  </button>
+  <div class="flowchart-modal" id="run-function-4" hidden role="dialog" aria-modal="true" aria-label="stop_pipeline">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>stop_pipeline</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>How to call</h3><ol><li>Python: queron.stop_pipeline(...)</li><li>CLI: queron stop ...</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>What happens</h3><ol><li>Finds the selected running run in artifact.duckdb</li><li>Writes a graceful stop request file for that run</li><li>The active runtime checks for the request at safe boundaries</li><li>The current node is allowed to reach a safe stopping point</li><li>Returns the request path, artifact path, run id, and stop mode</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifacts and nodes</h3><ol><li>Completed node artifacts remain in the artifact database</li><li>Nodes not yet started can be marked skipped or left ready depending on policy</li><li>The run status is updated when the runtime handles the stop</li><li>Inspect can still read completed node outputs and logs</li></ol></section></div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="run-function-5">
+    <strong>force_stop_pipeline</strong>
+    <span>Try to interrupt active work faster than graceful stop.</span>
+  </button>
+  <div class="flowchart-modal" id="run-function-5" hidden role="dialog" aria-modal="true" aria-label="force_stop_pipeline">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>force_stop_pipeline</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>How to call</h3><ol><li>Python: queron.force_stop_pipeline(...)</li><li>CLI: queron force-stop ...</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>What happens</h3><ol><li>Writes a force stop request for the selected running run</li><li>The runtime tries registered interrupt callbacks for supported work</li><li>Some connector or Python work may only stop at fallback boundaries</li><li>The active node is converted into a stopped or failed outcome</li><li>Returns the same stop result shape as graceful stop</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifacts and nodes</h3><ol><li>Artifacts from fully completed nodes remain usable</li><li>The interrupted node may not produce a complete artifact</li><li>Downstream nodes are not allowed to continue from incomplete inputs</li><li>Node logs record whether interruption was attempted and where it happened</li></ol></section></div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="run-function-6">
+    <strong>reset_node</strong>
+    <span>Clear one node output so it can be rebuilt.</span>
+  </button>
+  <div class="flowchart-modal" id="run-function-6" hidden role="dialog" aria-modal="true" aria-label="reset_node">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>reset_node</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>How to call</h3><ol><li>Python: queron.reset_node(...)</li><li>CLI: queron reset-node ...</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>What happens</h3><ol><li>Validates the current compiled pipeline</li><li>Selects exactly the requested node</li><li>Drops that node&#x27;s local artifact table when it has one</li><li>Clears that node&#x27;s run state and marks it ready again</li><li>Returns the reset node and dropped table names</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifacts and nodes</h3><ol><li>Only the selected node artifact is removed</li><li>Upstream artifacts are left untouched</li><li>Downstream artifacts may still exist, but can now be stale</li><li>Use this when one node needs to be rerun without clearing the graph</li></ol></section></div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="run-function-7">
+    <strong>reset_downstream</strong>
+    <span>Clear a node and everything that depends on it.</span>
+  </button>
+  <div class="flowchart-modal" id="run-function-7" hidden role="dialog" aria-modal="true" aria-label="reset_downstream">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>reset_downstream</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>How to call</h3><ol><li>Python: queron.reset_downstream(...)</li><li>CLI: queron reset-downstream ...</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>What happens</h3><ol><li>Validates the current compiled pipeline</li><li>Finds the requested node and all downstream children</li><li>Drops local artifact tables for the selected downstream set</li><li>Resets those node states back to ready</li><li>Returns all reset nodes and tables</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifacts and nodes</h3><ol><li>The selected node output is removed</li><li>Every artifact that consumed it directly or indirectly is removed</li><li>Upstream dependency artifacts are preserved</li><li>Use this after changing or invalidating one producer node</li></ol></section></div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="run-function-8">
+    <strong>reset_upstream</strong>
+    <span>Clear a node and the inputs feeding it.</span>
+  </button>
+  <div class="flowchart-modal" id="run-function-8" hidden role="dialog" aria-modal="true" aria-label="reset_upstream">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>reset_upstream</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>How to call</h3><ol><li>Python: queron.reset_upstream(...)</li><li>CLI: queron reset-upstream ...</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>What happens</h3><ol><li>Validates the current compiled pipeline</li><li>Finds the requested node and all upstream dependencies</li><li>Drops local artifact tables for that upstream set</li><li>Marks those node states ready for rebuild</li><li>Returns all reset nodes and tables</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifacts and nodes</h3><ol><li>Input artifacts feeding the node are removed</li><li>The selected node artifact is also removed when it exists</li><li>Unrelated downstream branches are not selected by this reset</li><li>Use this when source-side inputs need to be rebuilt</li></ol></section></div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="run-function-9">
+    <strong>reset_all</strong>
+    <span>Clear every compiled local output.</span>
+  </button>
+  <div class="flowchart-modal" id="run-function-9" hidden role="dialog" aria-modal="true" aria-label="reset_all">
+    <div class="flowchart-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>reset_all</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="compiler-flowchart"><section class="compiler-flow-column"><h3>How to call</h3><ol><li>Python: queron.reset_all(...)</li><li>CLI: queron reset-all ...</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>What happens</h3><ol><li>Validates the current compiled pipeline</li><li>Selects every node in the compiled graph</li><li>Drops every local artifact table owned by the pipeline</li><li>Marks all selected node states ready again</li><li>Returns the full reset node and table list</li></ol></section><div class="compiler-flow-arrow" aria-hidden="true">-></div><section class="compiler-flow-column"><h3>Artifacts and nodes</h3><ol><li>All local artifacts are removed from artifact.duckdb</li><li>The compile contract and metadata database remain in place</li><li>The next run rebuilds the pipeline from the beginning</li><li>Use this when the local artifact state should be fully refreshed</li></ol></section></div>
+    </div>
+  </div>
+
+  </div>
+  <div class="flowchart-section-head flowchart-section-head-spaced">
+    <span>Artifact Structure</span>
+    <p>Click a Queron-owned table or table pattern to see what it stores.</p>
+  </div>
+  <div class="flowchart-actions flowchart-function-actions">
+    
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-table-1">
+    <strong>_queron_meta.compiled_contracts</strong>
+    <span>The active compiled pipeline contract.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-table-1" hidden role="dialog" aria-modal="true" aria-label="_queron_meta.compiled_contracts">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>_queron_meta.compiled_contracts</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>What it is</h3>
+          <p>Stores the full compiled view of pipeline.py. This is not the raw Python file. It is Queron&#x27;s saved understanding of the pipeline after decorators were read, SQL refs were resolved, dependencies were built, runtime vars were checked, and hashes were calculated.</p>
+          <h3>What it is used for</h3>
+          <p>Run, resume, reset, inspect, and graph UI start here. This row tells Queron which compile is active, where the artifact database lives, which nodes exist, how nodes depend on each other, what files affected the hash, what runtime variables are allowed, and whether compile produced diagnostics.</p>
+        </section>
+        <section>
+          <h3>Sample record</h3>
+          <pre><code>{
+  &quot;compile_id&quot;: &quot;cmp_20260429_001&quot;,
+  &quot;pipeline_id&quot;: &quot;customer_360_demo&quot;,
+  &quot;pipeline_path&quot;: &quot;C:/project/pipeline.py&quot;,
+  &quot;project_root&quot;: &quot;C:/project&quot;,
+  &quot;artifact_path&quot;: &quot;C:/project/.queron/customer_360_demo/artifact.duckdb&quot;,
+  &quot;config_path&quot;: &quot;C:/project/configurations.yaml&quot;,
+  &quot;target&quot;: &quot;dev&quot;,
+  &quot;compiled_at&quot;: &quot;2026-04-29T13:55:42Z&quot;,
+  &quot;is_active&quot;: true,
+  &quot;contract_hash&quot;: &quot;sha256:abc123...&quot;,
+  &quot;edge_hash&quot;: &quot;sha256:def456...&quot;,
+  &quot;config_hash&quot;: &quot;sha256:cfg789...&quot;,
+  &quot;project_python_hash&quot;: &quot;sha256:789abc...&quot;,
+  &quot;node_hashes_json&quot;: [
+    {
+      &quot;node_name&quot;: &quot;policy_ingress&quot;,
+      &quot;node_kind&quot;: &quot;postgres.ingress&quot;,
+      &quot;hash&quot;: &quot;sha256:node_ingress...&quot;
+    },
+    {
+      &quot;node_name&quot;: &quot;policy_core&quot;,
+      &quot;node_kind&quot;: &quot;model.sql&quot;,
+      &quot;hash&quot;: &quot;sha256:node_model...&quot;
+    }
+  ],
+  &quot;edges_json&quot;: [
+    [
+      &quot;policy_ingress&quot;,
+      &quot;policy_core&quot;
+    ],
+    [
+      &quot;policy_core&quot;,
+      &quot;customer_summary&quot;
+    ]
+  ],
+  &quot;tracked_files_json&quot;: [
+    {
+      &quot;path&quot;: &quot;pipeline.py&quot;,
+      &quot;kind&quot;: &quot;pipeline&quot;,
+      &quot;hash&quot;: &quot;sha256:file001...&quot;
+    },
+    {
+      &quot;path&quot;: &quot;helpers/policy_rules.py&quot;,
+      &quot;kind&quot;: &quot;python&quot;,
+      &quot;hash&quot;: &quot;sha256:file002...&quot;
+    },
+    {
+      &quot;path&quot;: &quot;configurations.yaml&quot;,
+      &quot;kind&quot;: &quot;config&quot;,
+      &quot;hash&quot;: &quot;sha256:file003...&quot;
+    }
+  ],
+  &quot;external_dependencies_json&quot;: [
+    {
+      &quot;node_name&quot;: &quot;policy_ingress&quot;,
+      &quot;connection&quot;: &quot;warehouse_dev&quot;,
+      &quot;kind&quot;: &quot;postgres&quot;
+    }
+  ],
+  &quot;vars_json&quot;: [
+    {
+      &quot;name&quot;: &quot;as_of_date&quot;,
+      &quot;kind&quot;: &quot;scalar&quot;,
+      &quot;required&quot;: true,
+      &quot;default&quot;: null,
+      &quot;log_value&quot;: true,
+      &quot;mutable_after_start&quot;: false,
+      &quot;used_in_nodes&quot;: [
+        &quot;policy_core&quot;
+      ]
+    }
+  ],
+  &quot;spec_json&quot;: {
+    &quot;node_count&quot;: 3,
+    &quot;nodes&quot;: [
+      &quot;policy_ingress&quot;,
+      &quot;policy_core&quot;,
+      &quot;customer_summary&quot;
+    ],
+    &quot;outputs&quot;: [
+      &quot;policy_raw&quot;,
+      &quot;policy_core&quot;,
+      &quot;customer_summary&quot;
+    ]
+  },
+  &quot;diagnostics_json&quot;: []
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-table-2">
+    <strong>_queron_meta.pipeline_runs</strong>
+    <span>One row per pipeline run.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-table-2" hidden role="dialog" aria-modal="true" aria-label="_queron_meta.pipeline_runs">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>_queron_meta.pipeline_runs</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>What it is</h3>
+          <p>Tracks each time a pipeline starts, finishes, fails, stops, or resumes.</p>
+          <h3>What it is used for</h3>
+          <p>Inspect commands and graph UI use it to show run status, labels, runtime vars, timing, and archived artifact location.</p>
+        </section>
+        <section>
+          <h3>Sample record</h3>
+          <pre><code>{
+  &quot;run_id&quot;: &quot;run_001&quot;,
+  &quot;run_label&quot;: &quot;daily_load&quot;,
+  &quot;compile_id&quot;: &quot;cmp_20260429_001&quot;,
+  &quot;pipeline_id&quot;: &quot;customer_360_demo&quot;,
+  &quot;artifact_path&quot;: &quot;.queron/customer_360_demo/artifact.duckdb&quot;,
+  &quot;archived_artifact_path&quot;: &quot;.queron/customer_360_demo/run_001/artifact.duckdb&quot;,
+  &quot;started_at&quot;: &quot;2026-04-29T14:01:00Z&quot;,
+  &quot;finished_at&quot;: &quot;2026-04-29T14:03:15Z&quot;,
+  &quot;status&quot;: &quot;success&quot;,
+  &quot;runtime_vars_json&quot;: {
+    &quot;as_of_date&quot;: &quot;2026-04-29&quot;
+  },
+  &quot;is_final&quot;: true
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-table-3">
+    <strong>_queron_meta.node_runs</strong>
+    <span>One row per node in a run.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-table-3" hidden role="dialog" aria-modal="true" aria-label="_queron_meta.node_runs">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>_queron_meta.node_runs</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>What it is</h3>
+          <p>Records what happened to each node during a specific run.</p>
+          <h3>What it is used for</h3>
+          <p>Inspect node history, graph status, resume, reset, and failure diagnosis read this table.</p>
+        </section>
+        <section>
+          <h3>Sample record</h3>
+          <pre><code>{
+  &quot;node_run_id&quot;: &quot;run_001:policy_core&quot;,
+  &quot;run_id&quot;: &quot;run_001&quot;,
+  &quot;node_name&quot;: &quot;policy_core&quot;,
+  &quot;node_kind&quot;: &quot;model.sql&quot;,
+  &quot;artifact_name&quot;: &quot;main.policy_core&quot;,
+  &quot;status&quot;: &quot;complete&quot;,
+  &quot;row_count_in&quot;: 1500,
+  &quot;row_count_out&quot;: 1488,
+  &quot;artifact_size_bytes&quot;: 262144,
+  &quot;warnings_json&quot;: [],
+  &quot;details_json&quot;: {
+    &quot;query_seconds&quot;: 1.42
+  },
+  &quot;active_node_state_id&quot;: &quot;state_002&quot;
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-table-4">
+    <strong>_queron_meta.node_states</strong>
+    <span>State timeline for nodes.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-table-4" hidden role="dialog" aria-modal="true" aria-label="_queron_meta.node_states">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>_queron_meta.node_states</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>What it is</h3>
+          <p>Keeps the state changes for each node, such as ready, running, complete, failed, skipped, or cleared.</p>
+          <h3>What it is used for</h3>
+          <p>Graph UI and inspect use it to show the current node state and how that state changed over time.</p>
+        </section>
+        <section>
+          <h3>Sample record</h3>
+          <pre><code>{
+  &quot;node_state_id&quot;: &quot;state_002&quot;,
+  &quot;run_id&quot;: &quot;run_001&quot;,
+  &quot;node_run_id&quot;: &quot;run_001:policy_core&quot;,
+  &quot;node_name&quot;: &quot;policy_core&quot;,
+  &quot;state&quot;: &quot;complete&quot;,
+  &quot;is_active&quot;: true,
+  &quot;created_at&quot;: &quot;2026-04-29T14:02:20Z&quot;,
+  &quot;trigger&quot;: &quot;node_completed&quot;,
+  &quot;details_json&quot;: {
+    &quot;artifact_name&quot;: &quot;main.policy_core&quot;,
+    &quot;node_kind&quot;: &quot;model.sql&quot;
+  }
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-table-5">
+    <strong>_queron_meta.column_mapping</strong>
+    <span>Column type mapping metadata.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-table-5" hidden role="dialog" aria-modal="true" aria-label="_queron_meta.column_mapping">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>_queron_meta.column_mapping</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>What it is</h3>
+          <p>Stores how source columns were converted into DuckDB artifact columns.</p>
+          <h3>What it is used for</h3>
+          <p>Inspect node column views use it to explain source type, DuckDB type, mapping warnings, and lossy conversions.</p>
+        </section>
+        <section>
+          <h3>Sample record</h3>
+          <pre><code>{
+  &quot;target_schema&quot;: &quot;main&quot;,
+  &quot;target_table&quot;: &quot;policy_core&quot;,
+  &quot;node_name&quot;: &quot;policy_ingress&quot;,
+  &quot;node_kind&quot;: &quot;postgres.ingress&quot;,
+  &quot;ordinal_position&quot;: 1,
+  &quot;source_column&quot;: &quot;premium_amount&quot;,
+  &quot;source_type&quot;: &quot;NUMERIC(12,2)&quot;,
+  &quot;target_column&quot;: &quot;premium_amount&quot;,
+  &quot;target_type&quot;: &quot;DECIMAL(12,2)&quot;,
+  &quot;connector_type&quot;: &quot;postgres&quot;,
+  &quot;mapping_mode&quot;: &quot;ingress&quot;,
+  &quot;warnings_json&quot;: [],
+  &quot;lossy&quot;: false
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-table-6">
+    <strong>_queron_meta.table_lineage</strong>
+    <span>Where artifact tables came from.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-table-6" hidden role="dialog" aria-modal="true" aria-label="_queron_meta.table_lineage">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>_queron_meta.table_lineage</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>What it is</h3>
+          <p>Links a child artifact table to its source, lookup, or upstream artifact parents.</p>
+          <h3>What it is used for</h3>
+          <p>Graph and inspect use it to explain dependency meaning, not just dependency order.</p>
+        </section>
+        <section>
+          <h3>Sample record</h3>
+          <pre><code>{
+  &quot;child_schema&quot;: &quot;main&quot;,
+  &quot;child_table&quot;: &quot;customer_summary&quot;,
+  &quot;parent_kind&quot;: &quot;artifact&quot;,
+  &quot;parent_name&quot;: &quot;policy_core&quot;,
+  &quot;parent_schema&quot;: &quot;main&quot;,
+  &quot;parent_table&quot;: &quot;policy_core&quot;,
+  &quot;connector_type&quot;: &quot;duckdb&quot;,
+  &quot;via_node&quot;: &quot;customer_summary&quot;
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-table-7">
+    <strong>main.&lt;out&gt;</strong>
+    <span>Current local artifact tables.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-table-7" hidden role="dialog" aria-modal="true" aria-label="main.&lt;out&gt;">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>main.&lt;out&gt;</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>What it is</h3>
+          <p>These are the actual data tables produced by artifact-producing nodes. The name comes from the node&#x27;s out value after Queron sanitizes it.</p>
+          <h3>What it is used for</h3>
+          <p>Later nodes read these tables through queron.ref(...), exports read from them, and inspect can preview them.</p>
+        </section>
+        <section>
+          <h3>Sample record</h3>
+          <pre><code>{
+  &quot;table_name&quot;: &quot;main.policy_core&quot;,
+  &quot;produced_by_node&quot;: &quot;policy_core&quot;,
+  &quot;logical_out&quot;: &quot;policy_core&quot;,
+  &quot;sample_row&quot;: {
+    &quot;policy_id&quot;: &quot;P-1001&quot;,
+    &quot;customer_id&quot;: &quot;C-501&quot;,
+    &quot;premium_amount&quot;: 128.5,
+    &quot;status&quot;: &quot;active&quot;
+  }
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-table-8">
+    <strong>run_&lt;run_id&gt;.&lt;out&gt;</strong>
+    <span>Archived artifact tables for a completed run.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-table-8" hidden role="dialog" aria-modal="true" aria-label="run_&lt;run_id&gt;.&lt;out&gt;">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>run_&lt;run_id&gt;.&lt;out&gt;</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>What it is</h3>
+          <p>When a run finishes, Queron can copy completed local artifacts into a run-specific archive database and schema.</p>
+          <h3>What it is used for</h3>
+          <p>Inspect can read the exact artifact data for a past run instead of only the current active tables.</p>
+        </section>
+        <section>
+          <h3>Sample record</h3>
+          <pre><code>{
+  &quot;archived_artifact_path&quot;: &quot;.queron/customer_360_demo/run_001/artifact.duckdb&quot;,
+  &quot;archived_artifact_name&quot;: &quot;run_run001.policy_core&quot;,
+  &quot;original_artifact_name&quot;: &quot;main.policy_core&quot;,
+  &quot;run_id&quot;: &quot;run_001&quot;,
+  &quot;sample_row&quot;: {
+    &quot;policy_id&quot;: &quot;P-1001&quot;,
+    &quot;customer_id&quot;: &quot;C-501&quot;,
+    &quot;premium_amount&quot;: 128.5,
+    &quot;status&quot;: &quot;active&quot;
+  }
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  </div>
+  <div class="flowchart-section-head flowchart-section-head-spaced">
+    <span>User-Facing Artifact Functions</span>
+    <p>These functions read, write, inspect, or export data from artifact.duckdb and related run files.</p>
+  </div>
+  <div class="flowchart-actions flowchart-function-actions">
+    
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-function-1">
+    <strong>inspect_dag</strong>
+    <span>Show the full compiled graph and latest run state.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-function-1" hidden role="dialog" aria-modal="true" aria-label="inspect_dag">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>inspect_dag</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>How to call</h3>
+          <ul><li>Python: queron.inspect_dag(...)</li><li>CLI: queron inspect_dag ...</li></ul>
+          <h3>What it is</h3>
+          <p>Reads the compiled contract and selected run metadata to return the whole pipeline graph with node status.</p>
+          <h3>What it is used for</h3>
+          <p>Use it when you want to understand the full DAG, current run state, runtime var contract, and graph UI data.</p>
+        </section>
+        <section>
+          <h3>Sample output</h3>
+          <pre><code>{
+  &quot;pipeline_id&quot;: &quot;customer_360_demo&quot;,
+  &quot;compile_id&quot;: &quot;cmp_20260429_001&quot;,
+  &quot;run_id&quot;: &quot;run_001&quot;,
+  &quot;run_status&quot;: &quot;success&quot;,
+  &quot;is_final&quot;: true,
+  &quot;runtime_vars_contract&quot;: [
+    {
+      &quot;name&quot;: &quot;as_of_date&quot;,
+      &quot;required&quot;: true
+    }
+  ],
+  &quot;nodes&quot;: [
+    {
+      &quot;name&quot;: &quot;policy_core&quot;,
+      &quot;kind&quot;: &quot;model.sql&quot;,
+      &quot;status&quot;: &quot;complete&quot;,
+      &quot;artifact_name&quot;: &quot;main.policy_core&quot;,
+      &quot;dependencies&quot;: [
+        &quot;policy_ingress&quot;
+      ]
+    }
+  ],
+  &quot;edges&quot;: [
+    [
+      &quot;policy_ingress&quot;,
+      &quot;policy_core&quot;
+    ]
+  ]
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-function-2">
+    <strong>inspect_runs</strong>
+    <span>List recorded runs for a pipeline artifact database.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-function-2" hidden role="dialog" aria-modal="true" aria-label="inspect_runs">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>inspect_runs</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>How to call</h3>
+          <ul><li>Python: not exported</li><li>CLI: queron inspect_runs ...</li></ul>
+          <h3>What it is</h3>
+          <p>Lists pipeline runs recorded in the artifact database.</p>
+          <h3>What it is used for</h3>
+          <p>Use it to find run_id, run_label, run status, and whether a run is final before inspecting or exporting.</p>
+        </section>
+        <section>
+          <h3>Sample output</h3>
+          <pre><code>{
+  &quot;artifact_path&quot;: &quot;.queron/customer_360_demo/artifact.duckdb&quot;,
+  &quot;active_compile_id&quot;: &quot;cmp_20260429_001&quot;,
+  &quot;runs&quot;: [
+    {
+      &quot;run_id&quot;: &quot;run_001&quot;,
+      &quot;run_label&quot;: &quot;daily_load&quot;,
+      &quot;status&quot;: &quot;success&quot;,
+      &quot;is_final&quot;: true,
+      &quot;started_at&quot;: &quot;2026-04-29T14:01:00Z&quot;,
+      &quot;finished_at&quot;: &quot;2026-04-29T14:03:15Z&quot;
+    }
+  ]
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-function-3">
+    <strong>inspect_logs</strong>
+    <span>Show persisted pipeline logs for a selected run.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-function-3" hidden role="dialog" aria-modal="true" aria-label="inspect_logs">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>inspect_logs</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>How to call</h3>
+          <ul><li>Python: not exported</li><li>CLI: queron inspect_logs ...</li></ul>
+          <h3>What it is</h3>
+          <p>Reads persisted pipeline-level log events for one selected run.</p>
+          <h3>What it is used for</h3>
+          <p>Use it to debug the run timeline, warnings, stop requests, and high-level runtime events.</p>
+        </section>
+        <section>
+          <h3>Sample output</h3>
+          <pre><code>{
+  &quot;run_id&quot;: &quot;run_001&quot;,
+  &quot;run_label&quot;: &quot;daily_load&quot;,
+  &quot;is_final&quot;: true,
+  &quot;log_path&quot;: &quot;.queron/customer_360_demo/logs/run_001.jsonl&quot;,
+  &quot;logs&quot;: [
+    {
+      &quot;level&quot;: &quot;info&quot;,
+      &quot;event&quot;: &quot;node_completed&quot;,
+      &quot;node_name&quot;: &quot;policy_core&quot;,
+      &quot;message&quot;: &quot;Node completed.&quot;
+    }
+  ]
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-function-4">
+    <strong>inspect_node</strong>
+    <span>Inspect one node, or include its upstream/downstream neighborhood.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-function-4" hidden role="dialog" aria-modal="true" aria-label="inspect_node">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>inspect_node</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>How to call</h3>
+          <ul><li>Python: queron.inspect_node(...)</li><li>CLI: queron inspect_node ...</li></ul>
+          <h3>What it is</h3>
+          <p>Returns details for one node, or a selected upstream/downstream neighborhood around it.</p>
+          <h3>What it is used for</h3>
+          <p>Use it to see node kind, dependencies, artifact location, current state, row counts, warnings, and column mappings.</p>
+        </section>
+        <section>
+          <h3>Sample output</h3>
+          <pre><code>{
+  &quot;requested_node&quot;: &quot;policy_core&quot;,
+  &quot;selection&quot;: &quot;node&quot;,
+  &quot;run_id&quot;: &quot;run_001&quot;,
+  &quot;run_status&quot;: &quot;success&quot;,
+  &quot;nodes&quot;: [
+    {
+      &quot;name&quot;: &quot;policy_core&quot;,
+      &quot;kind&quot;: &quot;model.sql&quot;,
+      &quot;current_state&quot;: &quot;complete&quot;,
+      &quot;node_run_status&quot;: &quot;complete&quot;,
+      &quot;logical_artifact&quot;: &quot;policy_core&quot;,
+      &quot;artifact_name&quot;: &quot;main.policy_core&quot;,
+      &quot;row_count_out&quot;: 1488,
+      &quot;dependencies&quot;: [
+        &quot;policy_ingress&quot;
+      ],
+      &quot;dependents&quot;: [
+        &quot;customer_summary&quot;
+      ],
+      &quot;column_mappings&quot;: []
+    }
+  ]
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-function-5">
+    <strong>inspect_node_query</strong>
+    <span>Show the SQL Queron stored for a node.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-function-5" hidden role="dialog" aria-modal="true" aria-label="inspect_node_query">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>inspect_node_query</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>How to call</h3>
+          <ul><li>Python: queron.inspect_node_query(...)</li><li>CLI: queron inspect_node_query ...</li></ul>
+          <h3>What it is</h3>
+          <p>Returns the SQL Queron stored for a node.</p>
+          <h3>What it is used for</h3>
+          <p>Use it to compare original SQL with resolved SQL after refs, sources, lookups, and runtime vars are processed.</p>
+        </section>
+        <section>
+          <h3>Sample output</h3>
+          <pre><code>{
+  &quot;node_name&quot;: &quot;policy_core&quot;,
+  &quot;node_kind&quot;: &quot;model.sql&quot;,
+  &quot;logical_artifact&quot;: &quot;policy_core&quot;,
+  &quot;artifact_name&quot;: &quot;main.policy_core&quot;,
+  &quot;sql&quot;: &quot;select * from {{ queron.ref(\&quot;policy_ingress\&quot;) }}&quot;,
+  &quot;resolved_sql&quot;: &quot;select * from main.policy_ingress&quot;,
+  &quot;dependencies&quot;: [
+    &quot;policy_ingress&quot;
+  ]
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-function-6">
+    <strong>inspect_node_history</strong>
+    <span>Show the state timeline for a node in a run.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-function-6" hidden role="dialog" aria-modal="true" aria-label="inspect_node_history">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>inspect_node_history</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>How to call</h3>
+          <ul><li>Python: queron.inspect_node_history(...)</li><li>CLI: queron inspect_node_history ...</li></ul>
+          <h3>What it is</h3>
+          <p>Returns the state timeline for one node in a selected run.</p>
+          <h3>What it is used for</h3>
+          <p>Use it to see how a node moved through ready, running, complete, failed, skipped, or cleared states.</p>
+        </section>
+        <section>
+          <h3>Sample output</h3>
+          <pre><code>{
+  &quot;node_name&quot;: &quot;policy_core&quot;,
+  &quot;node_kind&quot;: &quot;model.sql&quot;,
+  &quot;node_run_status&quot;: &quot;complete&quot;,
+  &quot;artifact_name&quot;: &quot;main.policy_core&quot;,
+  &quot;states&quot;: [
+    {
+      &quot;state&quot;: &quot;ready&quot;,
+      &quot;trigger&quot;: &quot;run_started&quot;
+    },
+    {
+      &quot;state&quot;: &quot;running&quot;,
+      &quot;trigger&quot;: &quot;node_started&quot;
+    },
+    {
+      &quot;state&quot;: &quot;complete&quot;,
+      &quot;trigger&quot;: &quot;node_completed&quot;
+    }
+  ]
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-function-7">
+    <strong>inspect_node_logs</strong>
+    <span>Read persisted log events for one node.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-function-7" hidden role="dialog" aria-modal="true" aria-label="inspect_node_logs">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>inspect_node_logs</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>How to call</h3>
+          <ul><li>Python: queron.inspect_node_logs(...)</li><li>CLI: queron inspect_node_logs ...</li></ul>
+          <h3>What it is</h3>
+          <p>Returns persisted log events for one node in a selected run.</p>
+          <h3>What it is used for</h3>
+          <p>Use it when one node failed, warned, or behaved unexpectedly and you want only that node&#x27;s log events.</p>
+        </section>
+        <section>
+          <h3>Sample output</h3>
+          <pre><code>{
+  &quot;node_name&quot;: &quot;policy_core&quot;,
+  &quot;run_id&quot;: &quot;run_001&quot;,
+  &quot;logs&quot;: [
+    {
+      &quot;level&quot;: &quot;info&quot;,
+      &quot;event&quot;: &quot;node_started&quot;,
+      &quot;message&quot;: &quot;Executing node policy_core.&quot;
+    },
+    {
+      &quot;level&quot;: &quot;info&quot;,
+      &quot;event&quot;: &quot;node_completed&quot;,
+      &quot;message&quot;: &quot;Node completed.&quot;
+    }
+  ]
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <button class="flowchart-open" type="button" data-flowchart-open="artifact-function-8">
+    <strong>export_artifact</strong>
+    <span>Export a materialized artifact table to a file.</span>
+  </button>
+  <div class="flowchart-modal" id="artifact-function-8" hidden role="dialog" aria-modal="true" aria-label="export_artifact">
+    <div class="flowchart-modal-panel artifact-modal-panel">
+      <div class="flowchart-modal-bar">
+        <strong>export_artifact</strong>
+        <button class="flowchart-close" type="button" data-flowchart-close aria-label="Close">x</button>
+      </div>
+      <div class="artifact-table-detail">
+        <section class="artifact-table-explanation">
+          <h3>How to call</h3>
+          <ul><li>Python: queron.export_artifact(...)</li><li>CLI: queron export_artifact ...</li></ul>
+          <h3>What it is</h3>
+          <p>Reads a materialized artifact table and writes it to a portable file.</p>
+          <h3>What it is used for</h3>
+          <p>Use it to export a node output or named artifact as CSV, Parquet, or JSON for sharing, debugging, or downstream use.</p>
+        </section>
+        <section>
+          <h3>Sample output</h3>
+          <pre><code>{
+  &quot;pipeline_id&quot;: &quot;customer_360_demo&quot;,
+  &quot;run_id&quot;: &quot;run_001&quot;,
+  &quot;node_name&quot;: &quot;policy_core&quot;,
+  &quot;artifact_name&quot;: &quot;main.policy_core&quot;,
+  &quot;effective_artifact_path&quot;: &quot;.queron/customer_360_demo/run_001/artifact.duckdb&quot;,
+  &quot;output_path&quot;: &quot;.queron/exports/policy_core.csv&quot;,
+  &quot;export_format&quot;: &quot;csv&quot;,
+  &quot;row_count&quot;: 1488,
+  &quot;file_size_bytes&quot;: 87342
+}</code></pre>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  </div>
+  <script>
+(() => {
+  function openModal(modal) {
+    modal.hidden = false;
+    modal.scrollTop = 0;
+    const panel = modal.querySelector(".flowchart-modal-panel");
+    if (panel) panel.scrollTop = 0;
+    modal.querySelectorAll("pre").forEach((block) => {
+      block.scrollTop = 0;
+      block.scrollLeft = 0;
+    });
+    document.body.classList.add("flowchart-modal-open");
+  }
+  function closeModal(modal) {
+    modal.hidden = true;
+    document.body.classList.remove("flowchart-modal-open");
+  }
+  document.querySelectorAll("[data-flowchart-open]").forEach((openButton) => {
+    openButton.addEventListener("click", () => {
+      const modal = document.getElementById(openButton.dataset.flowchartOpen);
+      if (modal) openModal(modal);
+    });
+  });
+  document.querySelectorAll(".flowchart-modal").forEach((modal) => {
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal || event.target.closest("[data-flowchart-close]")) closeModal(modal);
+    });
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    document.querySelectorAll(".flowchart-modal").forEach((modal) => {
+      if (!modal.hidden) closeModal(modal);
+    });
+  });
+})();
+  </script>
+</section>
+
+  </main>
+</body>
+</html>
