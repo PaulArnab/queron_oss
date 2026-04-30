@@ -1556,7 +1556,7 @@ function highlightSqlVars(sqlText) {
 
 function QueryPanel({ rawSql, resolvedSql, hasRuntimeVars, kind, checkOperator, checkValue }) {
   const [copied, setCopied] = useState(false);
-  const primarySql = hasRuntimeVars && rawSql ? rawSql : resolvedSql;
+  const primarySql = resolvedSql || rawSql;
   const showCountCondition = String(kind || "").trim() === "check.count" && checkOperator && checkValue !== null && checkValue !== undefined;
 
   async function handleCopy() {
@@ -1597,7 +1597,7 @@ function QueryPanel({ rawSql, resolvedSql, hasRuntimeVars, kind, checkOperator, 
           </div>
         ) : null}
         <pre className="min-h-full whitespace-pre-wrap break-words px-4 py-4 font-mono text-[12px] leading-5 text-slate-700">
-          {hasRuntimeVars && rawSql ? highlightSqlVars(rawSql) : resolvedSql}
+          {hasRuntimeVars ? highlightSqlVars(primarySql) : primarySql}
         </pre>
       </div>
     </div>
