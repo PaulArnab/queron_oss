@@ -1090,15 +1090,16 @@ def _validate_and_enrich_spec(spec: PipelineSpec, config: dict[str, Any]) -> lis
 
         if node.kind in query_node_kinds:
             diagnostics.extend(_validate_node_var_references(node))
-            for relation in find_raw_compound_relations(node.sql):
-                diagnostics.append(
-                    {
-                        "level": "error",
-                        "code": "raw_relation_reference",
-                        "message": f"Node '{node.name}' uses raw relation '{relation}'. Use queron.ref() or queron.source().",
-                        "node_name": node.name,
-                    }
-                )
+            if node.kind not in remote_lookup_consumer_kinds:
+                for relation in find_raw_compound_relations(node.sql):
+                    diagnostics.append(
+                        {
+                            "level": "error",
+                            "code": "raw_relation_reference",
+                            "message": f"Node '{node.name}' uses raw relation '{relation}'. Use queron.ref() or queron.source().",
+                            "node_name": node.name,
+                        }
+                    )
             for logical_out in out_producers:
                 if has_raw_reference_to_name(node.sql, logical_out):
                     diagnostics.append(

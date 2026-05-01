@@ -84,6 +84,107 @@ class VerifyQueronCliTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             queron.compile_pipeline("pipeline.py", artifact_path="override-not-allowed.duckdb")
 
+    def test_compile_pipeline_allows_raw_external_relation_in_database_ingress(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="raw_ingress")
+
+@queron.postgres.ingress(
+    config="PostGres",
+    name="policy",
+    out="policy",
+    sql=\"\"\"
+SELECT *
+FROM public.policy
+\"\"\",
+)
+def policy():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertFalse(
+                any(str(item.get("code")) == "raw_relation_reference" for item in compiled.diagnostics)
+            )
+            node = compiled.spec.node_by_name()["policy"]
+            self.assertEqual(node.resolved_sql.strip(), "SELECT *\nFROM public.policy")
+
+    def test_compile_pipeline_rejects_raw_external_relation_in_model_sql(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="raw_model")
+
+@queron.model.sql(
+    name="policy_model",
+    out="policy_model",
+    query=\"\"\"
+SELECT *
+FROM public.policy
+\"\"\",
+)
+def policy_model():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertTrue(
+                any(str(item.get("code")) == "raw_relation_reference" for item in compiled.diagnostics)
+            )
+
+    def test_compile_pipeline_rejects_raw_local_artifact_name_in_database_ingress(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            pipeline_path = root / "pipeline.py"
+            pipeline_path.write_text(
+                """import queron
+
+queron.pipeline(pipeline_id="raw_local_ingress")
+
+@queron.model.sql(
+    name="seed",
+    out="seed",
+    query=\"\"\"
+SELECT 1 AS id
+\"\"\",
+)
+def seed():
+    pass
+
+@queron.postgres.ingress(
+    config="PostGres",
+    name="policy",
+    out="policy",
+    sql=\"\"\"
+SELECT *
+FROM seed
+\"\"\",
+)
+def policy():
+    pass
+""",
+                encoding="utf-8",
+            )
+
+            compiled = queron.compile_pipeline(pipeline_path)
+
+            self.assertTrue(
+                any(str(item.get("code")) == "raw_ref_reference" for item in compiled.diagnostics)
+            )
+
     def test_compile_pipeline_collects_runtime_vars_in_contract(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = pathlib.Path(tmpdir)
