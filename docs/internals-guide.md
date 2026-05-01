@@ -115,6 +115,8 @@ It renders the physical relation with quoted identifiers, for example:
 "public"."policy"
 ```
 
+`queron.source(...)` is optional for stable external source tables in database ingress SQL. If the table does not change by target, ingress SQL can reference the physical relation directly, for example `public.policy`. Raw external relations are not allowed in model SQL, check SQL, or other internal query surfaces.
+
 ### 4. Dependency Resolution
 
 The compiler scans SQL for:
@@ -125,6 +127,8 @@ The compiler scans SQL for:
 - `{{ queron.var("name") }}`
 
 `queron.ref(...)` creates a dependency on the node that produced the referenced `out`.
+
+`queron.ref(...)` is mandatory for Queron-managed artifacts. Raw references to local artifact tables are rejected so dependency tracking and run-scoped artifact resolution stay explicit.
 
 `depends_on` creates a manual dependency even if SQL has no ref.
 
@@ -141,7 +145,7 @@ Duplicates are removed while preserving order.
 At compile time:
 
 - `queron.ref(...)` becomes the local DuckDB artifact table, usually `"main"."<out>"`.
-- `queron.source(...)` becomes the configured remote source relation.
+- `queron.source(...)` becomes the configured remote source relation. Stable raw external table names in database ingress SQL pass through unchanged.
 - `queron.lookup(...)` becomes the configured remote lookup relation.
 - `queron.var(...)` remains a runtime placeholder and is validated separately.
 
@@ -555,7 +559,7 @@ Returns:
 - physical artifact
 - effective artifact path
 
-Use it to debug template expansion. It shows what `queron.ref(...)`, `queron.source(...)`, and `queron.lookup(...)` became after compile.
+Use it to debug template expansion. It shows what `queron.ref(...)`, `queron.source(...)`, and `queron.lookup(...)` became after compile. Raw external table names used in database ingress SQL remain visible as written.
 
 ## `export_artifact(...)`
 
@@ -616,4 +620,3 @@ queron inspect_node_logs <node_name> --run-id <run_id> --tail 100
 queron reset-downstream pipeline.py <node_name>
 queron resume pipeline.py --stream-logs
 ```
-

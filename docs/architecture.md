@@ -53,7 +53,7 @@ flowchart TD
 5. Compiler builds `NodeSpec` records and a `PipelineSpec`.
 6. `configurations.yaml` is loaded when present.
 7. `target` is resolved from explicit argument, `QUERON_TARGET`, or config file.
-8. `queron.source(...)` placeholders resolve through `sources`.
+8. `queron.source(...)` placeholders resolve through `sources` when used; stable raw external table names may pass through database ingress SQL unchanged.
 9. `queron.lookup(...)` placeholders resolve through `lookup`.
 10. `queron.ref(...)` placeholders resolve to local DuckDB artifact tables.
 11. Runtime variable references are collected from `queron.var(...)`.
@@ -95,7 +95,8 @@ The compiler rejects:
 - unknown manual dependencies
 - self-dependencies
 - cycles
-- raw table references that should use `queron.ref(...)` or `queron.source(...)`
+- raw local artifact references that should use `queron.ref(...)`
+- raw external table references outside database ingress SQL
 
 Check nodes are prioritized before other ready nodes at the same dependency level.
 

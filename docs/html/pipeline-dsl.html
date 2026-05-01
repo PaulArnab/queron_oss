@@ -33,6 +33,7 @@
 <h2 id="template-helpers">Template Helpers</h2>
 <h3 id="queronrefname"><code>queron.ref(name)</code></h3>
 <p>Returns a template placeholder for a local pipeline artifact.</p>
+<p>Use <code>queron.ref(...)</code> whenever SQL reads an artifact produced by another Queron node. Raw references to Queron-managed artifacts are not allowed; this keeps dependency tracking, run selection, reset/resume behavior, and artifact versioning unambiguous.</p>
 <p>Arguments:</p>
 <table>
 <thead><tr>
@@ -53,7 +54,8 @@
 <p>Example:</p>
 <pre><code class=" language-python">query=f&quot;SELECT * FROM {queron.ref(&#x27;customers&#x27;)}&quot;</code></pre>
 <h3 id="queronsourcename"><code>queron.source(name)</code></h3>
-<p>Returns a template placeholder for a configured remote source relation.</p>
+<p>Returns a template placeholder for a configured remote source relation. This helper is optional for stable source tables that do not change between targets: database ingress SQL may use a raw external table name such as <code>public.policy</code> or <code>DB2INST1.POLICY</code> directly.</p>
+<p>Use <code>queron.source(...)</code> when the physical source relation changes by target/environment. Raw external table names are allowed only in database ingress SQL; model SQL, checks, and internal Queron artifact reads must use <code>queron.ref(...)</code>.</p>
 <p>Arguments:</p>
 <table>
 <thead><tr>
@@ -706,6 +708,19 @@ FROM {queron.source(&quot;pg_policy&quot;)}
 )
 def policy_core():
     pass</code></pre>
+<p>If the source table is stable across environments, the same ingress can use the physical table directly:</p>
+<pre><code class=" language-python">@queron.postgres.ingress(
+    config=&quot;PostGres&quot;,
+    name=&quot;policy_core&quot;,
+    out=&quot;policy_core&quot;,
+    sql=&quot;&quot;&quot;
+SELECT *
+FROM public.policy
+&quot;&quot;&quot;,
+)
+def policy_core():
+    pass</code></pre>
+<p>Raw external table names are limited to database ingress. Downstream models and checks should read Queron artifacts with <code>queron.ref(...)</code>, not raw table names.</p>
 <p>Namespaces:</p>
 <ul>
 <li><code>queron.postgres</code></li>

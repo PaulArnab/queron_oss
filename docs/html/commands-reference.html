@@ -71,13 +71,13 @@ queron.lookup(name)</code></pre>
 <td><code>ref</code></td>
 <td><code>name</code></td>
 <td>yes</td>
-<td>Local artifact name produced by a node&#x27;s <code>out</code>.</td>
+<td>Local artifact name produced by a node&#x27;s <code>out</code>. Required when reading Queron-managed artifacts.</td>
 </tr>
 <tr>
 <td><code>source</code></td>
 <td><code>name</code></td>
 <td>yes</td>
-<td>Logical source name from <code>configurations.yaml</code>.</td>
+<td>Logical source name from <code>configurations.yaml</code>. Optional for stable raw external tables in database ingress SQL.</td>
 </tr>
 <tr>
 <td><code>lookup</code></td>
@@ -87,6 +87,7 @@ queron.lookup(name)</code></pre>
 </tr>
 </tbody>
 </table>
+<p>Use raw external table names only in database ingress SQL, for tables that do not vary by target/environment. Use <code>queron.source(...)</code> for environment-specific source mappings. Use <code>queron.ref(...)</code> for Queron outputs in model SQL, checks, and other internal query surfaces.</p>
 <pre><code class=" language-python">queron.var(name, *, log_value=False, mutable_after_start=False, default=unset)</code></pre>
 <table>
 <thead><tr>

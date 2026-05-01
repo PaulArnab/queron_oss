@@ -14,6 +14,8 @@ Decorators attach metadata to functions. Most decorated functions should use `pa
 
 Returns a template placeholder for a local pipeline artifact.
 
+Use `queron.ref(...)` whenever SQL reads an artifact produced by another Queron node. Raw references to Queron-managed artifacts are not allowed; this keeps dependency tracking, run selection, reset/resume behavior, and artifact versioning unambiguous.
+
 Arguments:
 
 | Argument | Type | Required | Description |
@@ -28,7 +30,9 @@ query=f"SELECT * FROM {queron.ref('customers')}"
 
 ### `queron.source(name)`
 
-Returns a template placeholder for a configured remote source relation.
+Returns a template placeholder for a configured remote source relation. This helper is optional for stable source tables that do not change between targets: database ingress SQL may use a raw external table name such as `public.policy` or `DB2INST1.POLICY` directly.
+
+Use `queron.source(...)` when the physical source relation changes by target/environment. Raw external table names are allowed only in database ingress SQL; model SQL, checks, and internal Queron artifact reads must use `queron.ref(...)`.
 
 Arguments:
 
@@ -242,6 +246,24 @@ FROM {queron.source("pg_policy")}
 def policy_core():
     pass
 ```
+
+If the source table is stable across environments, the same ingress can use the physical table directly:
+
+```python
+@queron.postgres.ingress(
+    config="PostGres",
+    name="policy_core",
+    out="policy_core",
+    sql="""
+SELECT *
+FROM public.policy
+""",
+)
+def policy_core():
+    pass
+```
+
+Raw external table names are limited to database ingress. Downstream models and checks should read Queron artifacts with `queron.ref(...)`, not raw table names.
 
 Namespaces:
 

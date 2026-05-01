@@ -404,6 +404,7 @@ queron inspect_node customer_360 --pipeline-id customer_360_demo --run-label nig
 <li><code>queron.lookup(&quot;pg_active_policy_lookup&quot;)</code> became the configured remote lookup table.</li>
 <li>runtime vars remained parameterized.</li>
 </ul>
+<p><code>queron.source(...)</code> is optional for stable database ingress sources. If the source table does not vary by environment, the ingress SQL can use a raw external relation such as <code>public.policy</code>. Keep using <code>queron.ref(...)</code> for all Queron-produced artifacts; raw local artifact names are rejected.</p>
 <h3 id="7-inspect-logs">7. Inspect Logs</h3>
 <p>Use <a href="commands-reference.html#inspect-logs"><code>queron inspect_logs</code></a> and <a href="commands-reference.html#inspect-node-history-logs-and-query"><code>queron inspect_node_logs</code></a> to debug execution.</p>
 <pre><code class=" language-bash">queron inspect_logs --pipeline-id customer_360_demo --run-label nightly_customer_360 --tail 100 --verbose

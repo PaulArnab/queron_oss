@@ -26,9 +26,11 @@ queron.lookup(name)
 
 | Function | Argument | Required | Description |
 |---|---|---:|---|
-| `ref` | `name` | yes | Local artifact name produced by a node's `out`. |
-| `source` | `name` | yes | Logical source name from `configurations.yaml`. |
+| `ref` | `name` | yes | Local artifact name produced by a node's `out`. Required when reading Queron-managed artifacts. |
+| `source` | `name` | yes | Logical source name from `configurations.yaml`. Optional for stable raw external tables in database ingress SQL. |
 | `lookup` | `name` | yes | Logical lookup name from `configurations.yaml`. |
+
+Use raw external table names only in database ingress SQL, for tables that do not vary by target/environment. Use `queron.source(...)` for environment-specific source mappings. Use `queron.ref(...)` for Queron outputs in model SQL, checks, and other internal query surfaces.
 
 ```python
 queron.var(name, *, log_value=False, mutable_after_start=False, default=unset)

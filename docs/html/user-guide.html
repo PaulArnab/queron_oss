@@ -84,10 +84,11 @@ def scaled_numbers():
 queron.source(&quot;configured_source&quot;)
 queron.lookup(&quot;configured_lookup&quot;)
 queron.var(&quot;runtime_value&quot;)</code></pre>
-<p>Use <code>queron.ref(...)</code> for another node&#x27;s <code>out</code>.</p>
-<p>Use <code>queron.source(...)</code> for a source table from <code>configurations.yaml</code>.</p>
+<p>Use <code>queron.ref(...)</code> for another node&#x27;s <code>out</code>. This is mandatory for Queron-managed artifacts so the compiler can build dependencies and later resolve the correct local artifact table.</p>
+<p>Use <code>queron.source(...)</code> for a source table from <code>configurations.yaml</code> when the physical table changes by target/environment. It is optional for stable database ingress tables: a database ingress query may read a raw external relation such as <code>public.policy</code> directly.</p>
 <p>Use <code>queron.lookup(...)</code> for a lookup table from <code>configurations.yaml</code>.</p>
 <p>Use <code>queron.var(...)</code> for runtime parameters. Values are passed as query parameters, not string-interpolated into SQL.</p>
+<p>Raw external table names are allowed only in database ingress SQL. Models, checks, and any SQL that reads outputs from Queron nodes must use <code>queron.ref(...)</code>.</p>
 <h2 id="configure-relations">Configure Relations</h2>
 <p><code>configurations.yaml</code> maps logical names to physical database relations.</p>
 <pre><code class=" language-yaml">target: dev

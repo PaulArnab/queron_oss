@@ -88,13 +88,15 @@ queron.lookup("configured_lookup")
 queron.var("runtime_value")
 ```
 
-Use `queron.ref(...)` for another node's `out`.
+Use `queron.ref(...)` for another node's `out`. This is mandatory for Queron-managed artifacts so the compiler can build dependencies and later resolve the correct local artifact table.
 
-Use `queron.source(...)` for a source table from `configurations.yaml`.
+Use `queron.source(...)` for a source table from `configurations.yaml` when the physical table changes by target/environment. It is optional for stable database ingress tables: a database ingress query may read a raw external relation such as `public.policy` directly.
 
 Use `queron.lookup(...)` for a lookup table from `configurations.yaml`.
 
 Use `queron.var(...)` for runtime parameters. Values are passed as query parameters, not string-interpolated into SQL.
+
+Raw external table names are allowed only in database ingress SQL. Models, checks, and any SQL that reads outputs from Queron nodes must use `queron.ref(...)`.
 
 ## Configure Relations
 

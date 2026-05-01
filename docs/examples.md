@@ -427,6 +427,8 @@ This is where you confirm that:
 - `queron.lookup("pg_active_policy_lookup")` became the configured remote lookup table.
 - runtime vars remained parameterized.
 
+`queron.source(...)` is optional for stable database ingress sources. If the source table does not vary by environment, the ingress SQL can use a raw external relation such as `public.policy`. Keep using `queron.ref(...)` for all Queron-produced artifacts; raw local artifact names are rejected.
+
 ### 7. Inspect Logs
 
 Use [`queron inspect_logs`](commands-reference.html#inspect-logs) and [`queron inspect_node_logs`](commands-reference.html#inspect-node-history-logs-and-query) to debug execution.

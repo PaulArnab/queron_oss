@@ -123,7 +123,7 @@
 <li>Compiler builds <code>NodeSpec</code> records and a <code>PipelineSpec</code>.</li>
 <li><code>configurations.yaml</code> is loaded when present.</li>
 <li><code>target</code> is resolved from explicit argument, <code>QUERON_TARGET</code>, or config file.</li>
-<li><code>queron.source(...)</code> placeholders resolve through <code>sources</code>.</li>
+<li><code>queron.source(...)</code> placeholders resolve through <code>sources</code> when used; stable raw external table names may pass through database ingress SQL unchanged.</li>
 <li><code>queron.lookup(...)</code> placeholders resolve through <code>lookup</code>.</li>
 <li><code>queron.ref(...)</code> placeholders resolve to local DuckDB artifact tables.</li>
 <li>Runtime variable references are collected from <code>queron.var(...)</code>.</li>
@@ -172,7 +172,8 @@
 <li>unknown manual dependencies</li>
 <li>self-dependencies</li>
 <li>cycles</li>
-<li>raw table references that should use <code>queron.ref(...)</code> or <code>queron.source(...)</code></li>
+<li>raw local artifact references that should use <code>queron.ref(...)</code></li>
+<li>raw external table references outside database ingress SQL</li>
 </ul>
 <p>Check nodes are prioritized before other ready nodes at the same dependency level.</p>
 <h2 id="node-kinds">Node Kinds</h2>

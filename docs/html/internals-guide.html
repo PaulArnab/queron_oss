@@ -115,6 +115,7 @@
       table: policy</code></pre>
 <p>It renders the physical relation with quoted identifiers, for example:</p>
 <pre><code class=" language-sql">&quot;public&quot;.&quot;policy&quot;</code></pre>
+<p><code>queron.source(...)</code> is optional for stable external source tables in database ingress SQL. If the table does not change by target, ingress SQL can reference the physical relation directly, for example <code>public.policy</code>. Raw external relations are not allowed in model SQL, check SQL, or other internal query surfaces.</p>
 <h3 id="4-dependency-resolution">4. Dependency Resolution</h3>
 <p>The compiler scans SQL for:</p>
 <ul>
@@ -124,6 +125,7 @@
 <li><code>{{ queron.var(&quot;name&quot;) }}</code></li>
 </ul>
 <p><code>queron.ref(...)</code> creates a dependency on the node that produced the referenced <code>out</code>.</p>
+<p><code>queron.ref(...)</code> is mandatory for Queron-managed artifacts. Raw references to local artifact tables are rejected so dependency tracking and run-scoped artifact resolution stay explicit.</p>
 <p><code>depends_on</code> creates a manual dependency even if SQL has no ref.</p>
 <p>Final dependencies are:</p>
 <pre><code class=" language-text">auto_dependencies + manual_dependencies</code></pre>
@@ -132,7 +134,7 @@
 <p>At compile time:</p>
 <ul>
 <li><code>queron.ref(...)</code> becomes the local DuckDB artifact table, usually <code>&quot;main&quot;.&quot;&lt;out&gt;&quot;</code>.</li>
-<li><code>queron.source(...)</code> becomes the configured remote source relation.</li>
+<li><code>queron.source(...)</code> becomes the configured remote source relation. Stable raw external table names in database ingress SQL pass through unchanged.</li>
 <li><code>queron.lookup(...)</code> becomes the configured remote lookup relation.</li>
 <li><code>queron.var(...)</code> remains a runtime placeholder and is validated separately.</li>
 </ul>
@@ -580,7 +582,7 @@ skipped</code></pre>
 <li>physical artifact</li>
 <li>effective artifact path</li>
 </ul>
-<p>Use it to debug template expansion. It shows what <code>queron.ref(...)</code>, <code>queron.source(...)</code>, and <code>queron.lookup(...)</code> became after compile.</p>
+<p>Use it to debug template expansion. It shows what <code>queron.ref(...)</code>, <code>queron.source(...)</code>, and <code>queron.lookup(...)</code> became after compile. Raw external table names used in database ingress SQL remain visible as written.</p>
 <h2 id="exportartifact"><code>export_artifact(...)</code></h2>
 <p>Export reads a materialized DuckDB artifact table and writes it as:</p>
 <ul>
